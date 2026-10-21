@@ -95,6 +95,8 @@ def _vocal_track(vocals: VocalTrack) -> _Track:
     for note in vocals.notes:
         out.meta(note.tick, "lyrics", text=_safe_text(note.lyric))
         out.note(note.tick, note.length, note.pitch)
+    for tick, text in vocals.spoken:   # trechos falados: letra na tela, sem nota para cantar
+        out.meta(tick, "lyrics", text=_safe_text(text))
     for tick, length in vocals.phrases:
         out.note(tick, length, PHRASE)
     for tick, length in vocals.star_power:

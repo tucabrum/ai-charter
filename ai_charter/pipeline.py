@@ -16,7 +16,7 @@ from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
 from ai_charter.analysis.transcribe import transcribe_lyrics
-from ai_charter.analysis.vocals import detect_sung_notes
+from ai_charter.analysis.vocals import detect_sung_notes, detect_voice_segments
 from ai_charter.charting.common import (
     Candidate, TrackChart, dedupe, quantize_tick, star_power_for_phrases, star_power_windows,
 )
@@ -112,20 +112,32 @@ def _to_candidates(detected, tempo: TempoMap, rules: Rules) -> list[Candidate]:
             voices=n.voices,
             chord_scores=n.chord_scores,
             lowest_by_class=n.lowest_by_class,
+            fifth_ratio=n.fifth_ratio,
+            third_ratio=n.third_ratio,
         )
         for n in detected
     ]
     return dedupe(cands)
 
 
+def estimate_tuning(mix: np.ndarray, sr: int) -> float:
+    """Afinação da gravação, em frações de semitom (-0.5 a 0.5) em relação ao Lá 440 Hz.
+
+    Muitas bandas gravam um pouco fora do padrão (ex.: -0.4 = 40 centésimos abaixo).
+    É medida na mixagem inteira: os instrumentos concordam entre si, e a voz,
+    que desafina mais, não serve de régua sozinha.
+    """
+    return float(librosa.estimate_tuning(y=mix, sr=sr))
+
+
 def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Rules,
-                  sp_windows, log=print) -> tuple[TrackChart, list[str]]:
+                  sp_windows, log=print, tuning: float = 0.0) -> tuple[TrackChart, list[str]]:
     """Chart de guitarra/baixo/teclado. Com várias guitarras, escolhe uma por compasso."""
     cfg = rules.detection[instrument]
     sources = []
     for stem in stems:
         y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
-        cands = _to_candidates(detect_pitched_notes(y, sr, cfg), tempo, rules)
+        cands = _to_candidates(detect_pitched_notes(y, sr, cfg, tuning), tempo, rules)
         if cfg.recognize_chords:
             label_chords(cands, rules.general.resolution, cfg)
         cands, simplified = sanitize(cands, y, sr, tempo, rules.general.resolution, rules.sanitize)
@@ -138,11 +150,13 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
     return track, chosen
 
 
-def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_windows) -> VocalTrack:
+def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_windows,
+                 tuning: float = 0.0) -> VocalTrack:
     y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
-    sung = detect_sung_notes(y, sr, rules.vocals)
+    sung = detect_sung_notes(y, sr, rules.vocals, tuning)
+    segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
     lines = read_lyrics(lyrics, rules.vocals.language)
-    vocals = build_vocal_track(sung, lines, tempo, rules.general.resolution,
+    vocals = build_vocal_track(sung, segments, lines, tempo, rules.general.resolution,
                                rules.general.allow_triplets, rules.vocals)
     vocals.star_power = star_power_for_phrases(vocals.phrases, sp_windows)
     return vocals
@@ -187,6 +201,9 @@ def run(opts: Options, log=print) -> Result:
         log("2/5 Detectando o andamento (BPM)...")
         tempo = estimate_tempo_map(mix, ANALYSIS_SR, res, opts.tempo_mode)
         log(f"    BPM médio: {tempo.average_bpm:.1f}")
+        tuning = estimate_tuning(mix, ANALYSIS_SR)
+        if abs(tuning) >= 0.1:
+            log(f"    afinação da gravação: {tuning * 100:+.0f} centésimos de semitom (compensada)")
 
         log(f"3/5 Separando os stems (modo: {opts.separator})...")
         stems = separate(opts.separator, mix_wav, work_dir, opts.stems_dir)
@@ -209,7 +226,7 @@ def run(opts: Options, log=print) -> Result:
             if instrument == "drums":
                 track = chart_drums(stem[0], tempo, rules, sp_windows)
             else:
-                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log)
+                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning)
                 if len(stem) > 1:
                     guitar_sources = chosen
                     log(f"    {instrument}: faixas usadas: {_describe_runs(chosen)}")
@@ -237,8 +254,9 @@ def run(opts: Options, log=print) -> Result:
             if lyrics is None:
                 log("    vocals: sem letra (use --lyrics letra.txt ou --auto-lyrics), pulando")
             else:
-                vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows)
-                log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases")
+                vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows, tuning)
+                log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases"
+                    + (f" ({len(vocals.spoken)} sílabas faladas, sem nota)" if vocals.spoken else ""))
 
         log("5/5 Exportando para o Clone Hero / YARG...")
         stem_entries: dict[str, str] = {}

@@ -83,10 +83,20 @@ def syllabify_pt(word: str) -> list[str]:
     return [p for p in pieces if p]
 
 
+EN_DIGRAPHS = ("th", "sh", "ch", "ph", "wh", "ck", "gh")
+EN_CONTRACTIONS = ("'s", "'re", "'ll", "'ve", "'d", "'m", "n't", "'t")
+
+
 def syllabify_en(word: str) -> list[str]:
     """Heurística simples para inglês: um núcleo por grupo de vogais ("e" final é mudo)."""
     if "-" in word:
         return [p for p in word.split("-") if p]
+    # Contrações (there's, I'll, don't): divide só a palavra base e cola o final de volta.
+    for ending in EN_CONTRACTIONS:
+        if word.lower().endswith(ending) and len(word) > len(ending):
+            parts = syllabify_en(word[: -len(ending)])
+            parts[-1] += word[-len(ending):]
+            return parts
     low = word.lower()
     groups = [m.span() for m in re.finditer(r"[aeiouy]+", low)]
     if len(groups) > 1 and low.endswith("e") and groups[-1] == (len(low) - 1, len(low)) \
@@ -97,7 +107,13 @@ def syllabify_en(word: str) -> list[str]:
     cuts = []
     for (_, end), (next_start, _) in zip(groups, groups[1:]):
         cluster = low[end:next_start]
-        cuts.append(next_start - min(len(cluster), _split_consonants(cluster) if len(cluster) > 1 else 1))
+        if cluster[-2:] in EN_DIGRAPHS:       # "th", "sh"... ficam juntos: no-thing, wa-shing
+            take = 2
+        elif cluster[:2] in EN_DIGRAPHS and len(cluster) == 2:
+            take = 2
+        else:
+            take = min(len(cluster), _split_consonants(cluster) if len(cluster) > 1 else 1)
+        cuts.append(next_start - take)
     pieces, prev = [], 0
     for cut in cuts:
         pieces.append(word[prev:cut])

@@ -69,7 +69,8 @@ def _fix_octave_errors(notes: list[SungNote], max_gap: float = 1.0) -> None:
                 break
 
 
-def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules) -> list[SungNote]:
+def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules, tuning: float = 0.0) -> list[SungNote]:
+    """Notas cantadas. `tuning`: afinação da gravação (frações de semitom), descontada da altura."""
     if not np.any(y):
         return []
     f0, voiced, _ = librosa.pyin(
@@ -80,7 +81,7 @@ def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules) -> list[SungNote]
     n = min(len(f0), len(rms))
     loud = librosa.amplitude_to_db(rms[:n], ref=np.max) > cfg.min_rms_db
     active = voiced[:n] & loud
-    midi = librosa.hz_to_midi(np.where(active, f0[:n], np.nan))
+    midi = librosa.hz_to_midi(np.where(active, f0[:n], np.nan)) - tuning
 
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
     onsets = set(librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=HOP,
@@ -117,3 +118,71 @@ def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules) -> list[SungNote]
             ))
     _fix_octave_errors(notes)
     return notes
+
+
+@dataclass
+class VoiceSegment:
+    """Trecho em que a voz soa (cantada OU falada), separado dos outros por pausas."""
+    start: float
+    end: float
+    onsets: list[float]   # ataques dentro do trecho (início de sílabas, na fala)
+    pauses: list[tuple[float, float]]   # pausas curtas dentro do trecho (início, fim)
+
+
+def detect_voice_segments(y: np.ndarray, sr: int, cfg: VocalRules, gap_seconds: float) -> list[VoiceSegment]:
+    """Trechos com voz, pela ENERGIA (e não pela afinação, que a fala quase não tem).
+
+    Pausas menores que `gap_seconds` não separam trechos (respiração, consoantes),
+    mas ficam anotadas como pausas internas. Em trechos em que a voz não chega a
+    silenciar (ex.: refrão com vocal de apoio), quedas de volume de 12 dB ou mais
+    também contam como pausas internas: são os lugares prováveis entre duas frases.
+    """
+    if not np.any(y):
+        return []
+    rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
+    db = librosa.amplitude_to_db(rms, ref=np.max)
+    active = db > cfg.min_rms_db
+    frame = HOP / sr
+    runs, i = [], 0
+    while i < len(active):
+        if not active[i]:
+            i += 1
+            continue
+        start = i
+        while i < len(active) and active[i]:
+            i += 1
+        runs.append([start * frame, i * frame])
+    merged: list[list] = []   # [início, fim, pausas internas]
+    for run in runs:
+        if merged and run[0] - merged[-1][1] < gap_seconds:
+            merged[-1][2].append((merged[-1][1], run[0]))
+            merged[-1][1] = run[1]
+        else:
+            merged.append([run[0], run[1], []])
+    for segment in merged:
+        segment[2] += _volume_dips(db, segment[0], segment[1], frame)
+        segment[2].sort()
+    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=HOP, units="time")
+    return [VoiceSegment(a, b, [float(t) for t in onsets if a - 0.05 <= t < b], pauses)
+            for a, b, pauses in merged if b - a >= cfg.min_note_seconds * 2]
+
+
+def _volume_dips(db: np.ndarray, start: float, end: float, frame: float,
+                 depth: float = 12.0, min_seconds: float = 0.1) -> list[tuple[float, float]]:
+    """Quedas de volume dentro de um trecho (`depth` dB abaixo do volume típico dele)."""
+    a, b = int(start / frame), int(end / frame)
+    if b - a < 4:
+        return []
+    low = db[a:b] < np.median(db[a:b]) - depth
+    dips, i = [], 0
+    while i < len(low):
+        if low[i]:
+            j = i
+            while j < len(low) and low[j]:
+                j += 1
+            if (j - i) * frame >= min_seconds:
+                dips.append(((a + i) * frame, (a + j) * frame))
+            i = j
+        else:
+            i += 1
+    return dips

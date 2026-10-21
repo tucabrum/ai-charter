@@ -38,6 +38,10 @@ class DetectedNote:
     # e a nota (MIDI) mais grave que soa forte em cada uma das 12 classes (Dó, Dó#...).
     chord_scores: np.ndarray | None = None
     lowest_by_class: np.ndarray | None = None
+    # Energia uma quinta (+7) e uma terça (+3/+4, +15/+16) acima da nota mais grave,
+    # relativa a ela. Uma nota simples (mesmo distorcida) quase não tem; acordes têm.
+    fifth_ratio: float = 0.0
+    third_ratio: float = 0.0
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -77,8 +81,8 @@ def estimate_pitches(spectrum: np.ndarray, chord_ratio: float, max_voices: int =
     return found
 
 
-def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
-    """Envelope de ataques (quanto a energia "subiu" a cada frame), resistente a chiado.
+def _energy_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Ataques pela subida de ENERGIA (bom para palhetadas, notas com "estalo").
 
     1. Subtração espectral: em cada faixa de frequência, estima o ruído de fundo
        (o nível que está sempre presente nos últimos ~2 s) e o remove. Chiado
@@ -94,6 +98,31 @@ def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
                                         hop_length=HOP, lag=2, max_size=3)
 
 
+def _pitch_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Ataques pela TROCA DE NOTA: subida de energia em cada semitom (espectro CQT).
+
+    Numa guitarra distorcida (uma "parede de som") o volume quase não muda quando
+    a nota muda; o que muda é qual semitom soa. top_db=40 ignora o que está muito
+    abaixo do pico (senão, a cauda das notas vira "ataque").
+    """
+    cqt = np.abs(librosa.cqt(y, sr=sr, hop_length=HOP, fmin=librosa.note_to_hz("E1"),
+                             n_bins=84, bins_per_octave=12)) ** 2
+    return librosa.onset.onset_strength(S=librosa.power_to_db(cqt, ref=np.max, top_db=40), sr=sr,
+                                        hop_length=HOP, lag=2, max_size=3)
+
+
+def onset_envelope(y: np.ndarray, sr: int, method: str = "energy", pitch_weight: float = 0.5) -> np.ndarray:
+    """Envelope de ataques. method: "energy", "pitch" ou "both" (soma dos dois)."""
+    if method == "energy":
+        return _energy_envelope(y, sr)
+    if method == "pitch":
+        return _pitch_envelope(y, sr)
+    energy, pitch = _energy_envelope(y, sr), _pitch_envelope(y, sr)
+    n = min(len(energy), len(pitch))
+    normalize = lambda e: e[:n] / (np.percentile(e[:n], 99) + 1e-9)  # noqa: E731
+    return normalize(energy) + pitch_weight * normalize(pitch)
+
+
 def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 0.25) -> np.ndarray:
     """Para cada classe de nota (Dó, Dó#...), a nota MIDI mais grave que soa forte (NaN se nenhuma)."""
     result = np.full(12, np.nan)
@@ -104,13 +133,19 @@ def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 
     return result
 
 
-def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[DetectedNote]:
-    """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`."""
+def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
+                         tuning: float = 0.0) -> list[DetectedNote]:
+    """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`.
+
+    `tuning`: afinação da gravação em frações de semitom (ver pipeline.estimate_tuning).
+    Os bins do espectro são centrados nas notas DESSA afinação; sem isso, uma
+    gravação meio semitom fora do padrão faz a mesma nota "oscilar" entre duas.
+    """
     if not np.any(y):
         return []
 
     # --- 1. Ataques ---------------------------------------------------------
-    onset_env = onset_envelope(y, sr)
+    onset_env = onset_envelope(y, sr, cfg.onset_method)
     # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
     # palhetado, em que as cordas soam uma logo após a outra).
     onset_frames = librosa.onset.onset_detect(
@@ -125,7 +160,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
     fmin_midi = librosa.note_to_midi(cfg.fmin)
     cqt = np.abs(librosa.cqt(
         y, sr=sr, hop_length=HOP, fmin=librosa.midi_to_hz(fmin_midi),
-        n_bins=12 * cfg.octaves, bins_per_octave=12,
+        n_bins=12 * cfg.octaves, bins_per_octave=12, tuning=tuning,
     ))
 
     # --- 3. Volume ao longo do tempo (para gate e duração) -----------------
@@ -158,7 +193,13 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             continue
 
         scores = lowest = None
+        fifth = third = 0.0
         if cfg.recognize_chords:
+            root = min(bins)
+            base = spectrum[root] + 1e-12
+            fifth = float(spectrum[root + 7] / base) if root + 7 < len(spectrum) else 0.0
+            thirds = [spectrum[root + k] for k in (3, 4, 15, 16) if root + k < len(spectrum)]
+            third = float(max(thirds) / base) if thirds else 0.0
             # Acordes: janela mais longa (até ~230 ms), para "ouvir" todas as cordas.
             chord_spectrum = cqt[:, a:max(b, min(frame + 20, next_frame))].mean(axis=1)
             scores = chord_scores(chord_spectrum, int(fmin_midi))
@@ -179,5 +220,61 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             strength=float(min(onset_env[frame] / env_scale, 1.5)),
             chord_scores=scores,
             lowest_by_class=lowest,
+            fifth_ratio=fifth,
+            third_ratio=third,
         ))
+    _fix_octave_spikes(notes)
     return notes
+
+
+def _fix_octave_spikes(notes: list[DetectedNote]) -> None:
+    """Corrige picos de oitava: uma nota solta exatamente 12 semitons longe das vizinhas.
+
+    Em notas graves e distorcidas, o harmônico uma oitava acima às vezes soa mais
+    forte que a nota de verdade, e o detector "ouve" a oitava errada. Na chart isso
+    vira um pulo para o outro lado do braço e de volta. Se pelo menos 3 das 4
+    vizinhas (2 antes, 2 depois) estão na mesma altura e a nota está a uma oitava
+    exata delas, ela volta para a altura das vizinhas. Riffs de oitava de verdade
+    (que alternam várias vezes) não são afetados: as vizinhas não concordam.
+    """
+    original = [n.pitch for n in notes]   # decide sempre pelos valores originais
+    for i in range(2, len(notes) - 2):
+        context = np.array(original[i - 2:i] + original[i + 1:i + 3])
+        center = float(np.median(context))
+        distance = original[i] - center
+        agree = int(np.sum(np.abs(context - center) <= 1))
+        if abs(abs(distance) - 12) <= 0.5 and agree >= 3:
+            notes[i].pitch = original[i] - 12 * np.sign(distance)
+    _fix_octave_blocks(notes)
+
+
+MAX_WRONG_OCTAVE_BLOCK = 3   # notas seguidas na oitava errada que ainda são corrigidas
+MIN_RIGHT_OCTAVE_BLOCK = 4
+
+
+def _fix_octave_blocks(notes: list[DetectedNote]) -> None:
+    """Corrige o começo (ou fim) de uma nota repetida ouvido na oitava errada.
+
+    Ex.: Fá# repetido 8 vezes, mas as 3 primeiras saem uma oitava acima (o detector
+    ainda "ouve" o harmônico da nota anterior). Numa sequência da MESMA nota (mesma
+    classe: Fá#, Fá#...), se há só uma mudança de oitava, o bloco menor (até 3 notas)
+    vai para a oitava do bloco maior (4+). Riffs de oitava (que alternam várias
+    vezes) têm mais de uma mudança e não são afetados.
+    """
+    i = 0
+    while i < len(notes):
+        j = i
+        while j + 1 < len(notes) and round(notes[j + 1].pitch - notes[i].pitch) % 12 == 0:
+            j += 1
+        run = notes[i:j + 1]
+        octaves = [round(n.pitch) for n in run]
+        switches = [k for k in range(1, len(run)) if octaves[k] != octaves[k - 1]]
+        if len(switches) == 1:
+            k = switches[0]
+            first, second = run[:k], run[k:]
+            short, long = (first, second) if len(first) < len(second) else (second, first)
+            if len(short) <= MAX_WRONG_OCTAVE_BLOCK and len(long) >= MIN_RIGHT_OCTAVE_BLOCK:
+                target = round(long[0].pitch)
+                for n in short:
+                    n.pitch += target - round(n.pitch)
+        i = j + 1

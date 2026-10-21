@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-charter · Visualizador</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #161a22;
+    --panel-2: #1e2430;
+    --line: #2b3240;
+    --text: #e8ebf1;
+    --muted: #8b93a5;
+    --accent: #5aa9ff;
+    --green: #35c46a;
+    --red: #ef4a4a;
+    --yellow: #f5d142;
+    --blue: #3e8bff;
+    --orange: #ff8a2a;
+    --purple: #b06cff;
+    --sp: #7fe8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header .title { font-weight: 600; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .title small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  button, select, label.btn {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer;
+  }
+  button:hover, label.btn:hover, select:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; min-width: 84px; }
+  input[type=file] { display: none; }
+  .group { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .time { font-variant-numeric: tabular-nums; min-width: 110px; text-align: center; }
+  #timeline { display: block; width: 100%; height: 36px; background: var(--panel); border-bottom: 1px solid var(--line); cursor: pointer; }
+  #vocals { display: none; width: 100%; height: 130px; border-bottom: 1px solid var(--line); background: #11141b; }
+  #stage { flex: 1; display: flex; gap: 8px; padding: 8px; min-height: 0; overflow-x: auto; }
+  .lane-panel { flex: 1 1 0; min-width: 260px; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .lane-panel .bar { display: flex; gap: 6px; padding: 6px; align-items: center; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .lane-panel .bar select { padding: 3px 6px; }
+  .lane-panel .bar .stats { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .lane-panel canvas { flex: 1; width: 100%; min-height: 0; display: block; }
+  #mixer { display: none; position: absolute; top: 52px; right: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; z-index: 5; min-width: 200px; }
+  #mixer label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  #empty { position: absolute; inset: 120px 16px auto; text-align: center; color: var(--muted); pointer-events: none; }
+  #empty b { color: var(--text); }
+  body.dragging #stage { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .help { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title" id="title">Nenhuma música carregada</div>
+  <label class="btn">Abrir pasta<input type="file" id="pickFolder" webkitdirectory multiple></label>
+  <label class="btn" title="Carrega outra notes.mid / notes.chart (ex.: a oficial) para comparar lado a lado">Comparar com…<input type="file" id="pickCompare" accept=".mid,.midi,.chart"></label>
+  <button class="primary" id="play" disabled>▶ Tocar</button>
+  <span class="time" id="time">0:00.0 / 0:00</span>
+  <div class="group">Seção <select id="section"><option value="">—</option></select></div>
+  <div class="group">Velocidade <select id="speed"><option>0.5</option><option>0.75</option><option selected>1</option></select></div>
+  <div class="group">Pista <input type="range" id="hyper" min="0.8" max="3" step="0.1" value="1.6" title="Quantos segundos de notas aparecem na pista"></div>
+  <button id="mixerBtn">Áudio</button>
+  <button id="addLane">+ Pista</button>
+</header>
+<div id="mixer"></div>
+<canvas id="timeline"></canvas>
+<canvas id="vocals"></canvas>
+<div id="stage"></div>
+<div id="empty">Abra a pasta de uma música (com <b>notes.mid</b> ou <b>notes.chart</b> e os <b>.ogg</b>),<br>
+  ou arraste a pasta para cá. Atalhos: <b>espaço</b> toca/pausa, <b>← →</b> voltam/avançam 5 s.</div>
+
+<script>
+"use strict";
+// ======================================================================
+// Leitura de MIDI (Standard MIDI File) — só o que as charts usam.
+// ======================================================================
+function parseMidi(buf) {
+  const d = new DataView(buf);
+  let p = 0;
+  const str = (n) => { let s = ""; for (let i = 0; i < n; i++) s += String.fromCharCode(d.getUint8(p + i)); return s; };
+  const vlq = () => { let v = 0, b; do { b = d.getUint8(p++); v = (v << 7) | (b & 0x7f); } while (b & 0x80); return v; };
+  if (str(4) !== "MThd") throw new Error("não é um arquivo MIDI");
+  p += 8;
+  const nTracks = d.getUint16(p + 2), division = d.getUint16(p + 4);
+  p += 6;
+  const tracks = [];
+  for (let t = 0; t < nTracks && p < d.byteLength; t++) {
+    const id = str(4), len = d.getUint32(p + 4); p += 8;
+    const end = p + len;
+    if (id !== "MTrk") { p = end; continue; }
+    const events = []; let tick = 0, status = 0, name = "";
+    while (p < end) {
+      tick += vlq();
+      let b = d.getUint8(p);
+      if (b & 0x80) { status = b; p++; }
+      if (status === 0xff) {
+        const type = d.getUint8(p++); const l = vlq();
+        const bytes = new Uint8Array(buf, p, l); p += l;
+        if (type === 0x03 && !name) name = latin1(bytes);
+        else if (type === 0x51) events.push({ tick, kind: "tempo", us: (bytes[0] << 16) | (bytes[1] << 8) | bytes[2] });
+        else if (type === 0x58) events.push({ tick, kind: "ts", num: bytes[0], den: 1 << bytes[1] });
+        else if (type >= 0x01 && type <= 0x0f) events.push({ tick, kind: "text", text: latin1(bytes) });
+      } else if (status === 0xf0 || status === 0xf7) {
+        const l = vlq(); p += l;
+      } else {
+        const hi = status & 0xf0;
+        const a = d.getUint8(p++); const v = (hi === 0xc0 || hi === 0xd0) ? 0 : d.getUint8(p++);
+        if (hi === 0x90 && v > 0) events.push({ tick, kind: "on", note: a });
+        else if (hi === 0x80 || (hi === 0x90 && v === 0)) events.push({ tick, kind: "off", note: a });
+      }
+    }
+    p = end;
+    tracks.push({ name, events });
+  }
+  return { division, tracks };
+}
+function latin1(bytes) { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return s; }
+
+// Pares note on/off -> [{tick, len, note}]
+function notePairs(events, filter) {
+  const open = new Map(), out = [];
+  for (const e of events) {
+    if (e.kind !== "on" && e.kind !== "off") continue;
+    if (filter && !filter(e.note)) continue;
+    if (e.kind === "on") { if (!open.has(e.note)) open.set(e.note, e.tick); }
+    else if (open.has(e.note)) { const t = open.get(e.note); open.delete(e.note); out.push({ tick: t, len: e.tick - t, note: e.note }); }
+  }
+  return out.sort((a, b) => a.tick - b.tick);
+}
+
+// ======================================================================
+// Mapa de tempo: tick <-> segundos
+// ======================================================================
+class TempoMap {
+  constructor(resolution, tempos, sigs) {
+    this.res = resolution;
+    tempos = tempos.slice().sort((a, b) => a.tick - b.tick);
+    if (!tempos.length || tempos[0].tick > 0) tempos.unshift({ tick: 0, us: 500000 });
+    let sec = 0; this.points = [];
+    for (let i = 0; i < tempos.length; i++) {
+      if (i > 0) sec += (tempos[i].tick - tempos[i - 1].tick) / resolution * tempos[i - 1].us / 1e6;
+      this.points.push({ tick: tempos[i].tick, us: tempos[i].us, sec });
+    }
+    this.sigs = (sigs && sigs.length ? sigs : [{ tick: 0, num: 4, den: 4 }]).slice().sort((a, b) => a.tick - b.tick);
+  }
+  time(tick) {
+    let lo = 0, hi = this.points.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (this.points[m].tick <= tick) lo = m; else hi = m - 1; }
+    const q = this.points[lo];
+    return q.sec + (tick - q.tick) / this.res * q.us / 1e6;
+  }
+  // Linhas de batida e compasso até o instante `endTime` (s).
+  grid(endTime) {
+    const lines = [];
+    for (let s = 0; s < this.sigs.length; s++) {
+      const sig = this.sigs[s], stop = s + 1 < this.sigs.length ? this.sigs[s + 1].tick : Infinity;
+      const beat = this.res * 4 / sig.den;
+      for (let t = sig.tick, i = 0; t < stop; t += beat, i++) {
+        const time = this.time(t);
+        if (time > endTime) return lines;
+        lines.push({ time, measure: i % sig.num === 0 });
+      }
+    }
+    return lines;
+  }
+}
+
+// ======================================================================
+// Modelo da chart
+//   chart.tracks[instr][diff] = [{time, end, lanes, hopo, tap, sp, cym:Set, kick}]
+// ======================================================================
+const DIFFS = ["expert", "hard", "medium", "easy"];
+const DIFF_NAMES = { expert: "Expert", hard: "Hard", medium: "Medium", easy: "Easy" };
+const INSTR_NAMES = { guitar: "Guitarra", bass: "Baixo", rhythm: "Guitarra base", keys: "Teclado", drums: "Bateria", vocals: "Vocais" };
+const MIDI_TRACKS = { "PART GUITAR": "guitar", "T1 GEMS": "guitar", "PART BASS": "bass", "PART RHYTHM": "rhythm", "PART KEYS": "keys", "PART DRUMS": "drums", "PART VOCALS": "vocals" };
+const BASE = { easy: 60, medium: 72, hard: 84, expert: 96 };
+
+function fromMidi(buf, ini) {
+  const midi = parseMidi(buf);
+  const res = midi.division;
+  const tempos = [], sigs = [];
+  for (const e of midi.tracks[0]?.events || []) {
+    if (e.kind === "tempo") tempos.push(e);
+    if (e.kind === "ts") sigs.push(e);
+  }
+  const tm = new TempoMap(res, tempos, sigs);
+  const chart = { res, tm, tracks: {}, sections: [], vocals: null, endTime: 0 };
+  // Limite de HOPO automático (Clone Hero): 170 ticks a 480 por batida.
+  let hopoTicks = res * 170 / 480;
+  if (ini.eighthnote_hopo === "1" || ini.eighthnote_hopo === "true") hopoTicks = res / 2 + 1;
+  if (ini.hopo_frequency) hopoTicks = Number(ini.hopo_frequency) * res / 480;
+  for (const track of midi.tracks) {
+    if (track.name === "EVENTS") {
+      for (const e of track.events) {
+        if (e.kind !== "text") continue;
+        const m = e.text.match(/^\[(?:section|prc)[ _](.+)\]$/);
+        if (m) chart.sections.push({ time: tm.time(e.tick), name: m[1].replace(/_/g, " ") });
+        if (e.text === "[end]") chart.endTime = Math.max(chart.endTime, tm.time(e.tick));
+      }
+    }
+    const instr = MIDI_TRACKS[track.name];
+    if (!instr) continue;
+    if (instr === "vocals") { chart.vocals = midiVocals(track.events, tm); continue; }
+    if (chart.tracks[instr]) continue;
+    chart.tracks[instr] = instr === "drums" ? midiDrums(track.events, tm, /^(1|true)$/i.test(ini.pro_drums || "")) : midiFrets(track.events, tm, res, hopoTicks);
+  }
+  return chart;
+}
+
+function rangesOf(pairs) { return pairs.map(p => [p.tick, p.tick + Math.max(p.len, 1)]); }
+function inRanges(ranges, tick) { return ranges.some(([a, b]) => tick >= a && tick < b); }
+
+function midiFrets(events, tm, res, hopoTicks) {
+  const pairs = notePairs(events);
+  const sp = rangesOf(pairs.filter(p => p.note === 116));
+  const tap = rangesOf(pairs.filter(p => p.note === 104));
+  const out = {};
+  for (const diff of DIFFS) {
+    const base = BASE[diff];
+    const forceHopo = rangesOf(pairs.filter(p => p.note === base + 5));
+    const forceStrum = rangesOf(pairs.filter(p => p.note === base + 6));
+    const byTick = new Map();
+    for (const p of pairs) {
+      const lane = p.note - base;
+      if (lane < 0 || lane > 4) continue;
+      const n = byTick.get(p.tick) || { tick: p.tick, lanes: [], len: 0 };
+      n.lanes.push(lane); n.len = Math.max(n.len, p.len);
+      byTick.set(p.tick, n);
+    }
+    const notes = [...byTick.values()].sort((a, b) => a.tick - b.tick);
+    let prev = null;
+    out[diff] = notes.map(n => {
+      n.lanes.sort();
+      let hopo = prev !== null && n.lanes.length === 1 && n.tick - prev.tick <= hopoTicks && !prev.lanes.includes(n.lanes[0]);
+      if (inRanges(forceHopo, n.tick)) hopo = true;
+      if (inRanges(forceStrum, n.tick)) hopo = false;
+      prev = n;
+      const sustain = n.len > res / 3;
+      return { time: tm.time(n.tick), end: sustain ? tm.time(n.tick + n.len) : null, lanes: n.lanes, hopo,
+               tap: inRanges(tap, n.tick), sp: inRanges(sp, n.tick) };
+    });
+  }
+  return out;
+}
+
+// Pro drums (song.ini pro_drums, ou marcadores 110-112 presentes): amarelo, azul e
+// verde são PRATOS, a não ser dentro de um marcador de tom. Sem pro drums, tudo é tom.
+function midiDrums(events, tm, proFlag) {
+  const pairs = notePairs(events);
+  const sp = rangesOf(pairs.filter(p => p.note === 116));
+  const toms = { 2: rangesOf(pairs.filter(p => p.note === 110)), 3: rangesOf(pairs.filter(p => p.note === 111)), 4: rangesOf(pairs.filter(p => p.note === 112)) };
+  const pro = proFlag || Object.values(toms).some(r => r.length);
+  const out = {};
+  for (const diff of DIFFS) {
+    const base = BASE[diff];
+    const byTick = new Map();
+    for (const p of pairs) {
+      let lane = p.note - base;
+      if (diff === "expert" && p.note === 95) lane = 0;   // bumbo duplo (Expert+)
+      if (lane < 0 || lane > 5) continue;
+      const n = byTick.get(p.tick) || { tick: p.tick, lanes: [] };
+      if (!n.lanes.includes(lane)) n.lanes.push(lane);
+      byTick.set(p.tick, n);
+    }
+    out[diff] = [...byTick.values()].sort((a, b) => a.tick - b.tick).map(n => {
+      const cym = new Set();
+      for (const lane of n.lanes) if (pro && lane >= 2 && lane <= 4 && !inRanges(toms[lane], n.tick)) cym.add(lane);
+      return { time: tm.time(n.tick), end: null, lanes: n.lanes.sort(), cym, sp: inRanges(sp, n.tick) };
+    });
+  }
+  return out;
+}
+
+function midiVocals(events, tm) {
+  const pairs = notePairs(events);
+  const lyrics = events.filter(e => e.kind === "text" && !e.text.startsWith("["));
+  const lyricAt = new Map(lyrics.map(e => [e.tick, e.text]));
+  const notes = pairs.filter(p => p.note >= 36 && p.note <= 84).map(p => ({
+    time: tm.time(p.tick), end: tm.time(p.tick + p.len), pitch: p.note, lyric: lyricAt.get(p.tick) ?? "",
+  }));
+  const used = new Set(pairs.map(p => p.tick));
+  const spoken = lyrics.filter(e => !used.has(e.tick)).map(e => ({ time: tm.time(e.tick), lyric: e.text }));
+  const phrases = pairs.filter(p => p.note === 105 || p.note === 106).map(p => ({ time: tm.time(p.tick), end: tm.time(p.tick + p.len) }));
+  return { notes, spoken, phrases };
+}
+
+// ======================================================================
+// Leitura de .chart (formato de texto do Clone Hero / Moonscraper)
+// ======================================================================
+const CHART_SECTIONS = { Single: "guitar", DoubleBass: "bass", DoubleRhythm: "rhythm", Keyboard: "keys", Drums: "drums" };
+function fromChart(text) {
+  const blocks = {};
+  for (const m of text.matchAll(/\[([^\]]+)\]\s*\{([^}]*)\}/g)) blocks[m[1]] = m[2].split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const song = {};
+  for (const l of blocks.Song || []) { const m = l.match(/^(\w+)\s*=\s*"?(.*?)"?$/); if (m) song[m[1]] = m[2]; }
+  const res = Number(song.Resolution || 192);
+  const tempos = [], sigs = [];
+  for (const l of blocks.SyncTrack || []) {
+    const m = l.match(/^(\d+)\s*=\s*(B|TS)\s+(\d+)(?:\s+(\d+))?/);
+    if (!m) continue;
+    if (m[2] === "B") tempos.push({ tick: +m[1], us: 60e9 / Number(m[3]) });
+    else sigs.push({ tick: +m[1], num: +m[3], den: m[4] ? 1 << Number(m[4]) : 4 });
+  }
+  const tm = new TempoMap(res, tempos, sigs);
+  const offset = Number(song.Offset || 0);
+  const chart = { res, tm, tracks: {}, sections: [], vocals: null, endTime: 0, offset };
+  for (const l of blocks.Events || []) {
+    const m = l.match(/^(\d+)\s*=\s*E\s+"?\[?section\s+([^"\]]+)/);
+    if (m) chart.sections.push({ time: tm.time(+m[1]), name: m[2] });
+  }
+  const hopoTicks = res * 65 / 192;
+  for (const [name, lines] of Object.entries(blocks)) {
+    const m = name.match(/^(Expert|Hard|Medium|Easy)(\w+)$/);
+    if (!m || !CHART_SECTIONS[m[2]]) continue;
+    const diff = m[1].toLowerCase(), instr = CHART_SECTIONS[m[2]];
+    const drums = instr === "drums";
+    const byTick = new Map(), sp = [];
+    for (const l of lines) {
+      const e = l.match(/^(\d+)\s*=\s*([NS])\s+(\d+)\s+(\d+)/);
+      if (!e) continue;
+      const tick = +e[1], a = +e[3], len = +e[4];
+      if (e[2] === "S") { if (a === 2) sp.push([tick, tick + len]); continue; }
+      const n = byTick.get(tick) || { tick, lanes: [], len: 0, flags: new Set() };
+      if (drums) {
+        if (a <= 5) n.lanes.push(a); else if (a === 32) n.lanes.push(0); else if (a >= 66 && a <= 68) n.flags.add(a - 64);
+      } else {
+        if (a <= 4) { n.lanes.push(a); n.len = Math.max(n.len, len); }
+        else if (a === 5) n.flags.add("force"); else if (a === 6) n.flags.add("tap"); else if (a === 7) { n.open = true; n.len = Math.max(n.len, len); }
+      }
+      byTick.set(tick, n);
+    }
+    const notes = [...byTick.values()].filter(n => n.lanes.length || n.open).sort((a, b) => a.tick - b.tick);
+    let prev = null;
+    const list = notes.map(n => {
+      n.lanes = [...new Set(n.lanes)].sort();
+      if (drums) return { time: tm.time(n.tick), end: null, lanes: n.lanes, cym: new Set([...n.flags].filter(x => n.lanes.includes(x))), sp: inRanges(sp, n.tick) };
+      let hopo = prev !== null && n.lanes.length === 1 && n.tick - prev.tick <= hopoTicks && !prev.lanes.includes(n.lanes[0]);
+      if (n.flags.has("force")) hopo = !hopo;
+      prev = n;
+      return { time: tm.time(n.tick), end: n.len > res / 3 ? tm.time(n.tick + n.len) : null, lanes: n.lanes, open: !!n.open,
+               hopo, tap: n.flags.has("tap"), sp: inRanges(sp, n.tick) };
+    });
+    (chart.tracks[instr] ||= {})[diff] = list;
+  }
+  return chart;
+}
+
+function parseIni(text) {
+  const ini = {};
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*([^=;\[]+?)\s*=\s*(.*?)\s*$/);
+    if (m) ini[m[1].toLowerCase()] = m[2];
+  }
+  return ini;
+}
+
+function finishChart(chart, ini) {
+  // song.ini "delay" (ms) e "Offset" do .chart: o tempo 0 da chart cai nesse ponto do áudio.
+  chart.audioOffset = (Number(ini.delay || 0) / 1000) + (chart.offset || 0);
+  let last = chart.endTime;
+  for (const diffs of Object.values(chart.tracks)) for (const notes of Object.values(diffs)) for (const n of notes) last = Math.max(last, n.end ?? n.time);
+  for (const v of chart.vocals?.notes || []) last = Math.max(last, v.end);
+  chart.endTime = last;
+  chart.grid = chart.tm.grid(last + 4);
+  return chart;
+}
+
+// ======================================================================
+// Áudio: vários stems tocando juntos, com mute por stem
+// ======================================================================
+const STEM_NAMES = { song: "Música (resto)", guitar: "Guitarra", bass: "Baixo", rhythm: "Guitarra base", keys: "Teclado", drums: "Bateria",
+                     drums_1: "Bateria 1", drums_2: "Bateria 2", drums_3: "Bateria 3", drums_4: "Bateria 4", vocals: "Voz", vocals_1: "Voz 1", vocals_2: "Voz 2", crowd: "Público" };
+const player = {
+  ctx: null, stems: [], sources: [], playing: false, startCtx: 0, startPos: 0, rate: 1, duration: 0,
+  get position() { return this.playing ? this.startPos + (this.ctx.currentTime - this.startCtx) * this.rate : this.startPos; },
+  async load(files) {
+    this.stop();
+    this.ctx ||= new AudioContext();
+    this.stems = [];
+    for (const [name, getBuffer] of files) {
+      try {
+        const audio = await this.ctx.decodeAudioData(await getBuffer());
+        const gain = this.ctx.createGain(); gain.connect(this.ctx.destination);
+        this.stems.push({ name, audio, gain, muted: false });
+      } catch (err) { console.warn("não consegui abrir", name, err); }
+    }
+    this.duration = Math.max(0, ...this.stems.map(s => s.audio.duration));
+  },
+  play() {
+    if (this.playing) return;
+    this.ctx.resume();
+    const when = this.ctx.currentTime + 0.05;
+    this.sources = this.stems.map(s => {
+      const src = this.ctx.createBufferSource();
+      src.buffer = s.audio; src.playbackRate.value = this.rate; src.connect(s.gain);
+      if (this.startPos < s.audio.duration) src.start(when, Math.max(0, this.startPos));
+      return src;
+    });
+    this.startCtx = when; this.playing = true;
+  },
+  pause() { if (!this.playing) return; this.startPos = this.position; this.stop(); },
+  stop() { for (const s of this.sources) { try { s.stop(); } catch {} } this.sources = []; this.playing = false; },
+  seek(t) { const was = this.playing; this.pause(); this.startPos = Math.max(0, t); if (was) this.play(); },
+  setRate(r) { const was = this.playing; this.pause(); this.rate = r; if (was) this.play(); },
+};
+// Sem áudio, o relógio anda sozinho.
+const clock = {
+  playing: false, startPos: 0, startReal: 0, rate: 1,
+  get position() { return this.playing ? this.startPos + (performance.now() - this.startReal) / 1000 * this.rate : this.startPos; },
+  play() { this.startReal = performance.now(); this.playing = true; },
+  pause() { this.startPos = this.position; this.playing = false; },
+  seek(t) { this.startPos = Math.max(0, t); this.startReal = performance.now(); },
+  setRate(r) { this.pause(); this.rate = r; },
+};
+const timeSource = () => (player.stems.length ? player : clock);
+
+// ======================================================================
+// Estado da página
+// ======================================================================
+const state = { charts: [], title: "", lanes: [] };   // charts: [{label, chart}]
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const FRET_COLORS = () => [css("--green"), css("--red"), css("--yellow"), css("--blue"), css("--orange")];
+// Bateria: lane 0 = bumbo; as outras são as peças, da esquerda para a direita.
+// 4 peças (Rock Band / YARG): vermelho, amarelo, azul, verde. 5 peças (Guitar Hero): ... laranja, verde.
+const PAD_COLORS = (n) => n === 4 ? [css("--red"), css("--yellow"), css("--blue"), css("--green")]
+                                  : [css("--red"), css("--yellow"), css("--blue"), css("--orange"), css("--green")];
+
+async function loadSong(fileMap) {
+  // fileMap: Map(nome em minúsculas -> {name, read: () => Promise<ArrayBuffer>})
+  const iniFile = fileMap.get("song.ini");
+  const ini = iniFile ? parseIni(new TextDecoder("utf-8").decode(await iniFile.read())) : {};
+  const chartFile = fileMap.get("notes.mid") || fileMap.get("notes.chart");
+  if (!chartFile) { alert("A pasta não tem notes.mid nem notes.chart."); return; }
+  const chart = await readChartFile(chartFile, ini);
+  state.charts = [{ label: "Esta chart", chart }];
+  state.title = ini.name ? `${ini.name}<small>${ini.artist || ""}${ini.charter ? " · chart: " + ini.charter.replace(/<[^>]*>/g, "") : ""}</small>` : chartFile.name;
+  $("title").innerHTML = state.title;
+  const stems = [];
+  for (const [key, f] of fileMap) {
+    const m = key.match(/^(.+)\.(ogg|opus|mp3|wav|flac)$/);
+    if (m && m[1] !== "preview") stems.push([m[1], f.read]);
+  }
+  $("title").innerHTML = state.title + "<small>carregando áudio…</small>";
+  await player.load(stems);
+  $("title").innerHTML = state.title;
+  player.startPos = 0; clock.startPos = 0;
+  buildMixer(); buildSections(); resetLanes(); $("play").disabled = false;
+  $("empty").style.display = "none";
+}
+
+async function readChartFile(file, ini) {
+  const buf = await file.read();
+  const chart = file.name.toLowerCase().endsWith(".chart") ? fromChart(new TextDecoder("utf-8").decode(buf)) : fromMidi(buf, ini);
+  return finishChart(chart, ini);
+}
+
+function buildMixer() {
+  const box = $("mixer");
+  box.innerHTML = player.stems.length ? "" : '<span class="help">Sem áudio: as notas andam sozinhas.</span>';
+  for (const s of player.stems) {
+    const row = document.createElement("label");
+    row.innerHTML = `<input type="checkbox" checked> ${STEM_NAMES[s.name] || s.name}`;
+    row.querySelector("input").onchange = (e) => { s.muted = !e.target.checked; s.gain.gain.value = s.muted ? 0 : 1; };
+    box.appendChild(row);
+  }
+}
+
+function buildSections() {
+  const sel = $("section");
+  sel.innerHTML = '<option value="">—</option>';
+  for (const s of state.charts[0].chart.sections) {
+    const o = document.createElement("option"); o.value = s.time; o.textContent = `${fmt(s.time)}  ${s.name}`; sel.appendChild(o);
+  }
+}
+
+function availableTracks(chart) {
+  const list = [];
+  for (const instr of ["guitar", "bass", "rhythm", "keys", "drums"]) {
+    const diffs = chart.tracks[instr];
+    if (!diffs) continue;
+    for (const d of DIFFS) if (diffs[d]?.length) list.push([instr, d]);
+  }
+  return list;
+}
+
+function resetLanes() {
+  $("stage").innerHTML = ""; state.lanes = [];
+  const tracks = availableTracks(state.charts[0].chart);
+  const first = tracks.find(([i, d]) => i === "guitar" && d === "expert") || tracks[0];
+  if (first) addLane(0, ...first);
+  $("vocals").style.display = state.charts[0].chart.vocals?.notes.length ? "block" : "none";
+}
+
+function addLane(chartIndex = 0, instr, diff) {
+  const panel = document.createElement("div"); panel.className = "lane-panel";
+  panel.innerHTML = `<div class="bar"><select class="src"></select><select class="instr"></select><select class="diff"></select>
+    <span class="stats"></span><button class="close" title="Fechar pista">✕</button></div><canvas></canvas>`;
+  const lane = { panel, canvas: panel.querySelector("canvas"), chartIndex, instr, diff, flash: new Map() };
+  const src = panel.querySelector(".src"), selI = panel.querySelector(".instr"), selD = panel.querySelector(".diff");
+  const fill = () => {
+    src.innerHTML = state.charts.map((c, i) => `<option value="${i}">${c.label}</option>`).join("");
+    src.value = lane.chartIndex;
+    const tracks = availableTracks(state.charts[lane.chartIndex].chart);
+    const instrs = [...new Set(tracks.map(t => t[0]))];
+    if (!instrs.includes(lane.instr)) lane.instr = instrs[0];
+    selI.innerHTML = instrs.map(i => `<option value="${i}">${INSTR_NAMES[i]}</option>`).join("");
+    selI.value = lane.instr;
+    const diffs = tracks.filter(t => t[0] === lane.instr).map(t => t[1]);
+    if (!diffs.includes(lane.diff)) lane.diff = diffs[0];
+    selD.innerHTML = diffs.map(d => `<option value="${d}">${DIFF_NAMES[d]}</option>`).join("");
+    selD.value = lane.diff;
+    const notes = state.charts[lane.chartIndex].chart.tracks[lane.instr]?.[lane.diff] || [];
+    panel.querySelector(".stats").textContent = `${notes.length} notas`;
+  };
+  lane.fill = fill;
+  src.onchange = () => { lane.chartIndex = +src.value; fill(); };
+  selI.onchange = () => { lane.instr = selI.value; fill(); };
+  selD.onchange = () => { lane.diff = selD.value; fill(); };
+  panel.querySelector(".close").onclick = () => { panel.remove(); state.lanes = state.lanes.filter(l => l !== lane); };
+  fill();
+  $("stage").appendChild(panel); state.lanes.push(lane);
+}
+
+// ======================================================================
+// Desenho da pista (estilo Clone Hero / YARG)
+// ======================================================================
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, canvas.clientWidth), h = Math.max(1, canvas.clientHeight);
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  const g = canvas.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [g, w, h];
+}
+
+function drawLane(lane, now, lookahead) {
+  const [g, W, H] = fitCanvas(lane.canvas);
+  const chart = state.charts[lane.chartIndex].chart;
+  const notes = chart.tracks[lane.instr]?.[lane.diff] || [];
+  const drums = lane.instr === "drums";
+  const nLanes = drums ? (notes.some(n => n.lanes.includes(5)) ? 5 : 4) : 5;
+  const t = now - chart.audioOffset;
+  g.clearRect(0, 0, W, H);
+
+  // Perspectiva: profundidade z (0 = linha de toque, 1 = horizonte visível).
+  const strikeY = H * 0.88, topY = H * 0.04, K = 1.4;
+  const bottomW = Math.min(W * 0.92, H * 0.75);
+  const scale = (z) => 1 / (1 + K * z);
+  const yOf = (z) => strikeY - (strikeY - topY) * (1 - scale(z)) / (1 - scale(1));
+  const halfW = (z) => bottomW / 2 * scale(z);
+  const cx = W / 2;
+  const zOf = (time) => (time - t) / lookahead;
+  const laneX = (laneIdx, z) => cx - halfW(z) + (laneIdx + 0.5) * (2 * halfW(z) / nLanes);
+
+  // Fundo da pista
+  g.fillStyle = "#0b0d12";
+  g.beginPath(); g.moveTo(cx - halfW(0), strikeY + 30); g.lineTo(cx - halfW(1), topY); g.lineTo(cx + halfW(1), topY); g.lineTo(cx + halfW(0), strikeY + 30); g.closePath(); g.fill();
+  g.strokeStyle = "#232a36"; g.lineWidth = 1;
+  for (let i = 0; i <= nLanes; i++) {
+    const x0 = cx - halfW(0) + i * 2 * halfW(0) / nLanes, x1 = cx - halfW(1) + i * 2 * halfW(1) / nLanes;
+    g.beginPath(); g.moveTo(x0, strikeY + 30); g.lineTo(x1, topY); g.stroke();
+  }
+  // Batidas, compassos e seções
+  for (const line of chart.grid) {
+    const z = zOf(line.time);
+    if (z < -0.05 || z > 1) continue;
+    g.strokeStyle = line.measure ? "#4a5468" : "#262d3a"; g.lineWidth = line.measure ? 2 : 1;
+    g.beginPath(); g.moveTo(cx - halfW(z), yOf(z)); g.lineTo(cx + halfW(z), yOf(z)); g.stroke();
+  }
+  g.font = "600 12px system-ui"; g.textAlign = "left";
+  for (const s of chart.sections) {
+    const z = zOf(s.time);
+    if (z < 0 || z > 1) continue;
+    g.fillStyle = "#c9d3e6"; g.fillText(s.name, cx + halfW(z) + 6, yOf(z) + 4);
+  }
+
+  // Linha de toque
+  const colors = drums ? PAD_COLORS(nLanes) : FRET_COLORS();
+  const gemR = Math.min(2 * halfW(0) / nLanes * 0.34, 26);
+  const flashUntil = (k) => (lane.flash.get(k) || 0) > now;
+  for (let i = 0; i < nLanes; i++) {
+    const x = laneX(i, 0);
+    g.lineWidth = 3; g.strokeStyle = colors[i];
+    g.fillStyle = flashUntil(i) ? g.strokeStyle : "#11151c";
+    g.beginPath(); g.ellipse(x, strikeY, gemR, gemR * 0.55, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+  }
+  if (drums) {
+    g.fillStyle = flashUntil("kick") ? css("--orange") : "rgba(255,138,42,0.25)";
+    g.fillRect(cx - halfW(0), strikeY + gemR * 0.75, 2 * halfW(0), 4);
+  }
+
+  // Notas (de trás para frente, para as de perto ficarem por cima)
+  const visible = [];
+  for (const n of notes) {
+    if ((n.end ?? n.time) < t - 0.05) continue;
+    if (n.time > t + lookahead) break;
+    visible.push(n);
+  }
+  // Sustains primeiro
+  for (const n of visible) {
+    if (!n.end || drums) continue;
+    const z0 = Math.max(0, zOf(n.time)), z1 = Math.min(1, zOf(n.end));
+    if (z1 <= z0) continue;
+    const lanesToDraw = n.open ? [] : n.lanes;
+    for (const ln of lanesToDraw) {
+      const w0 = gemR * 0.28 * scale(z0) / scale(0) * 1.4, w1 = gemR * 0.28 * scale(z1) / scale(0) * 1.4;
+      g.fillStyle = n.sp ? css("--sp") : colors[ln];
+      g.globalAlpha = 0.75;
+      g.beginPath();
+      g.moveTo(laneX(ln, z0) - w0, yOf(z0)); g.lineTo(laneX(ln, z1) - w1, yOf(z1));
+      g.lineTo(laneX(ln, z1) + w1, yOf(z1)); g.lineTo(laneX(ln, z0) + w0, yOf(z0)); g.closePath(); g.fill();
+      g.globalAlpha = 1;
+    }
+  }
+  for (let k = visible.length - 1; k >= 0; k--) {
+    const n = visible[k];
+    const z = zOf(n.time);
+    if (z < -0.04) continue;
+    const s = scale(Math.max(z, 0)) / scale(0);
+    const y = yOf(z);
+    if (Math.abs(n.time - t) < 0.035) for (const ln of n.lanes) lane.flash.set(drums && ln === 0 ? "kick" : (drums ? ln - 1 : ln), now + 0.08);
+    if (n.open) {
+      g.fillStyle = n.sp ? css("--sp") : css("--purple");
+      g.fillRect(cx - halfW(z) * 0.95, y - 4 * s, 2 * halfW(z) * 0.95, 8 * s);
+      continue;
+    }
+    for (const ln of n.lanes) {
+      if (drums && ln === 0) {   // bumbo: barra atravessando a pista
+        g.fillStyle = n.sp ? css("--sp") : css("--orange");
+        g.fillRect(cx - halfW(z) * 0.96, y - 3 * s, 2 * halfW(z) * 0.96, 6 * s);
+        continue;
+      }
+      const idx = drums ? ln - 1 : ln;
+      const x = laneX(idx, z), r = gemR * s;
+      const color = n.sp ? css("--sp") : colors[idx];
+      if (drums && n.cym?.has(ln)) {          // prato: losango achatado
+        g.fillStyle = color; g.strokeStyle = "#fff"; g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(x - r, y); g.lineTo(x, y - r * 0.5); g.lineTo(x + r, y); g.lineTo(x, y + r * 0.5); g.closePath(); g.fill(); g.stroke();
+        continue;
+      }
+      // Nota: palhetada = cheia com borda; HOPO = menor com miolo branco; tap = miolo escuro
+      const rr = n.hopo || n.tap ? r * 0.82 : r;
+      g.fillStyle = color; g.strokeStyle = "rgba(0,0,0,0.6)"; g.lineWidth = 2;
+      g.beginPath(); g.ellipse(x, y, rr, rr * 0.55, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+      if (n.hopo || n.tap) {
+        g.fillStyle = n.tap ? "#111" : "#fff";
+        g.beginPath(); g.ellipse(x, y, rr * 0.45, rr * 0.25, 0, 0, Math.PI * 2); g.fill();
+      } else {
+        g.fillStyle = "rgba(255,255,255,0.35)";
+        g.beginPath(); g.ellipse(x, y - rr * 0.12, rr * 0.55, rr * 0.2, 0, 0, Math.PI * 2); g.fill();
+      }
+    }
+  }
+}
+
+// Vocais: faixa horizontal com a afinação (como no Rock Band / YARG)
+function drawVocals(now) {
+  const canvas = $("vocals");
+  if (!state.charts.length || canvas.style.display !== "block") return;
+  const [g, W, H] = fitCanvas(canvas);
+  g.clearRect(0, 0, W, H);
+  const chart = state.charts[0].chart, voc = chart.vocals;
+  if (!voc) return;
+  const t = now - chart.audioOffset;
+  const span = 6, nowX = W * 0.22;
+  const xOf = (time) => nowX + (time - t) / span * (W - nowX) * 1.25;
+  const pitches = voc.notes.map(n => n.pitch);
+  const lo = Math.min(...pitches) - 2, hi = Math.max(...pitches) + 2;
+  const lyricH = 34;
+  const yOf = (p) => 8 + (hi - p) / (hi - lo) * (H - lyricH - 16);
+  for (const ph of voc.phrases) {
+    const x = xOf(ph.time);
+    if (x > -10 && x < W) { g.strokeStyle = "#2b3240"; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H - lyricH); g.stroke(); }
+  }
+  g.strokeStyle = "#6c7a93"; g.lineWidth = 2; g.beginPath(); g.moveTo(nowX, 0); g.lineTo(nowX, H - lyricH); g.stroke();
+  for (const n of voc.notes) {
+    const x0 = xOf(n.time), x1 = xOf(n.end);
+    if (x1 < 0 || x0 > W) continue;
+    const talkie = /[#^]/.test(n.lyric);
+    const active = n.time <= t && t < n.end;
+    g.fillStyle = talkie ? "#8b93a5" : active ? "#a8f0ff" : css("--sp");
+    g.globalAlpha = n.end < t ? 0.35 : 1;
+    const y = yOf(n.pitch);
+    g.beginPath(); g.roundRect(x0, y - 4, Math.max(4, x1 - x0), 8, 4); g.fill();
+    g.globalAlpha = 1;
+  }
+  // Linha da letra: a frase atual, com as sílabas já cantadas destacadas
+  const phrase = voc.phrases.find(ph => ph.time <= t + 0.3 && t < ph.end + 0.3) || voc.phrases.find(ph => ph.time > t);
+  if (!phrase) return;
+  const parts = [...voc.notes.map(n => ({ time: n.time, lyric: n.lyric })), ...voc.spoken]
+    .filter(p => p.time >= phrase.time - 0.01 && p.time < phrase.end).sort((a, b) => a.time - b.time);
+  let x = 16; g.font = "600 17px system-ui"; g.textBaseline = "middle";
+  for (const p of parts) {
+    let txt = p.lyric.replace(/[#^$]/g, "");
+    if (txt === "+" || txt === "") continue;
+    const joins = txt.endsWith("-") || txt.endsWith("=");
+    txt = txt.replace(/[-=]$/, (m) => (m === "=" ? "-" : "")).replace(/\+/g, "");
+    g.fillStyle = p.time <= t ? css("--sp") : "#e8ebf1";
+    g.fillText(txt, x, H - lyricH / 2);
+    x += g.measureText(txt).width + (joins ? 0 : 7);
+  }
+}
+
+// Linha do tempo: seções, densidade de notas e posição atual
+function drawTimeline(now) {
+  const [g, W, H] = fitCanvas($("timeline"));
+  g.clearRect(0, 0, W, H);
+  const chart = state.charts[0]?.chart;
+  const total = Math.max(player.duration, chart?.endTime || 0, 1);
+  if (chart) {
+    const lane = state.lanes[0];
+    const notes = lane ? state.charts[lane.chartIndex].chart.tracks[lane.instr]?.[lane.diff] || [] : [];
+    const bins = new Array(Math.max(1, Math.floor(W / 3))).fill(0);
+    for (const n of notes) bins[Math.min(bins.length - 1, Math.floor((n.time + chart.audioOffset) / total * bins.length))]++;
+    const peak = Math.max(1, ...bins);
+    g.fillStyle = "#2c3a52";
+    bins.forEach((v, i) => { const h = v / peak * (H - 14); g.fillRect(i * 3, H - h, 2, h); });
+    g.font = "11px system-ui"; g.fillStyle = "#8b93a5"; g.textBaseline = "top";
+    for (const s of chart.sections) {
+      const x = (s.time + chart.audioOffset) / total * W;
+      g.fillRect(x, 0, 1, H); g.fillText(s.name, x + 3, 2);
+    }
+  }
+  g.fillStyle = css("--accent"); g.fillRect(now / total * W - 1, 0, 2, H);
+}
+
+const fmt = (s) => { s = Math.max(0, s); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; };
+
+function frame() {
+  requestAnimationFrame(frame);   // agenda já: um erro num quadro não para a animação
+  const src = timeSource();
+  let now = src.position;
+  const total = Math.max(player.duration, state.charts[0]?.chart.endTime || 0);
+  if (src.playing && total && now > total + 1) { togglePlay(); src.seek(0); now = 0; }
+  const lookahead = 1 / Number($("hyper").value) * 2.6;
+  for (const lane of state.lanes) drawLane(lane, now, lookahead);
+  drawVocals(now);
+  drawTimeline(now);
+  $("time").textContent = `${fmt(now)} / ${fmt(total)}`;
+}
+
+function togglePlay() {
+  const src = timeSource();
+  if (!state.charts.length) return;
+  if (src.playing) src.pause(); else src.play();
+  $("play").textContent = src.playing ? "❚❚ Pausar" : "▶ Tocar";
+}
+
+// ======================================================================
+// Entrada: escolher pasta, arrastar, ou servidor local (ai-charter-view)
+// ======================================================================
+function mapFromFileList(files) {
+  const map = new Map();
+  for (const f of files) map.set(f.name.toLowerCase(), { name: f.name, read: () => f.arrayBuffer() });
+  return map;
+}
+$("pickFolder").onchange = (e) => e.target.files.length && loadSong(mapFromFileList(e.target.files));
+$("pickCompare").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f || !state.charts.length) { if (f) alert("Abra a música primeiro."); return; }
+  const chart = await readChartFile({ name: f.name, read: () => f.arrayBuffer() }, {});
+  state.charts.push({ label: f.name, chart });
+  for (const l of state.lanes) l.fill();
+  const first = state.lanes[0];
+  addLane(state.charts.length - 1, first?.instr, first?.diff);
+};
+document.addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("dragging"); });
+document.addEventListener("dragleave", () => document.body.classList.remove("dragging"));
+document.addEventListener("drop", async (e) => {
+  e.preventDefault(); document.body.classList.remove("dragging");
+  const files = [];
+  const walk = (entry) => new Promise((resolve) => {
+    if (entry.isFile) entry.file((f) => { files.push(f); resolve(); }, resolve);
+    else if (entry.isDirectory) entry.createReader().readEntries(async (list) => { for (const x of list) await walk(x); resolve(); }, resolve);
+    else resolve();
+  });
+  for (const item of e.dataTransfer.items) { const entry = item.webkitGetAsEntry?.(); if (entry) await walk(entry); }
+  if (files.length) loadSong(mapFromFileList(files));
+});
+$("play").onclick = togglePlay;
+$("addLane").onclick = () => { if (state.charts.length) { const l = state.lanes[state.lanes.length - 1]; addLane(l?.chartIndex || 0, l?.instr, l?.diff); } };
+$("mixerBtn").onclick = () => { const m = $("mixer"); m.style.display = m.style.display === "block" ? "none" : "block"; };
+$("speed").onchange = (e) => { player.setRate(+e.target.value); clock.setRate(+e.target.value); if (!timeSource().playing) $("play").textContent = "▶ Tocar"; };
+$("section").onchange = (e) => { if (e.target.value !== "") timeSource().seek(+e.target.value + (state.charts[0]?.chart.audioOffset || 0) - 1); };
+$("timeline").onclick = (e) => {
+  const r = e.target.getBoundingClientRect();
+  const total = Math.max(player.duration, state.charts[0]?.chart.endTime || 0);
+  if (total) timeSource().seek((e.clientX - r.left) / r.width * total);
+};
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
+  if (e.code === "ArrowLeft") timeSource().seek(timeSource().position - 5);
+  if (e.code === "ArrowRight") timeSource().seek(timeSource().position + 5);
+});
+
+// Aberto pelo `ai-charter-view`: a pasta da música é servida em song/
+(async () => {
+  if (location.protocol === "file:") return;   // aberto como arquivo: usa o botão "Abrir pasta"
+  try {
+    const res = await fetch("song/__files__");
+    if (!res.ok) return;
+    const names = await res.json();
+    const map = new Map();
+    for (const name of names) map.set(name.toLowerCase(), { name, read: () => fetch("song/" + encodeURIComponent(name)).then(r => r.arrayBuffer()) });
+    await loadSong(map);
+    const cmp = await fetch("compare/__file__");
+    if (cmp.ok) {
+      const name = await cmp.text();
+      const chart = await readChartFile({ name, read: () => fetch("compare/" + encodeURIComponent(name)).then(r => r.arrayBuffer()) }, {});
+      state.charts.push({ label: name, chart });
+      for (const l of state.lanes) l.fill();
+      addLane(1, state.lanes[0]?.instr, state.lanes[0]?.diff);
+    }
+  } catch { /* aberto como arquivo: usa o botão "Abrir pasta" */ }
+})();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

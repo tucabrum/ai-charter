@@ -33,15 +33,22 @@ class GeneralRules:
 class PitchedDetection:
     fmin: str
     octaves: int
+    onset_method: str
     onset_delta: float
     min_rms_db: float
     chord_ratio: float
     release_ratio: float
     lane_window: int
     recognize_chords: bool
+    chord_fifth_ratio: float
+    chord_third_ratio: float
+    chord_smoothing: int
     chord_change_margin: float
     power_chord_third_margin: float
     power_chord_notes: int
+    chord_notes: int
+    accent_chord_notes: int
+    accent_min_beats: float
 
 
 @dataclass
@@ -85,6 +92,7 @@ class VocalRules:
     pitch_split_semitones: float
     min_note_seconds: float
     phrase_gap_beats: float
+    sung_min_ratio: float
     language: str
     whisper_model: str
 

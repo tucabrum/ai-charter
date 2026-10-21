@@ -26,41 +26,62 @@ section_seconds = 25.0         # tamanho médio desejado de cada seção
 [detection.guitar]
 fmin = "E2"            # nota mais grave procurada
 octaves = 5            # quantas oitavas acima de fmin analisar
+onset_method = "both"  # como achar ataques: "energy" (estalo), "pitch" (troca de nota) ou "both"
 onset_delta = 0.04     # sensibilidade dos ataques (menor = detecta mais notas)
 min_rms_db = -35.0     # ignora ataques mais baixos que isso (ruído / vazamento)
 chord_ratio = 0.65     # quão forte a 2ª nota precisa ser para virar acorde (0-1)
 release_ratio = 0.35   # a nota "acaba" quando o volume cai abaixo disso × pico
 lane_window = 8        # nº de notas vizinhas usadas para decidir a lane pelo contorno
 recognize_chords = true      # reconhece acordes (C, Am, G5...) pelo conjunto de notas que soam
+chord_fifth_ratio = 0.3      # acorde se a quinta (+7) soa com pelo menos isso da nota grave...
+chord_third_ratio = 0.5      # ...ou a terça com pelo menos isso (ou se o estimador acha 2+ notas)
+chord_smoothing = 5          # decide acorde x nota pela maioria das N notas antes e depois
 chord_change_margin = 0.08   # tolerância para a troca de acorde cair no tempo (som anterior ainda soando)
 power_chord_third_margin = 0.008  # se "maior" e "menor" empatam até aqui, não há terça: é power chord
 power_chord_notes = 2        # notas de um power chord na chart (1 = nota simples)
+chord_notes = 2              # notas dos outros acordes (maior/menor) na chart: 2 deixa a chart limpa
+accent_chord_notes = 3       # acorde de ACENTO (segurado por muito tempo) ganha mais notas
+accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar acento
 
 [detection.bass]
 fmin = "E1"
 octaves = 4
+onset_method = "both"
 onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.9
 release_ratio = 0.35
 lane_window = 8
 recognize_chords = false
+chord_fifth_ratio = 0.3
+chord_third_ratio = 0.5
+chord_smoothing = 5
 chord_change_margin = 0.08
 power_chord_third_margin = 0.008
 power_chord_notes = 2
+chord_notes = 2
+accent_chord_notes = 3
+accent_min_beats = 2.0
 
 [detection.keys]
 fmin = "A1"
 octaves = 6
+onset_method = "both"
 onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.6
 release_ratio = 0.3
 lane_window = 8
 recognize_chords = true
+chord_fifth_ratio = 0.3
+chord_third_ratio = 0.5
+chord_smoothing = 5
 chord_change_margin = 0.08
 power_chord_third_margin = 0.008
 power_chord_notes = 2
+chord_notes = 2
+accent_chord_notes = 3
+accent_min_beats = 2.0
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
@@ -95,8 +116,8 @@ min_hold_measures = 2       # depois de trocar, fica pelo menos esse nº de comp
 [sanitize]
 enabled = true
 noise_ratio = 3.0            # ruído de fundo a partir de quantas vezes o normal da faixa
-min_found = 0.75             # menos que isso do ritmo típico encontrado = bagunçado
-max_extra = 0.25             # mais que isso de notas fora do ritmo típico = bagunçado
+min_found = 0.9              # menos que isso do ritmo típico encontrado = bagunçado
+max_extra = 0.1              # mais que isso de notas fora do ritmo típico = bagunçado
 min_groove_measures = 3      # o ritmo típico precisa aparecer em pelo menos N compassos
 
 # ---------------------------------------------------------------------------
@@ -110,6 +131,7 @@ onset_delta = 0.1            # sensibilidade para novos ataques dentro de um tre
 pitch_split_semitones = 0.7  # mudança de afinação que separa duas notas ligadas
 min_note_seconds = 0.08      # notas mais curtas que isso são descartadas
 phrase_gap_beats = 0.75      # pausa (em batidas) que separa duas frases
+sung_min_ratio = 0.6         # linha com menos notas cantadas que isso x sílabas é FALADA (só letra, sem notas)
 language = "pt"              # idioma da letra (sílabas e transcrição): "pt" ou "en"
 whisper_model = "small"      # --auto-lyrics: tiny, base, small, medium, large-v3 (maior = melhor e mais lento)
 

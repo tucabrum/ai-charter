@@ -151,6 +151,10 @@ ai_charter/
 ├── config.py           lê as regras do arquivo .toml
 ├── default_rules.toml  regras padrão de charting
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
+├── compare.py          compara uma chart gerada com uma de referência (ai-charter-compare)
+├── critic.py           aponta defeitos de jogabilidade, sem referência (ai-charter-critic)
+├── view.py             visualizador no navegador (ai-charter-view)
+├── viewer/index.html   a página do visualizador (funciona sozinha, sem instalar nada)
 ├── analysis/           "ouvir" o áudio
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
@@ -190,6 +194,50 @@ Ideias principais:
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
   mínima entre notas e o grid permitido.
+
+## Comparando com uma chart de referência
+
+Para medir a qualidade, compare a chart gerada com uma chart feita por uma pessoa (ex.: a
+oficial do jogo), das mesmas faixas de áudio:
+
+```bash
+ai-charter-compare oficial/notes.mid gerada/notes.mid
+```
+
+O relatório não pontua se a cor da nota é a mesma (charts são subjetivas). Ele mede, por
+instrumento e dificuldade: quantas notas da referência aparecem no mesmo momento (recall) e quantas
+geradas existem na referência (precisão), acorde × nota simples, contorno (subir/descer/repetir
+juntas), sustains, densidade, resultados por seção e, nos vocais, tempo, afinação, sílaba e frases.
+
+Uma chart oficial é só UMA opinião de como chartear a música. Para julgar a jogabilidade sem
+depender de referência, use o avaliador:
+
+```bash
+ai-charter-critic gerada/notes.mid
+```
+
+Ele conta acordes de 3+ notas (chart "inflada"), trocas relâmpago (um acorde de uma palhetada só
+entre dois grupos estáveis), picos (a nota pula 3+ lanes e volta) e o trecho mais denso.
+
+## Visualizador: ver a chart tocando sem abrir o jogo
+
+```bash
+ai-charter-view "output/Phoenix - Lasso"                                  # abre no navegador
+ai-charter-view "output/Phoenix - Lasso" --compare "oficial/notes.mid"     # e a oficial ao lado
+ai-charter musica.flac --view                                             # gera e já abre
+```
+
+A página toca o áudio (todos os stems, com mute por stem no botão **Áudio**) e mostra a pista
+como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), sustains, Star Power
+(azul-claro), pratos e tons da bateria, batidas, compassos e seções. Em cima ficam a linha do tempo
+(clique para pular) e os vocais (afinação e letra, com as sílabas cantadas destacadas).
+
+- **+ Pista** abre outra pista lado a lado (outro instrumento, outra dificuldade ou a chart de
+  comparação), e cada pista tem seus próprios seletores.
+- **Espaço** toca/pausa; **← →** voltam/avançam 5 s; **Velocidade** 0,5× e 0,75× para trechos difíceis;
+  **Pista** muda quantos segundos de notas aparecem.
+- Lê `notes.mid` e `notes.chart`. Também dá para abrir `ai_charter/viewer/index.html` direto no
+  navegador e usar **Abrir pasta** (ou arrastar a pasta da música para a página).
 
 ## Testes
 
