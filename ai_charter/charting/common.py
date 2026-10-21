@@ -35,6 +35,9 @@ class Candidate:
     pitch: float = 0.0
     voices: int = 1
     piece: str = ""   # só para bateria
+    chord: int = -1   # acorde reconhecido (índice em analysis.chords.CHORDS), -1 = nenhum
+    chord_scores: np.ndarray | None = None
+    lowest_by_class: np.ndarray | None = None
 
 
 def quantize_tick(tick: float, resolution: int, allow_triplets: bool) -> int:

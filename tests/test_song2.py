@@ -108,3 +108,29 @@ def test_vocal_phrases_match_lyric_lines(song):
         start = bars_of(section)[0] * MEASURE
         for line in range(4):
             assert phrases[first + line][0] == start + line * 2 * MEASURE
+
+
+def test_violao_strums_are_all_charted_as_consistent_chords(song):
+    """Toda palhetada do violão vira um acorde, e cada acorde tem (quase) sempre o mesmo formato."""
+    from collections import Counter, defaultdict
+
+    _, midi = song
+    expert = midi_notes(midi["PART GUITAR"], 96, 100)
+    shapes: dict[str, Counter] = defaultdict(Counter)
+    total = 0
+    for section in ("intro", "verso1", "verso2"):
+        for i, bar in enumerate(bars_of(section)):
+            for beat in (0, 1, 1.5, 2.5, 3, 3.5):           # ritmo do violão (baixo e cima)
+                tick = int(bar * MEASURE + beat * RES)
+                assert tick in expert, (section, i, beat)    # nenhuma palhetada some
+                lanes = tuple(sorted(expert[tick]))
+                assert len(lanes) >= 2, (section, i, beat)    # sempre acorde, nunca nota simples
+                shapes[song2.PROGRESSION[i % 4]][lanes] += 1
+                total += 1
+    # Cada acorde usa o mesmo formato em pelo menos 90% das palhetadas.
+    for chord, counts in shapes.items():
+        assert counts.most_common(1)[0][1] >= 0.9 * sum(counts.values()), (chord, counts)
+    # Acordes vizinhos na progressão (C G Am F) têm formatos diferentes.
+    main = {chord: counts.most_common(1)[0][0] for chord, counts in shapes.items()}
+    for a, b in zip(song2.PROGRESSION, song2.PROGRESSION[1:] + song2.PROGRESSION[:1]):
+        assert main[a] != main[b], (a, b, main)

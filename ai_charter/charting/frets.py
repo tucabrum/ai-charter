@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from ai_charter.charting.common import (
     Candidate, ChartNote, Repeats, TrackChart, copy_repeats, enforce_reduction, find_repeats,
@@ -63,13 +63,15 @@ def _transition_cost(diff: float, a: int, b: int, on_beat: bool) -> float:
 
 
 def assign_lanes(pitches: list[float], n_lanes: int, window: int,
-                 ticks: list[int] | None = None, resolution: int = 192) -> list[int]:
+                 ticks: list[int] | None = None, resolution: int = 192,
+                 max_lanes: list[int] | None = None) -> list[int]:
     """Converte alturas (MIDI) em lanes 0..n_lanes-1 seguindo o contorno melódico.
 
     Usa programação dinâmica (algoritmo de Viterbi): para cada nota, guarda o
     menor custo para chegar a cada par (lane da nota anterior, lane da nota atual);
     no fim, volta pelo caminho mais barato. Assim a decisão considera a frase
     inteira, e cada nota é comparada com a anterior e com a retrasada.
+    `max_lanes[i]`: lane mais alta permitida para a nota i (acordes ocupam mais lanes).
     """
     p = np.asarray(pitches, dtype=float)
     n = len(p)
@@ -77,6 +79,10 @@ def assign_lanes(pitches: list[float], n_lanes: int, window: int,
         return []
     ideal = _ideal_lanes(p, n_lanes, window)
     unary = COST_PER_LANE_FROM_IDEAL * np.abs(np.arange(n_lanes)[None, :] - ideal[:, None])
+    if max_lanes is not None:
+        # Acordes ocupam várias lanes: a lane mais grave de um acorde não pode passar
+        # de max_lanes[i] (ex.: um acorde de 3 notas em 5 lanes começa no máximo no amarelo).
+        unary[np.arange(n_lanes)[None, :] > np.asarray(max_lanes)[:, None]] = np.inf
     if n == 1:
         return [int(np.argmin(unary[0]))]
 
@@ -155,6 +161,34 @@ def _copy_repeated_lanes(chosen: list[Candidate], lanes: list[int], repeats: Rep
     return lanes
 
 
+def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
+    """Cada acorde (mesma altura e mesmo nº de notas) usa a lane que recebe na maioria das vezes.
+
+    Assim o mesmo acorde tem sempre o mesmo formato na chart. Só não muda uma nota
+    se ela ficaria na mesma lane de uma vizinha que é outro acorde/nota (aí o
+    jogador veria "o mesmo acorde" onde a música muda).
+    """
+    def identity(c: Candidate) -> tuple[int, int]:
+        return round(c.pitch), c.voices
+
+    votes: dict[tuple[int, int], Counter] = defaultdict(Counter)
+    for c, lane in zip(chosen, lanes):
+        if c.voices >= 2:
+            votes[identity(c)][lane] += 1
+    favorite = {key: v.most_common(1)[0][0] for key, v in votes.items()}
+
+    lanes = list(lanes)
+    for i, c in enumerate(chosen):
+        want = favorite.get(identity(c)) if c.voices >= 2 else None
+        if want is None or want == lanes[i]:
+            continue
+        clash = any(0 <= j < len(chosen) and identity(chosen[j]) != identity(c) and lanes[j] == want
+                    for j in (i - 1, i + 1))
+        if not clash:
+            lanes[i] = want
+    return lanes
+
+
 def chord_shape(base: int, size: int, n_lanes: int) -> tuple[int, ...]:
     """Formato do acorde a partir da lane mais grave."""
     if size <= 1:
@@ -208,13 +242,14 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
         chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution,
                                    group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
         previous_count = len(chosen)
+        sizes = [min(c.voices, r.max_chord) for c in chosen]
         lanes = assign_lanes([c.pitch for c in chosen], r.lanes, lane_window,
-                             [c.tick for c in chosen], resolution)
+                             [c.tick for c in chosen], resolution,
+                             max_lanes=[min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes])
+        lanes = _unify_chord_lanes(chosen, lanes)
         lanes = _copy_repeated_lanes(chosen, lanes, repeats, resolution)
-        notes = [
-            ChartNote(c.tick, chord_shape(lane, min(c.voices, r.max_chord), r.lanes))
-            for c, lane in zip(chosen, lanes)
-        ]
+        notes = [ChartNote(c.tick, chord_shape(lane, size, r.lanes))
+                 for c, lane, size in zip(chosen, lanes, sizes)]
         _apply_sustains(notes, chosen, r, resolution)
         _apply_forcing(notes, resolution, r.allow_hopos)
         track.notes[difficulty] = notes

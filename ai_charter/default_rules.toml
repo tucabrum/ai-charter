@@ -26,29 +26,35 @@ section_seconds = 25.0         # tamanho médio desejado de cada seção
 [detection.guitar]
 fmin = "E2"            # nota mais grave procurada
 octaves = 5            # quantas oitavas acima de fmin analisar
-onset_delta = 0.07     # sensibilidade dos ataques (menor = detecta mais notas)
+onset_delta = 0.04     # sensibilidade dos ataques (menor = detecta mais notas)
 min_rms_db = -35.0     # ignora ataques mais baixos que isso (ruído / vazamento)
 chord_ratio = 0.65     # quão forte a 2ª nota precisa ser para virar acorde (0-1)
 release_ratio = 0.35   # a nota "acaba" quando o volume cai abaixo disso × pico
 lane_window = 8        # nº de notas vizinhas usadas para decidir a lane pelo contorno
+recognize_chords = true      # reconhece acordes (C, Am, G5...) pelo conjunto de notas que soam
+chord_change_margin = 0.08   # tolerância para a troca de acorde cair no tempo (som anterior ainda soando)
 
 [detection.bass]
 fmin = "E1"
 octaves = 4
-onset_delta = 0.07
+onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.9
 release_ratio = 0.35
 lane_window = 8
+recognize_chords = false
+chord_change_margin = 0.08
 
 [detection.keys]
 fmin = "A1"
 octaves = 6
-onset_delta = 0.07
+onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.6
 release_ratio = 0.3
 lane_window = 8
+recognize_chords = true
+chord_change_margin = 0.08
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

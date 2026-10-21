@@ -144,12 +144,14 @@ ai_charter/
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
 │   ├── pitched.py      notas de guitarra/baixo/teclado: ataque, altura, acorde, duração
+│   ├── chords.py       reconhecimento de acordes (C, Am, G5...) pelo chroma
 │   ├── drums.py        bumbo, caixa, chimbal e crash por faixas de frequência
 │   ├── vocals.py       notas cantadas (afinação com pYIN, cortes por consoante/afinação)
 │   └── sections.py     seções da música (modo prática) e trecho de preview
 ├── charting/           transformar notas detectadas em chart jogável
 │   ├── common.py       grid rítmico, escolha das notas, trechos repetidos, Star Power
 │   ├── frets.py        lanes pelo contorno melódico, acordes, sustains, HOPO/strum
+│   ├── chords.py       acorde de cada nota (com correção nas trocas) e formato fixo por acorde
 │   ├── guitar_select.py qual guitarra vira a chart em cada compasso
 │   ├── drums.py        bateria por dificuldade (limite de mãos, pratos Pro Drums)
 │   ├── lyrics.py       letra -> sílabas (português e inglês)
@@ -166,6 +168,10 @@ Ideias principais:
 - **Ticks**: o `.chart` mede o tempo em *ticks* (192 por batida). Detectamos a batida da música e
   convertemos o tempo de cada nota (em segundos) para ticks, encaixando no grid
   (semicolcheias, ou tercinas quando fizer mais sentido).
+- **Acordes**: em cada ataque, o programa compara as notas que soam com modelos de acordes
+  (maiores, menores, power chords e notas simples, já contando os harmônicos dos instrumentos).
+  O mesmo acorde recebe sempre o mesmo formato na chart, e a troca de acorde é corrigida
+  quando o acorde anterior ainda está soando.
 - **Lanes pelo contorno**: o jogo não tem como mostrar a nota exata, então a chart segue o
   *desenho* da melodia — nota mais aguda vai mais para a direita, mais grave para a esquerda,
   nota repetida fica na mesma lane.

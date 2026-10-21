@@ -120,3 +120,20 @@ def test_auto_lyrics_explains_how_to_install(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "faster_whisper", None)   # simula pacote não instalado
     with pytest.raises(RuntimeError, match=r"ai-charter\[lyrics\]"):
         transcribe_lyrics(tmp_path / "vocals.wav", "pt", "small", 0.45)
+
+
+def test_chord_recognition_from_spectrum():
+    from ai_charter.analysis.chords import chord_name, chord_scores, is_single_note
+
+    def spectrum(midis, lowest=40, n=60):
+        s = np.zeros(n)
+        for m in midis:
+            for h, w in ((0, 1.0), (12, 0.5), (19, 0.33), (24, 0.25)):   # nota + harmônicos
+                if m + h - lowest < n:
+                    s[m + h - lowest] += w
+        return s
+
+    assert chord_name(int(np.argmax(chord_scores(spectrum([48, 52, 55, 60, 64]), 40)))) == "C"
+    assert chord_name(int(np.argmax(chord_scores(spectrum([45, 52, 57, 60, 64]), 40)))) == "Am"
+    single = int(np.argmax(chord_scores(spectrum([64]), 40)))
+    assert chord_name(single) == "E" and is_single_note(single)    # nota simples, não acorde de Mi
