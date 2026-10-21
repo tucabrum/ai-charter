@@ -6,6 +6,7 @@ Formato (texto), resumidamente:
     [SyncTrack]     andamento:  "tick = B bpm×1000"  e  "tick = TS 4" (compasso)
     [Events]        seções:     tick = E "section Verse"
     [ExpertSingle]  notas:      "tick = N lane duração"  e  "tick = S 2 duração" (Star Power)
+                    (na bateria, "tick = S 64 duração" marca uma virada de ativação)
 """
 
 from __future__ import annotations
@@ -90,9 +91,11 @@ def write_chart(path: Path, info: SongInfo, tempo: TempoMap, tracks: dict[str, T
                     events.append((note.tick, 0, f"N {flag} 0"))
             for tick, length in track.star_power.get(difficulty, []):
                 events.append((tick, 1, f"S 2 {length}"))
+            for tick, length in track.drum_fills.get(difficulty, []):
+                events.append((tick, 1, f"S 64 {length}"))  # virada de ativação (bateria)
             events.sort(key=lambda e: (e[0], e[1]))
             lines += [f"  {tick} = {text}" for tick, _, text in events]
             lines.append("}")
 
-    # UTF-8 com BOM e quebras de linha do Windows, como o Moonscraper (editor oficial) salva.
+    # UTF-8 com BOM e quebras de linha do Windows, como o editor Moonscraper salva.
     path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig", newline="")

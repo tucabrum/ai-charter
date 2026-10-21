@@ -107,7 +107,8 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackC
         if key not in seen or h.strength > seen[key].strength:
             seen[key] = Candidate(tick, h.strength, piece=h.piece)
     cands = sorted(seen.values(), key=lambda c: c.tick)
-    return build_drum_track(cands, rules.drums, res, sp_windows)
+    return build_drum_track(cands, rules.drums, res, sp_windows,
+                            rules.general.drum_fill_every_measures)
 
 
 def run(opts: Options, log=print) -> Result:

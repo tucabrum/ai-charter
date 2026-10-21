@@ -78,8 +78,11 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
 
     # --- 1. Ataques ---------------------------------------------------------
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
+    # palhetado, em que as cordas soam uma logo após a outra).
     onset_frames = librosa.onset.onset_detect(
-        onset_envelope=onset_env, sr=sr, hop_length=HOP, delta=cfg.onset_delta, units="frames"
+        onset_envelope=onset_env, sr=sr, hop_length=HOP, delta=cfg.onset_delta,
+        wait=int(0.06 * sr / HOP), units="frames",
     )
     if len(onset_frames) == 0:
         return []

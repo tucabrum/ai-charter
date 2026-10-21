@@ -15,6 +15,7 @@ resolution = 192               # ticks por batida no arquivo .chart (padrão do 
 allow_triplets = true          # permite notas em quiálteras (tercinas) no Expert
 starpower_every_measures = 8   # uma frase de Star Power a cada N compassos
 starpower_phrase_beats = 4     # duração de cada frase de Star Power (em batidas)
+drum_fill_every_measures = 4   # bateria: uma virada de ativação do Star Power a cada N compassos (0 = nenhuma)
 min_stem_energy = 0.03         # stems mais fracos que isso (relativo à mix) não viram chart
 sections = true                # marca seções (Section 1, 2...) para o modo prática
 section_seconds = 25.0         # tamanho médio desejado de cada seção

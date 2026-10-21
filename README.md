@@ -13,7 +13,8 @@ Você entrega um arquivo de música (MP3 de alta qualidade ou FLAC) e o programa
    os áudios separados (`song.ogg`, `guitar.ogg`, `bass.ogg`, `drums.ogg`, `keys.ogg`, `vocals.ogg`).
 
 Instrumentos gerados: **guitarra** (5 lanes), **baixo** (5 lanes), **teclado** (5 lanes) e
-**bateria** (Pro Drums: bumbo + 4 lanes, com pratos marcados).
+**bateria** (Pro Drums: bumbo + 4 lanes, com pratos marcados). Cada chart vem com frases de
+**Star Power**, viradas de ativação na bateria e **seções** para o modo prática.
 
 ---
 
@@ -125,7 +126,7 @@ pytest
 ```
 
 Os testes geram uma música sintética (melodia, baixo e bateria com notas conhecidas) e conferem
-se a chart gerada acerta o ritmo, o contorno das lanes e as peças da bateria.
+se a chart gerada acerta o ritmo, o contorno das lanes, os acordes e as peças da bateria.
 
 ## Limitações atuais e próximos passos
 

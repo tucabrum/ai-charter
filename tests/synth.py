@@ -22,7 +22,8 @@ def tone(midi: float, length: float, harmonics: int = 6) -> np.ndarray:
     t = np.arange(int(length * SR)) / SR
     f0 = 440.0 * 2 ** ((midi - 69) / 12)
     wave = sum(np.sin(2 * np.pi * f0 * h * t) / h for h in range(1, harmonics + 1) if f0 * h < SR / 2)
-    envelope = np.minimum(1.0, t / 0.005) * np.exp(-t * 3.0)
+    release = np.clip((length - t) / 0.02, 0.0, 1.0)  # fade-out de 20 ms (sem "clique" no fim)
+    envelope = np.minimum(1.0, t / 0.005) * np.exp(-t * 3.0) * release
     return wave * envelope
 
 

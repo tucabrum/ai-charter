@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from ai_charter.analysis.drums import CRASH, HIHAT, KICK, SNARE
 from ai_charter.charting.common import (
-    Candidate, ChartNote, TrackChart, enforce_reduction, select_rhythm, star_power_for,
+    Candidate, ChartNote, TrackChart, drum_fills_for, enforce_reduction, select_rhythm,
+    star_power_for,
 )
 from ai_charter.config import DrumDifficultyRules
 
@@ -18,7 +19,8 @@ HAND_PRIORITY = (CRASH, SNARE, HIHAT)
 
 
 def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRules],
-                     resolution: int, sp_windows: list[tuple[int, int]]) -> TrackChart:
+                     resolution: int, sp_windows: list[tuple[int, int]],
+                     fill_every_measures: int) -> TrackChart:
     track = TrackChart(notes={})
     previous_count = len(cands)
     for difficulty, r in rules.items():
@@ -53,4 +55,6 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
             ))
         track.notes[difficulty] = notes
         track.star_power[difficulty] = star_power_for(notes, sp_windows)
+        track.drum_fills[difficulty] = drum_fills_for(notes, sp_windows, resolution,
+                                                      fill_every_measures)
     return track

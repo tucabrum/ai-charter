@@ -75,3 +75,9 @@ def test_drums_detect_kick_snare_and_cymbals(song):
     assert sum((t - 2 * RES) // RES % 2 == 1 for t in snare_beats) >= 0.9 * 12
     # Pratos marcados como cymbal (Pro Drums).
     assert any(66 in v for v in expert.values()) and any(68 in v for v in expert.values())
+
+
+def test_star_power_and_drum_fills(song):
+    chart = parse_chart(song.song_dir / "notes.chart")
+    assert any(v.startswith("S 2 ") for _, v in chart["ExpertSingle"])
+    assert any(v.startswith("S 64 ") for _, v in chart["ExpertDrums"])   # viradas de ativação

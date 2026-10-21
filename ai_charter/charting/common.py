@@ -20,6 +20,7 @@ class TrackChart:
     """As quatro dificuldades de um instrumento."""
     notes: dict[str, list[ChartNote]]                     # "expert" -> notas
     star_power: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # (tick, duração)
+    drum_fills: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # só bateria
 
 
 @dataclass
@@ -129,3 +130,25 @@ def star_power_for(notes: list[ChartNote], windows: list[tuple[int, int]]) -> li
             first, last = inside[0], inside[-1]
             phrases.append((first.tick, max(1, last.tick + last.length - first.tick + 1)))
     return phrases
+
+
+def drum_fills_for(notes: list[ChartNote], windows: list[tuple[int, int]], resolution: int,
+                   every_measures: int) -> list[tuple[int, int]]:
+    """Viradas de ativação do Star Power na bateria (onde o jogador pode ativá-lo).
+
+    Cada virada dura 2 batidas e termina numa nota no 1º tempo de um compasso;
+    essa última nota é a que ativa o Star Power. Não pode sobrepor uma frase de Star Power.
+    """
+    if every_measures <= 0 or not notes:
+        return []
+    measure = resolution * 4
+    note_ticks = {n.tick for n in notes}
+    fills = []
+    downbeat = every_measures * measure
+    while downbeat <= notes[-1].tick:
+        start = downbeat - 2 * resolution
+        overlaps = any(start <= w + length and w <= downbeat for w, length in windows)
+        if downbeat in note_ticks and not overlaps:
+            fills.append((start, 2 * resolution))
+        downbeat += every_measures * measure
+    return fills

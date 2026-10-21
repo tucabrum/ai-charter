@@ -113,3 +113,18 @@ def test_chart_file_round_trip(tmp_path):
     expert = notes_by_tick(chart["ExpertSingle"])
     assert sorted(expert) == [i * RES for i in range(8)]
     assert any(v.startswith("S 2 ") for _, v in chart["ExpertSingle"])
+
+
+def test_detects_single_notes_and_chords():
+    import librosa
+    import synth
+    from ai_charter.analysis.pitched import detect_pitched_notes
+
+    shapes = [[52], [52, 59], [45, 52], [60, 64, 67], [57]]   # nota, power chords, tríade, nota
+    y = np.zeros(synth.SR * 5)
+    for i, notes in enumerate(shapes):
+        synth.add(y, sum(synth.tone(n, 0.9) for n in notes), 0.2 + i * 0.95, 0.3)
+    y = librosa.resample(y, orig_sr=synth.SR, target_sr=22050)
+
+    detected = detect_pitched_notes(y, 22050, load_rules().detection["guitar"])
+    assert [(n.pitch, n.voices) for n in detected] == [(52, 1), (52, 2), (45, 2), (60, 3), (57, 1)]

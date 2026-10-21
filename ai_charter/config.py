@@ -23,6 +23,7 @@ class GeneralRules:
     allow_triplets: bool
     starpower_every_measures: int
     starpower_phrase_beats: int
+    drum_fill_every_measures: int
     min_stem_energy: float
     sections: bool
     section_seconds: float
