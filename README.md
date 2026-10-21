@@ -152,6 +152,7 @@ ai_charter/
 ├── default_rules.toml  regras padrão de charting
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
 ├── compare.py          compara uma chart gerada com uma de referência (ai-charter-compare)
+├── critic.py           aponta defeitos de jogabilidade, sem referência (ai-charter-critic)
 ├── analysis/           "ouvir" o áudio
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
@@ -205,6 +206,16 @@ O relatório não pontua se a cor da nota é a mesma (charts são subjetivas). E
 instrumento e dificuldade: quantas notas da referência aparecem no mesmo momento (recall) e quantas
 geradas existem na referência (precisão), acorde × nota simples, contorno (subir/descer/repetir
 juntas), sustains, densidade, resultados por seção e, nos vocais, tempo, afinação, sílaba e frases.
+
+Uma chart oficial é só UMA opinião de como chartear a música. Para julgar a jogabilidade sem
+depender de referência, use o avaliador:
+
+```bash
+ai-charter-critic gerada/notes.mid
+```
+
+Ele conta acordes de 3+ notas (chart "inflada"), trocas relâmpago (um acorde de uma palhetada só
+entre dois grupos estáveis), picos (a nota pula 3+ lanes e volta) e o trecho mais denso.
 
 ## Testes
 

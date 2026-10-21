@@ -39,6 +39,9 @@ chord_smoothing = 5          # decide acorde x nota pela maioria das N notas ant
 chord_change_margin = 0.08   # tolerância para a troca de acorde cair no tempo (som anterior ainda soando)
 power_chord_third_margin = 0.008  # se "maior" e "menor" empatam até aqui, não há terça: é power chord
 power_chord_notes = 2        # notas de um power chord na chart (1 = nota simples)
+chord_notes = 2              # notas dos outros acordes (maior/menor) na chart: 2 deixa a chart limpa
+accent_chord_notes = 3       # acorde de ACENTO (segurado por muito tempo) ganha mais notas
+accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar acento
 
 [detection.bass]
 fmin = "E1"
@@ -56,6 +59,9 @@ chord_smoothing = 5
 chord_change_margin = 0.08
 power_chord_third_margin = 0.008
 power_chord_notes = 2
+chord_notes = 2
+accent_chord_notes = 3
+accent_min_beats = 2.0
 
 [detection.keys]
 fmin = "A1"
@@ -73,6 +79,9 @@ chord_smoothing = 5
 chord_change_margin = 0.08
 power_chord_third_margin = 0.008
 power_chord_notes = 2
+chord_notes = 2
+accent_chord_notes = 3
+accent_min_beats = 2.0
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

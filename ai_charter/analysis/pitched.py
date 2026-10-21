@@ -133,8 +133,14 @@ def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 
     return result
 
 
-def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[DetectedNote]:
-    """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`."""
+def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
+                         tuning: float = 0.0) -> list[DetectedNote]:
+    """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`.
+
+    `tuning`: afinação da gravação em frações de semitom (ver pipeline.estimate_tuning).
+    Os bins do espectro são centrados nas notas DESSA afinação; sem isso, uma
+    gravação meio semitom fora do padrão faz a mesma nota "oscilar" entre duas.
+    """
     if not np.any(y):
         return []
 
@@ -154,7 +160,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
     fmin_midi = librosa.note_to_midi(cfg.fmin)
     cqt = np.abs(librosa.cqt(
         y, sr=sr, hop_length=HOP, fmin=librosa.midi_to_hz(fmin_midi),
-        n_bins=12 * cfg.octaves, bins_per_octave=12,
+        n_bins=12 * cfg.octaves, bins_per_octave=12, tuning=tuning,
     ))
 
     # --- 3. Volume ao longo do tempo (para gate e duração) -----------------
@@ -217,4 +223,25 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             fifth_ratio=fifth,
             third_ratio=third,
         ))
+    _fix_octave_spikes(notes)
     return notes
+
+
+def _fix_octave_spikes(notes: list[DetectedNote]) -> None:
+    """Corrige picos de oitava: uma nota solta exatamente 12 semitons longe das vizinhas.
+
+    Em notas graves e distorcidas, o harmônico uma oitava acima às vezes soa mais
+    forte que a nota de verdade, e o detector "ouve" a oitava errada. Na chart isso
+    vira um pulo para o outro lado do braço e de volta. Se pelo menos 3 das 4
+    vizinhas (2 antes, 2 depois) estão na mesma altura e a nota está a uma oitava
+    exata delas, ela volta para a altura das vizinhas. Riffs de oitava de verdade
+    (que alternam várias vezes) não são afetados: as vizinhas não concordam.
+    """
+    original = [n.pitch for n in notes]   # decide sempre pelos valores originais
+    for i in range(2, len(notes) - 2):
+        context = np.array(original[i - 2:i] + original[i + 1:i + 3])
+        center = float(np.median(context))
+        distance = original[i] - center
+        agree = int(np.sum(np.abs(context - center) <= 1))
+        if abs(abs(distance) - 12) <= 0.5 and agree >= 3:
+            notes[i].pitch = original[i] - 12 * np.sign(distance)

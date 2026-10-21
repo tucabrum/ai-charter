@@ -46,6 +46,9 @@ class PitchedDetection:
     chord_change_margin: float
     power_chord_third_margin: float
     power_chord_notes: int
+    chord_notes: int
+    accent_chord_notes: int
+    accent_min_beats: float
 
 
 @dataclass

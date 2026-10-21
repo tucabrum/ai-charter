@@ -9,11 +9,14 @@
      novo, ela também é (corrigido de trás para frente, em cadeia). Só vale
      depois de um acorde tocado várias vezes (que continua soando);
    - palhetada isolada: diferente das duas vizinhas, que concordam entre si,
-     segue as vizinhas.
+     segue as vizinhas;
+   - troca relâmpago: um acorde de uma palhetada só entre dois grupos estáveis
+     fica com o grupo mais parecido (sem a exigência de "quase igual").
 3. O tipo do acorde (maior, menor, power chord ou nota simples) é decidido por
    trecho com a mesma fundamental, somando as pontuações de todas as palhetadas.
-4. Acordes viram notas da chart com um número fixo de notas (tríade = 3,
-   power chord = 2) e uma altura fixa por FUNDAMENTAL (a nota grave típica dela),
+4. Acordes viram notas da chart com um número fixo de notas (2 por padrão:
+   charts com acordes de 3 notas em toda palhetada ficam "infladas"; 3 só nos
+   acordes de acento, segurados por muito tempo) e uma altura fixa por FUNDAMENTAL (a nota grave típica dela),
    para o mesmo acorde cair sempre nas mesmas lanes. Acordes com a mesma
    fundamental (ex.: A e Am, que às vezes se confundem) ficam com a mesma altura.
 """
@@ -120,6 +123,17 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
         if root(k + 1) == root(k - 1) != root(k) and close_enough(k, around):
             labels[k] = around
 
+    # Troca relâmpago: um acorde de uma palhetada só, entre dois grupos estáveis
+    # (cada um com MIN_RINGING_STRUMS+ palhetadas), quase sempre é o som de uma
+    # troca (o acorde anterior ainda soando, ou o próximo chegando antes). Na chart,
+    # isso vira um "pulo" sem sentido: a palhetada fica com o grupo mais parecido.
+    runs = _runs([root(k) for k in range(len(items))])
+    for (a0, a1), (b0, b1), (c0, c1) in zip(runs, runs[1:], runs[2:]):
+        stable = a1 - a0 >= MIN_RINGING_STRUMS and c1 - c0 >= MIN_RINGING_STRUMS
+        if b1 - b0 == 1 and stable:
+            left, right = labels[a1 - 1], labels[c0]
+            labels[b0] = left if items[b0].chord_scores[left] >= items[b0].chord_scores[right] else right
+
     # Tipo do acorde decidido por trecho (palhetadas seguidas com a mesma fundamental).
     start = 0
     while start < len(items):
@@ -138,9 +152,23 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
             lows[root].append(low)
     fixed = {root: float(np.median(v)) for root, v in lows.items()}
 
+    accent_ticks = cfg.accent_min_beats * resolution
     for c, label in zip(items, labels):
         root = CHORDS[label][0]
         c.chord = label
         power_chord = CHORDS[label][1] == "5"
-        c.voices = cfg.power_chord_notes if power_chord else chord_voices(label)
+        c.voices = min(chord_voices(label), cfg.power_chord_notes if power_chord else cfg.chord_notes)
+        # Acorde segurado por muito tempo (fim de frase, "pancada"): acento com mais notas.
+        if c.end_tick - c.tick >= accent_ticks:
+            c.voices = max(c.voices, min(chord_voices(label), cfg.accent_chord_notes))
         c.pitch = fixed.get(root, c.pitch)
+
+
+def _runs(values: list) -> list[tuple[int, int]]:
+    """Trechos de valores iguais seguidos: [(início, fim exclusivo), ...]."""
+    runs, start = [], 0
+    for k in range(1, len(values) + 1):
+        if k == len(values) or values[k] != values[start]:
+            runs.append((start, k))
+            start = k
+    return runs

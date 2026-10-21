@@ -69,7 +69,8 @@ def _fix_octave_errors(notes: list[SungNote], max_gap: float = 1.0) -> None:
                 break
 
 
-def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules) -> list[SungNote]:
+def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules, tuning: float = 0.0) -> list[SungNote]:
+    """Notas cantadas. `tuning`: afinação da gravação (frações de semitom), descontada da altura."""
     if not np.any(y):
         return []
     f0, voiced, _ = librosa.pyin(
@@ -80,7 +81,7 @@ def detect_sung_notes(y: np.ndarray, sr: int, cfg: VocalRules) -> list[SungNote]
     n = min(len(f0), len(rms))
     loud = librosa.amplitude_to_db(rms[:n], ref=np.max) > cfg.min_rms_db
     active = voiced[:n] & loud
-    midi = librosa.hz_to_midi(np.where(active, f0[:n], np.nan))
+    midi = librosa.hz_to_midi(np.where(active, f0[:n], np.nan)) - tuning
 
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
     onsets = set(librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=HOP,
