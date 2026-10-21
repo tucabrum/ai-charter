@@ -76,3 +76,22 @@ def test_save_needs_the_page_header_and_a_midi_file(server, tmp_path):
     assert err.value.code == 403
     assert (song / "notes.mid").read_bytes() == b"MThd"
     assert not (song / "notes.backup.mid").exists()
+
+
+def test_editor_saves_locks_and_ai_request_only_by_name(server, tmp_path):
+    song = tmp_path / "song"
+    headers = {"X-AI-Charter": "save"}
+    locks = b'{"version": 1, "locks": {"guitar": {"expert": [[0, 768, 1]]}}}'
+    assert post(server + "song/save?file=notes.locks.json", locks, headers)["saved"] == "notes.locks.json"
+    assert (song / "notes.locks.json").read_bytes() == locks
+    post(server + "song/save?file=ai_request.json", b'{"request": "menos acordes"}', headers)
+    assert json.loads((song / "ai_request.json").read_text())["request"] == "menos acordes"
+    assert not (song / "notes.backup.mid").exists()   # só o notes.mid ganha cópia
+    with pytest.raises(urllib.error.HTTPError) as err:
+        post(server + "song/save?file=notes.locks.json", b"{quebrado", headers)
+    assert err.value.code == 400
+    for name in ("song.ini", "../fora.json", "guitar.ogg"):
+        with pytest.raises(urllib.error.HTTPError) as err:
+            post(server + "song/save?file=" + name, b"{}", headers)
+        assert err.value.code == 403
+    assert not (tmp_path / "fora.json").exists()

@@ -250,11 +250,11 @@ como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), susta
 |---|---|
 | pôr nota | clique num lugar vazio (no mesmo tick de outra nota, vira acorde) |
 | mover no tempo / trocar de cor | arraste a nota (encaixa na **Grade**: 1/4 … 1/64 ou livre); ← → e ↑ ↓ |
-| mudar a cor | 1–5 ou os botões coloridos; Shift soma a cor ao acorde |
-| sustain | arraste a borda direita no piano roll, Alt+arraste, ou Shift+← → |
+| mudar a cor | 1–5 ou os botões coloridos; Shift põe ou tira a cor no acorde |
+| sustain | arraste a borda direita no piano roll, Alt+arraste, ou Shift+← → (cada cor tem o seu) |
 | HOPO / strum, tap, Star Power | H, T, S (ou os botões) na seleção |
-| apagar | botão direito tira aquela cor; Delete apaga as notas selecionadas |
-| selecionar | clique; Shift+clique soma; Shift+arraste seleciona uma área; Ctrl+A tudo |
+| apagar | botão direito apaga aquela cor; Delete apaga as notas selecionadas |
+| selecionar | clique pega só a cor clicada (dá para tirar uma nota de um acorde); duplo clique pega o acorde inteiro; Shift+clique soma; Shift+arraste seleciona uma área; Ctrl+A tudo |
 | copiar / colar | Ctrl+C; Ctrl+V cola no ponto em que a música está |
 | desfazer / refazer / salvar | Ctrl+Z, Ctrl+Y, Ctrl+S |
 
@@ -263,6 +263,30 @@ original é guardada como `notes.backup.mid`. Aberta direto do arquivo, a págin
 editado. Só as notas que o editor controla são reescritas (as cores e o HOPO/strum forçado das
 dificuldades mexidas, tap e Star Power); bateria, vocais, seções e mapa de tempo ficam como estavam.
 No MIDI, tap e Star Power valem para todas as dificuldades do instrumento ao mesmo tempo.
+
+### Pedir à IA para revisar o resto da chart
+
+**🤖 Pedir à IA** abre uma caixa de texto para dizer o que fazer no resto da chart (ex.: "faça os
+outros refrões como eu fiz no primeiro"). Sem texto, o pedido é seguir o padrão das suas edições.
+Ao enviar, a página salva na pasta da música:
+
+- `notes.mid`, com as suas edições;
+- `notes.locks.json`, com os **compassos travados**: todo compasso em que você mexeu, naquele
+  instrumento e dificuldade (e em todas, se mexeu em tap ou Star Power). Eles aparecem com 🔒 no
+  editor, e as travas se acumulam entre um pedido e outro;
+- `ai_request.json`, com o texto e o antes/depois de cada compasso editado.
+
+Quem atende o pedido (por exemplo o Claude Code: "processa o pedido de IA da Lasso") lê a chart
+e as travas e grava a revisão por um comando que **devolve à força** o conteúdo dos compassos
+travados, mesmo que a revisão tenha mexido neles:
+
+```bash
+ai-charter-revise show  "output/Phoenix - Lasso"                  # a chart em texto, com [trava]
+ai-charter-revise apply "output/Phoenix - Lasso" revisada.mid     # grava respeitando as travas
+```
+
+O `apply` guarda a versão anterior em `notes.before-ai.mid`, conta quantas notas desfez nos
+trechos travados e arquiva o pedido como `ai_request.done.json`.
 
 ## Testes
 

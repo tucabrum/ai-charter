@@ -63,7 +63,13 @@
   body.editing #editbar { display: flex; }
   #editbar .fret { width: 26px; height: 22px; padding: 0; border-radius: 11px; border: 2px solid rgba(0, 0, 0, 0.45); }
   #editbar .fret:hover { border-color: #fff; }
-  #editbar .help { flex-basis: 100%; }
+  #editbar .help { flex-basis: 100%; display: none; }
+  #editbar.show-help .help { display: block; }
+  #aiPanel { display: none; flex-basis: 100%; flex-direction: column; gap: 6px; }
+  #editbar.show-ai #aiPanel { display: flex; }
+  #aiText { width: 100%; resize: vertical; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  #aiText:focus { outline: none; border-color: var(--accent); }
+  .help-inline { color: var(--muted); font-size: 12px; }
   #eStatus { margin-left: auto; color: var(--muted); }
   .lane-panel.roll { flex-grow: 2.5; }
 </style>
@@ -95,9 +101,18 @@
   <button id="eUndo" title="Ctrl+Z">↶ Desfazer</button>
   <button id="eRedo" title="Ctrl+Y">↷ Refazer</button>
   <button class="primary" id="eSave" title="Ctrl+S">Salvar</button>
+  <button id="eAi" title="Salvar e pedir para a IA revisar o resto da chart">🤖 Pedir à IA</button>
   <span id="eStatus"></span>
-  <span class="help">Clique: põe nota · arraste: move (tempo e cor) · borda direita no piano roll ou Alt+arraste: sustain · botão direito: apaga ·
-    Shift+arraste: seleciona área · Shift+clique: soma à seleção · 1–5: cor (Shift: acorde) · ← →: move na grade · Shift+← →: sustain · ↑ ↓: troca de cor ·
+  <button id="eHelp" title="Atalhos do editor">?</button>
+  <div id="aiPanel">
+    <textarea id="aiText" rows="3" placeholder="O que a IA deve fazer no resto da chart? (opcional — sem texto, ela tenta seguir o padrão das suas edições)
+Ex.: faça os outros refrões como eu fiz no primeiro; menos acordes de 3 notas nos versos; HOPOs nos trechos rápidos do solo."></textarea>
+    <div class="group"><button class="primary" id="aiSend">Salvar e criar pedido</button>
+      <span class="help-inline">Os compassos que você editou (marcados com 🔒) ficam travados: a IA não mexe neles.</span></div>
+  </div>
+  <span class="help">Clique: põe nota · arraste: move (tempo e cor) — só a cor clicada; duplo clique pega o acorde inteiro ·
+    borda direita no piano roll ou Alt+arraste: sustain · botão direito: apaga a cor ·
+    Shift+arraste: seleciona área · Shift+clique: soma à seleção · 1–5: cor (Shift: põe/tira no acorde) · ← →: move na grade · Shift+← →: sustain · ↑ ↓: troca de cor ·
     H / T / S · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll)</span>
 </div>
 <div id="mixer"></div>
@@ -300,8 +315,9 @@ function subRange(ranges, a, b) {
   return out;
 }
 
-// Guitarra/baixo/teclado em ticks, do jeito que o editor mexe nelas:
-//   diffs[diff] = [{tick, len, lanes, force: null | "hopo" | "strum"}]
+// Guitarra/baixo/teclado em ticks, do jeito que o editor mexe nelas. Cada cor é uma nota
+// própria (como no MIDI); as do mesmo tick formam um acorde só na hora de desenhar.
+//   diffs[diff] = [{tick, len, lane, force: null | "hopo" | "strum"}], em ordem de tick e cor
 //   sp e tap são trechos [início, fim) em ticks e valem para todas as dificuldades (como no MIDI).
 function midiFrets(events, hopoTicks, trackIndex) {
   const pairs = notePairs(events);
@@ -311,36 +327,44 @@ function midiFrets(events, hopoTicks, trackIndex) {
     const base = BASE[diff];
     const forceHopo = rangesOf(pairs.filter(p => p.note === base + 5));
     const forceStrum = rangesOf(pairs.filter(p => p.note === base + 6));
-    const byTick = new Map();
+    const gems = [];
     for (const p of pairs) {
       const lane = p.note - base;
       if (lane < 0 || lane > 4) continue;
-      const n = byTick.get(p.tick) || { tick: p.tick, len: 0, lanes: [], force: null };
-      if (!n.lanes.includes(lane)) n.lanes.push(lane);
-      n.len = Math.max(n.len, p.len);
-      byTick.set(p.tick, n);
+      gems.push({ tick: p.tick, len: p.len, lane,
+                  force: inRanges(forceStrum, p.tick) ? "strum" : inRanges(forceHopo, p.tick) ? "hopo" : null });
     }
-    model.diffs[diff] = [...byTick.values()].sort((a, b) => a.tick - b.tick);
-    for (const n of model.diffs[diff]) {
-      n.lanes.sort();
-      n.force = inRanges(forceStrum, n.tick) ? "strum" : inRanges(forceHopo, n.tick) ? "hopo" : null;
-    }
+    model.diffs[diff] = gems.sort(byTickLane);
   }
   return model;
 }
+const byTickLane = (a, b) => a.tick - b.tick || a.lane - b.lane;
 
-// Modelo em ticks -> notas que a pista desenha (src aponta para a nota editável).
+// Notas do mesmo tick -> acordes: [{tick, gems: [nota de cada cor]}]
+function chordsOf(gems) {
+  const out = [];
+  for (const g of gems) {
+    const last = out[out.length - 1];
+    if (last && last.tick === g.tick) last.gems.push(g); else out.push({ tick: g.tick, gems: [g] });
+  }
+  return out;
+}
+
+// Modelo em ticks -> notas que a pista desenha (gems[cor] aponta para a nota editável).
 function renderFrets(chart, instr) {
   const m = chart.edit[instr], tm = chart.tm, out = {};
+  const sustainEnd = (g) => g.len > chart.res / 3 ? tm.time(g.tick + g.len) : null;
   for (const diff of DIFFS) {
     let prev = null;
-    out[diff] = (m.diffs[diff] || []).map(n => {
-      const natural = prev !== null && n.lanes.length === 1 && n.tick - prev.tick <= m.hopoTicks && !prev.lanes.includes(n.lanes[0]);
-      prev = n;
-      const sustain = n.len > chart.res / 3;
-      return { time: tm.time(n.tick), end: sustain ? tm.time(n.tick + n.len) : null, lanes: n.lanes,
-               hopo: n.force ? n.force === "hopo" : natural, natural,
-               tap: inRanges(m.tap, n.tick), sp: inRanges(m.sp, n.tick), src: n };
+    out[diff] = chordsOf(m.diffs[diff] || []).map(c => {
+      const lanes = c.gems.map(g => g.lane);
+      const natural = prev !== null && lanes.length === 1 && c.tick - prev.tick <= m.hopoTicks && !prev.lanes.includes(lanes[0]);
+      const force = c.gems.find(g => g.force)?.force;
+      const ends = Object.fromEntries(c.gems.map(g => [g.lane, sustainEnd(g)]));
+      const sustains = Object.values(ends).filter(e => e !== null);
+      prev = { tick: c.tick, lanes };
+      return { tick: c.tick, time: tm.time(c.tick), end: sustains.length ? Math.max(...sustains) : null, ends, lanes, hopo: force ? force === "hopo" : natural, natural,
+               tap: inRanges(m.tap, c.tick), sp: inRanges(m.sp, c.tick), gems: Object.fromEntries(c.gems.map(g => [g.lane, g])) };
     });
   }
   return out;
@@ -363,9 +387,10 @@ function chartToMidi(chart) {
     for (const diff of m.dirty) {
       const base = BASE[diff];
       for (let k = 0; k <= 6; k++) drop.add(base + k);
-      for (const n of m.diffs[diff] || []) {
-        for (const ln of n.lanes) note(n.tick, n.len || short, base + ln);
-        if (n.force) note(n.tick, 1, base + (n.force === "hopo" ? 5 : 6));
+      for (const c of chordsOf(m.diffs[diff] || [])) {
+        for (const g of c.gems) note(g.tick, g.len || short, base + g.lane);
+        const force = c.gems.find(g => g.force)?.force;
+        if (force) note(c.tick, 1, base + (force === "hopo" ? 5 : 6));
       }
     }
     if (m.sharedDirty) {
@@ -587,7 +612,15 @@ async function loadSong(fileMap, served = false) {
   const chartFile = fileMap.get("notes.mid") || fileMap.get("notes.chart");
   if (!chartFile) { alert("A pasta não tem notes.mid nem notes.chart."); return; }
   const chart = await readChartFile(chartFile, ini);
+  if (chart.midi) {
+    const locksFile = fileMap.get("notes.locks.json");
+    let locks = null;
+    try { locks = locksFile ? JSON.parse(new TextDecoder("utf-8").decode(await locksFile.read())) : null; }
+    catch { alert("O notes.locks.json está corrompido; os compassos travados dele foram ignorados."); }
+    startEditTracking(chart, locks);
+  }
   state.charts = [{ label: "Esta chart", chart }];
+  state.ini = ini;
   Object.assign(state, { served, dirty: false, undo: [], redo: [], drag: null, sel: { key: "", set: new Set(), lane: null } });
   if (state.editMode && !Object.keys(chart.edit || {}).length) toggleEdit();
   updateEditStatus();
@@ -744,6 +777,17 @@ function drawLane(lane, now, lookahead) {
     const x0 = cx - halfW(0) + i * 2 * halfW(0) / nLanes, x1 = cx - halfW(1) + i * 2 * halfW(1) / nLanes;
     g.beginPath(); g.moveTo(x0, strikeY + 30); g.lineTo(x1, topY); g.stroke();
   }
+  // Compassos travados (editados à mão), só no modo de edição
+  if (state.editMode && lane.chartIndex === 0 && chart.measures) {
+    g.fillStyle = "rgba(255, 196, 80, 0.07)";
+    for (const idx of lockedMeasures(chart, lane.instr, lane.diff)) {
+      const [a, b] = chart.measures[idx];
+      const z0 = Math.max(0, zOf(chart.tm.time(a))), z1 = Math.min(1, zOf(chart.tm.time(b)));
+      if (z1 <= z0) continue;
+      g.beginPath(); g.moveTo(cx - halfW(z0), yOf(z0)); g.lineTo(cx - halfW(z1), yOf(z1));
+      g.lineTo(cx + halfW(z1), yOf(z1)); g.lineTo(cx + halfW(z0), yOf(z0)); g.closePath(); g.fill();
+    }
+  }
   // Batidas, compassos e seções
   for (const line of chart.grid) {
     const z = zOf(line.time);
@@ -782,10 +826,12 @@ function drawLane(lane, now, lookahead) {
   // Sustains primeiro
   for (const n of visible) {
     if (!n.end || drums) continue;
-    const z0 = Math.max(0, zOf(n.time)), z1 = Math.min(1, zOf(n.end));
-    if (z1 <= z0) continue;
     const lanesToDraw = n.open ? [] : n.lanes;
     for (const ln of lanesToDraw) {
+      const end = n.ends ? n.ends[ln] : n.end;   // no editor cada cor tem o próprio sustain
+      if (!end) continue;
+      const z0 = Math.max(0, zOf(n.time)), z1 = Math.min(1, zOf(end));
+      if (z1 <= z0) continue;
       const w0 = gemR * 0.28 * scale(z0) / scale(0) * 1.4, w1 = gemR * 0.28 * scale(z1) / scale(0) * 1.4;
       g.fillStyle = n.sp ? css("--sp") : colors[ln];
       g.globalAlpha = 0.75;
@@ -832,7 +878,7 @@ function drawLane(lane, now, lookahead) {
         g.fillStyle = "rgba(255,255,255,0.35)";
         g.beginPath(); g.ellipse(x, y - rr * 0.12, rr * 0.55, rr * 0.2, 0, 0, Math.PI * 2); g.fill();
       }
-      if (sel?.has(n.src)) {
+      if (sel?.has(n.gems?.[ln])) {
         g.strokeStyle = "#fff"; g.lineWidth = 2.5;
         g.beginPath(); g.ellipse(x, y, r * 1.22, r * 0.72, 0, 0, Math.PI * 2); g.stroke();
       }
@@ -856,7 +902,8 @@ function drawRoll(lane, now) {
   const xOf = (time) => nowX + (time - t) * pps;
   const yOf = (row) => bottom - (row + 0.5) * rowH;
   const t0 = t - nowX / pps, t1 = t + (W - nowX) / pps;
-  const endOf = (n) => n.src ? chart.tm.time(n.src.tick + n.src.len) : (n.end ?? n.time);
+  // Fim da nota de cada cor: no editor, o comprimento MIDI de verdade (mesmo curto)
+  const endOf = (n, ln) => n.gems ? chart.tm.time(n.gems[ln].tick + n.gems[ln].len) : (n.end ?? n.time);
   const model = lane.chartIndex === 0 ? chart.edit?.[lane.instr] : null;
   g.clearRect(0, 0, W, H);
 
@@ -865,6 +912,17 @@ function drawRoll(lane, now) {
     g.fillRect(0, bottom - (r + 1) * rowH, W, rowH);
     g.fillStyle = colors[r]; g.globalAlpha = 0.6;
     g.fillRect(0, bottom - (r + 1) * rowH + 2, 4, rowH - 4); g.globalAlpha = 1;
+  }
+  // Compassos travados (editados à mão), só no modo de edição
+  if (state.editMode && model && chart.measures) {
+    g.font = "10px system-ui"; g.textBaseline = "middle"; g.textAlign = "left";
+    for (const idx of lockedMeasures(chart, lane.instr, lane.diff)) {
+      const [a, b] = chart.measures[idx];
+      const x0 = xOf(chart.tm.time(a)), x1 = xOf(chart.tm.time(b));
+      if (x1 < 0 || x0 > W) continue;
+      g.fillStyle = "rgba(255, 196, 80, 0.07)"; g.fillRect(x0, top, x1 - x0, bottom - top);
+      g.fillStyle = "#e0b050"; g.fillText("🔒", x0 + 3, top + 8);
+    }
   }
   // Grade de encaixe (só editando), batidas e compassos
   const step = snapStep(chart);
@@ -903,20 +961,20 @@ function drawRoll(lane, now) {
   const sel = selectionFor(lane);
   for (const n of notes) {
     if (n.time > t1) break;
-    const endT = endOf(n);
-    if (endT < t0) continue;
-    const x0 = xOf(n.time), x1 = Math.max(x0 + minW, xOf(endT));
+    const ends = n.lanes.map(ln => endOf(n, ln));
+    if (Math.max(n.time, ...ends) < t0) continue;
+    const x0 = xOf(n.time);
     if (n.open) {
       g.fillStyle = css("--purple"); g.globalAlpha = 0.55;
-      g.fillRect(x0, top, x1 - x0, bottom - top); g.globalAlpha = 1;
+      g.fillRect(x0, top, Math.max(minW, xOf(n.end ?? n.time) - x0), bottom - top); g.globalAlpha = 1;
       continue;
     }
-    for (const ln of n.lanes) {
-      const y = yOf(ln);
+    n.lanes.forEach((ln, i) => {
+      const y = yOf(ln), x1 = Math.max(x0 + minW, xOf(ends[i]));
       g.fillStyle = colors[ln];
       g.beginPath(); g.roundRect(x0, y - noteH / 2, x1 - x0, noteH, 4); g.fill();
       g.strokeStyle = n.sp ? css("--sp") : "rgba(0,0,0,0.5)"; g.lineWidth = n.sp ? 2 : 1; g.stroke();
-      if (sel?.has(n.src)) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.beginPath(); g.roundRect(x0 - 2, y - noteH / 2 - 2, x1 - x0 + 4, noteH + 4, 5); g.stroke(); }
+      if (sel?.has(n.gems?.[ln])) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.beginPath(); g.roundRect(x0 - 2, y - noteH / 2 - 2, x1 - x0 + 4, noteH + 4, 5); g.stroke(); }
       // Como na pista: HOPO = miolo branco, tap = miolo escuro, prato = losango
       if (n.hopo || n.tap) {
         g.fillStyle = n.tap ? "#111" : "#fff";
@@ -926,7 +984,7 @@ function drawRoll(lane, now) {
         const r = noteH * 0.3, cx = x0 + 7;
         g.fillStyle = "#fff"; g.beginPath(); g.moveTo(cx - r, y); g.lineTo(cx, y - r); g.lineTo(cx + r, y); g.lineTo(cx, y + r); g.closePath(); g.fill();
       }
-    }
+    });
   }
   g.fillStyle = css("--accent"); g.fillRect(nowX - 1, top - 6, 2, bottom - top + 6);
   const d = state.drag;
@@ -940,7 +998,7 @@ function drawRoll(lane, now) {
     t, t0, t1,
     locate: (x, y) => ({ time: t + (x - nowX) / pps, lane: Math.max(0, Math.min(nRows - 1, Math.floor((bottom - y) / rowH))) }),
     hit(n, ln, x, y) {
-      const x0 = xOf(n.time), x1 = Math.max(x0 + minW, xOf(endOf(n)));
+      const x0 = xOf(n.time), x1 = Math.max(x0 + minW, xOf(endOf(n, ln)));
       if (Math.abs(y - yOf(ln)) > noteH / 2 + 2 || x < x0 - 2 || x > x1 + 3) return 0;
       return x > x1 - 5 ? 2 : 1;   // 2 = borda direita: muda o sustain
     },
@@ -1072,7 +1130,7 @@ function activeLane() {
 }
 
 function cloneModel(m) {
-  return { diffs: Object.fromEntries(Object.entries(m.diffs).map(([d, list]) => [d, list.map(n => ({ ...n, lanes: n.lanes.slice() }))])),
+  return { diffs: Object.fromEntries(Object.entries(m.diffs).map(([d, list]) => [d, list.map(g => ({ ...g }))])),
            sp: m.sp.map(r => r.slice()), tap: m.tap.map(r => r.slice()) };
 }
 function pushUndo(lane) {
@@ -1091,22 +1149,25 @@ function undoRedo(from, to) {
   changed(snap.instr);
 }
 
-// Mesmo tick = mesma nota (acorde); notas sem cor somem.
+// Notas apagadas (dead) somem; duas da mesma cor no mesmo tick viram uma só.
 function normalize(m, diff) {
   const out = [];
-  for (const n of m.diffs[diff].filter(n => n.lanes.length).sort((a, b) => a.tick - b.tick)) {
+  for (const g of m.diffs[diff].filter(g => !g.dead).sort(byTickLane)) {
     const prev = out[out.length - 1];
-    if (prev && prev.tick === n.tick) {
-      for (const l of n.lanes) if (!prev.lanes.includes(l)) prev.lanes.push(l);
-      prev.lanes.sort(); prev.len = Math.max(prev.len, n.len);
-      if (state.sel.set.delete(n)) state.sel.set.add(prev);
-    } else {
-      n.lanes = [...new Set(n.lanes)].sort();
-      out.push(n);
-    }
+    if (prev && prev.tick === g.tick && prev.lane === g.lane) {
+      prev.len = Math.max(prev.len, g.len); prev.force ||= g.force;
+      if (state.sel.set.delete(g)) state.sel.set.add(prev);
+    } else out.push(g);
+  }
+  // O sustain não passa da próxima nota da mesma cor (no MIDI a mesma altura não pode se sobrepor).
+  const next = new Map();
+  for (let k = out.length - 1; k >= 0; k--) {
+    const g = out[k], nx = next.get(g.lane);
+    if (nx !== undefined && g.tick + g.len > nx) g.len = nx - g.tick;
+    next.set(g.lane, g.tick);
   }
   m.diffs[diff] = out;
-  for (const n of state.sel.set) if (!n.lanes.length) state.sel.set.delete(n);
+  for (const g of state.sel.set) if (g.dead) state.sel.set.delete(g);
 }
 function changed(instr) {
   const chart = state.charts[0].chart;
@@ -1134,110 +1195,248 @@ function updateEditStatus() {
 }
 
 // --- comandos sobre a seleção ---------------------------------------------
+// A seleção guarda notas de uma cor só; acordes inteiros entram com duplo clique ou seleção por área.
 function selected(lane) { return [...(selectionFor(lane) || [])]; }
+// Acordes (como a pista mostra) dos ticks que têm alguma nota selecionada
+function selectedChords(lane) {
+  const ticks = new Set(selected(lane).map(g => g.tick));
+  return state.charts[0].chart.tracks[lane.instr][lane.diff].filter(n => ticks.has(n.tick));
+}
 
 function setFret(lane, k, toggle) {
-  const notes = selected(lane);
-  if (!notes.length) return;
-  edit(lane, () => {
-    for (const n of notes) {
-      if (!toggle) n.lanes = [k];
-      else if (!n.lanes.includes(k)) n.lanes.push(k);
-      else if (n.lanes.length > 1) n.lanes = n.lanes.filter(l => l !== k);
+  const gems = selected(lane);
+  if (!gems.length) return;
+  if (!toggle) { edit(lane, () => { for (const g of gems) g.lane = k; }); return; }
+  // Shift: põe ou tira a cor k em cada acorde da seleção (sem deixar acorde vazio)
+  const added = [];
+  edit(lane, (m, list) => {
+    for (const c of selectedChords(lane)) {
+      const has = c.gems[k];
+      if (has && c.lanes.length > 1) has.dead = true;
+      else if (!has) {
+        const like = Object.values(c.gems)[0];
+        const g = { tick: c.tick, len: like.len, lane: k, force: like.force };
+        list.push(g); added.push(g);
+      }
     }
   });
+  setSelection(lane, [...selected(lane), ...added]);
 }
 function toggleHopo(lane) {
-  const notes = selected(lane);
-  if (!notes.length) return;
-  const shown = new Map(state.charts[0].chart.tracks[lane.instr][lane.diff].map(n => [n.src, n]));
-  const target = !notes.every(n => shown.get(n)?.hopo);
+  const chords = selectedChords(lane);
+  if (!chords.length) return;
+  const target = !chords.every(c => c.hopo);
   // Só força quando o natural (pela distância entre as notas) não dá o que se quer.
-  edit(lane, () => { for (const n of notes) n.force = shown.get(n)?.natural === target ? null : (target ? "hopo" : "strum"); });
+  edit(lane, () => {
+    for (const c of chords) for (const g of Object.values(c.gems)) g.force = c.natural === target ? null : (target ? "hopo" : "strum");
+  });
 }
 function toggleTap(lane) {
-  const notes = selected(lane);
-  if (!notes.length) return;
+  const ticks = [...new Set(selected(lane).map(g => g.tick))];
+  if (!ticks.length) return;
   edit(lane, (m) => {
-    const off = notes.every(n => inRanges(m.tap, n.tick));
-    for (const n of notes) m.tap = off ? subRange(m.tap, n.tick, n.tick + 1) : normRanges([...m.tap, [n.tick, n.tick + 1]]);
+    const off = ticks.every(t => inRanges(m.tap, t));
+    for (const t of ticks) m.tap = off ? subRange(m.tap, t, t + 1) : normRanges([...m.tap, [t, t + 1]]);
   }, true);
 }
 function toggleSp(lane) {
-  const notes = selected(lane);
-  if (!notes.length) return;
+  const gems = selected(lane);
+  if (!gems.length) return;
   edit(lane, (m) => {
-    const a = Math.min(...notes.map(n => n.tick)), b = Math.max(...notes.map(n => n.tick + Math.max(1, n.len)));
-    m.sp = notes.every(n => inRanges(m.sp, n.tick)) ? subRange(m.sp, a, b) : normRanges([...m.sp, [a, b]]);
+    const a = Math.min(...gems.map(g => g.tick)), b = Math.max(...gems.map(g => g.tick + Math.max(1, g.len)));
+    m.sp = gems.every(g => inRanges(m.sp, g.tick)) ? subRange(m.sp, a, b) : normRanges([...m.sp, [a, b]]);
   }, true);
 }
 function deleteSelected(lane) {
-  const notes = selected(lane);
-  if (notes.length) edit(lane, () => { for (const n of notes) n.lanes = []; });
+  const gems = selected(lane);
+  if (gems.length) edit(lane, () => { for (const g of gems) g.dead = true; });
 }
 // No MIDI o tap é um trecho de tempo, não da nota: quando notas tap mudam de tick, o trecho vai junto.
-//   moves: [[tick antigo, nota já no tick novo]]; tapBase: os trechos de antes da mudança
-function carryTap(m, moves, tapBase = m.tap) {
-  const tapped = moves.filter(([old]) => inRanges(tapBase, old));
+//   moves: [[tick antigo, nota já no tick novo]]; tapBase: os trechos de antes da mudança.
+//   O tick antigo só perde o tap se nenhuma nota ficou nele (ex.: tirar uma cor de um acorde tap).
+function carryTap(m, moves, list, tapBase = m.tap) {
+  const tapped = moves.filter(([old, g]) => old !== g.tick && inRanges(tapBase, old));
   if (!tapped.length) return;
+  const stays = new Set(list.filter(g => !g.dead).map(g => g.tick));
   let tap = tapBase;
-  for (const [old] of tapped) tap = subRange(tap, old, old + 1);
-  m.tap = normRanges([...tap, ...tapped.map(([, n]) => [n.tick, n.tick + 1])]);
+  for (const [old] of tapped) if (!stays.has(old)) tap = subRange(tap, old, old + 1);
+  m.tap = normRanges([...tap, ...tapped.map(([, g]) => [g.tick, g.tick + 1])]);
   m.sharedDirty = true;
 }
 function moveSelected(lane, dt, dl) {
-  const notes = selected(lane);
-  if (!notes.length) return;
-  const lanes = notes.flatMap(n => n.lanes);
+  const gems = selected(lane);
+  if (!gems.length) return;
+  const lanes = gems.map(g => g.lane);
   if (Math.min(...lanes) + dl < 0 || Math.max(...lanes) + dl > 4) dl = 0;
-  if (Math.min(...notes.map(n => n.tick)) + dt < 0) dt = 0;
-  if (dt || dl) edit(lane, (m) => {
-    const moves = notes.map(n => [n.tick, n]);
-    for (const n of notes) { n.tick += dt; n.lanes = n.lanes.map(l => l + dl); }
-    carryTap(m, moves);
+  if (Math.min(...gems.map(g => g.tick)) + dt < 0) dt = 0;
+  if (dt || dl) edit(lane, (m, list) => {
+    const moves = gems.map(g => [g.tick, g]);
+    for (const g of gems) { g.tick += dt; g.lane += dl; }
+    carryTap(m, moves, list);
   });
 }
 function stretchSelected(lane, dlen) {
-  const notes = selected(lane);
-  if (notes.length) edit(lane, () => { for (const n of notes) n.len = Math.max(0, n.len + dlen); });
+  const gems = selected(lane);
+  if (gems.length) edit(lane, () => { for (const g of gems) g.len = Math.max(0, g.len + dlen); });
 }
 function copySelected(lane) {
-  const notes = selected(lane).sort((a, b) => a.tick - b.tick);
+  const gems = selected(lane).sort(byTickLane);
   const tap = state.charts[0].chart.edit[lane.instr].tap;
-  if (notes.length) state.clip = notes.map(n => ({ dt: n.tick - notes[0].tick, len: n.len, lanes: n.lanes.slice(), force: n.force, tap: inRanges(tap, n.tick) }));
+  if (gems.length) state.clip = gems.map(g => ({ dt: g.tick - gems[0].tick, len: g.len, lane: g.lane, force: g.force, tap: inRanges(tap, g.tick) }));
 }
 function paste(lane) {
   if (!state.clip) return;
   const chart = state.charts[0].chart, base = snapTick(chart, nowTick(chart));
   let created = [];
   edit(lane, (m, list) => {
-    created = state.clip.map(c => ({ tick: base + c.dt, len: c.len, lanes: c.lanes.slice(), force: c.force }));
+    created = state.clip.map(c => ({ tick: base + c.dt, len: c.len, lane: c.lane, force: c.force }));
     list.push(...created);
-    const taps = created.filter((n, i) => state.clip[i].tap).map(n => [n.tick, n.tick + 1]);
+    const taps = created.filter((g, i) => state.clip[i].tap).map(g => [g.tick, g.tick + 1]);
     if (taps.length) m.tap = normRanges([...m.tap, ...taps]);
   }, true);
   const list = chart.edit[lane.instr].diffs[lane.diff];
-  setSelection(lane, created.filter(n => list.includes(n)));
+  setSelection(lane, created.filter(g => list.includes(g)));
 }
 
-async function saveChart() {
+// --- travas: compassos mexidos à mão, que a IA não pode alterar -----------
+//   chart.locks[instr][diff | "shared"] = Set(índice do compasso); "shared" = tap/Star Power (todas as dificuldades)
+//   chart.base: a chart como estava ao abrir ou na última vez que foi salva (para achar o que mudou)
+//   chart.edits: o antes/depois de cada compasso mexido desde que a música foi aberta (vai no pedido à IA)
+const LANE_NAMES = ["verde", "vermelho", "amarelo", "azul", "laranja"];
+
+// Compassos [início, fim) em ticks, até um pouco depois do fim da música
+function measureTicks(chart) {
+  const out = [], sigs = chart.tm.sigs, end = chart.tm.tick(chart.endTime) + chart.res * 16;
+  sigs.forEach((s, i) => {
+    const len = chart.res * 4 / s.den * s.num, stop = i + 1 < sigs.length ? sigs[i + 1].tick : end;
+    for (let t = s.tick; t < stop; t += len) out.push([Math.round(t), Math.round(Math.min(t + len, stop))]);
+  });
+  return out;
+}
+function measureOf(chart, tick) {
+  const ms = chart.measures;
+  let lo = 0, hi = ms.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ms[m][0] <= tick) lo = m; else hi = m - 1; }
+  return lo;
+}
+const cloneEdits = (chart) => Object.fromEntries(Object.entries(chart.edit).map(([i, m]) => [i, cloneModel(m)]));
+function startEditTracking(chart, locksJsonData) {
+  chart.measures = measureTicks(chart);
+  chart.base = cloneEdits(chart);
+  chart.edits = new Map();
+  chart.locks = {};
+  for (const [instr, byKey] of Object.entries(locksJsonData?.locks || {})) {
+    for (const [key, ranges] of Object.entries(byKey)) {
+      for (const [a] of ranges) ((chart.locks[instr] ||= {})[key] ||= new Set()).add(measureOf(chart, a));
+    }
+  }
+}
+function lockedMeasures(chart, instr, diff) {
+  return new Set([...(chart.locks?.[instr]?.[diff] || []), ...(chart.locks?.[instr]?.shared || [])]);
+}
+function locksJson(chart) {
+  const locks = {};
+  for (const [instr, byKey] of Object.entries(chart.locks)) {
+    for (const [key, set] of Object.entries(byKey)) {
+      if (set.size) (locks[instr] ||= {})[key] = [...set].sort((a, b) => a - b).map(i => [...chart.measures[i], i + 1]);
+    }
+  }
+  return { version: 1, resolution: chart.res,
+           about: "Compassos editados à mão no ai-charter-view: [início, fim) em ticks e o número do compasso. " +
+                  "\"shared\" = tap e Star Power, que valem para todas as dificuldades. A IA não altera esses trechos.",
+           locks };
+}
+// O que mudou desde chart.base, compasso a compasso: [{instr, diff, measure, before, after}]
+function manualChanges(chart) {
+  const out = [];
+  const key = (g) => `${g.tick}:${g.lane}:${g.len}:${g.force || ""}`;
+  const clip = (ranges, [a, b]) => ranges.filter(([x, y]) => x < b && y > a).map(([x, y]) => [Math.max(x, a), Math.min(y, b)]);
+  for (const [instr, m] of Object.entries(chart.edit)) {
+    const base = chart.base[instr];
+    for (const diff of DIFFS) {
+      const per = new Map();
+      const put = (list, w) => {
+        for (const g of list || []) {
+          const k = measureOf(chart, g.tick);
+          if (!per.has(k)) per.set(k, [[], []]);
+          per.get(k)[w].push(g);
+        }
+      };
+      put(base.diffs[diff], 0); put(m.diffs[diff], 1);
+      for (const [measure, [before, after]] of per) {
+        if (before.map(key).sort().join() !== after.map(key).sort().join()) out.push({ instr, diff, measure, before, after });
+      }
+    }
+    chart.measures.forEach((r, measure) => {
+      const before = { sp: clip(base.sp, r), tap: clip(base.tap, r) }, after = { sp: clip(m.sp, r), tap: clip(m.tap, r) };
+      if (JSON.stringify(before) !== JSON.stringify(after)) out.push({ instr, diff: "shared", measure, before, after });
+    });
+  }
+  return out;
+}
+function recordChanges(chart) {
+  for (const c of manualChanges(chart)) {
+    ((chart.locks[c.instr] ||= {})[c.diff] ||= new Set()).add(c.measure);
+    const k = `${c.instr}/${c.diff}/${c.measure}`;
+    const prev = chart.edits.get(k);
+    chart.edits.set(k, { ...c, before: prev ? prev.before : c.before });   // guarda o "antes" mais antigo
+  }
+}
+// Pedido para a IA (ai_request.json): o texto, onde o usuário estava e o antes/depois de cada compasso mexido.
+function buildRequest(chart, text) {
+  const lane = activeLane() || state.lanes[0];
+  const gem = (g) => ({ tick: g.tick, color: LANE_NAMES[g.lane], len: g.len, ...(g.force ? { force: g.force } : {}) });
+  const side = (c, v) => c.diff === "shared" ? v : v.map(gem);
+  return {
+    version: 1, created: new Date().toISOString(),
+    song: { name: state.ini?.name || "", artist: state.ini?.artist || "" },
+    request: text,
+    focus: lane ? { instrument: lane.instr, difficulty: lane.diff } : null,
+    resolution: chart.res,
+    locks: locksJson(chart).locks,
+    manual_edits: [...chart.edits.values()].sort((a, b) => a.measure - b.measure).map(c => ({
+      instrument: c.instr, difficulty: c.diff, measure: c.measure + 1, ticks: chart.measures[c.measure],
+      before: side(c, c.before), after: side(c, c.after),
+    })),
+    how_to_apply: "Edite uma cópia do notes.mid e rode: ai-charter-revise apply <pasta> <cópia>. " +
+                  "O apply devolve aos compassos travados exatamente o que o usuário deixou.",
+  };
+}
+
+async function saveChart(requestText = null) {
   const chart = state.charts[0]?.chart;
   if (!chart?.midi) return;
-  const bytes = chartToMidi(chart);
+  if (requestText !== null && !state.served) { alert("O pedido à IA precisa da página aberta pelo ai-charter-view."); return; }
+  const locksBefore = JSON.stringify(locksJson(chart));
+  recordChanges(chart);
+  const json = (v) => new TextEncoder().encode(JSON.stringify(v, null, 2));
+  const files = [["notes.mid", chartToMidi(chart)]];
+  if (JSON.stringify(locksJson(chart)) !== locksBefore || requestText !== null) files.push(["notes.locks.json", json(locksJson(chart))]);
+  if (requestText !== null) files.push(["ai_request.json", json(buildRequest(chart, requestText))]);
   try {
-    if (state.served) {
-      const res = await fetch("song/save", { method: "POST", body: bytes,
-                                             headers: { "X-AI-Charter": "save", "Content-Type": "application/octet-stream" } });
-      if (!res.ok) throw new Error(await res.text());
-      const info = await res.json();
-      state.dirty = false; updateEditStatus();
-      $("eStatus").textContent = `salvo em ${info.saved}` + (info.backup ? ` (a original está em ${info.backup})` : "");
-    } else {
-      // Página aberta sem o ai-charter-view: baixa o notes.mid para trocar na pasta.
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(new Blob([bytes], { type: "audio/midi" })); a.download = "notes.mid"; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-      state.dirty = false; updateEditStatus();
+    let info = null;
+    for (const [name, bytes] of files) {
+      if (state.served) {
+        const res = await fetch("song/save?file=" + encodeURIComponent(name), { method: "POST", body: bytes,
+                                headers: { "X-AI-Charter": "save", "Content-Type": "application/octet-stream" } });
+        if (!res.ok) throw new Error(await res.text());
+        if (name === "notes.mid") info = await res.json();
+      } else {
+        // Página aberta sem o ai-charter-view: baixa os arquivos para trocar na pasta.
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([bytes])); a.download = name; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      }
+    }
+    chart.base = cloneEdits(chart);
+    state.dirty = false; updateEditStatus();
+    if (info) $("eStatus").textContent = `salvo em ${info.saved}` + (info.backup ? ` (a original está em ${info.backup})` : "");
+    if (requestText !== null) {
+      $("editbar").classList.remove("show-ai");
+      const measures = new Set([...chart.edits.values()].map(c => `${c.instr}/${c.measure}`)).size;
+      $("eStatus").textContent = `pedido salvo em ai_request.json · ${measures} compasso(s) editado(s) ficam travados`;
+      alert("Pedido salvo na pasta da música (ai_request.json).\n\nAgora peça no Claude Code, por exemplo:\n" +
+            `“Processa o pedido de IA da ${state.ini?.name || "música"}.”\n\nDepois de aplicado, recarregue esta página para ver o resultado.`);
     }
   } catch (err) { alert("Não consegui salvar: " + err.message); }
 }
@@ -1262,12 +1461,13 @@ function hitNote(lane, x, y) {
   let found = null;
   for (const n of notes) {
     if (n.time > lane.geo.t1) break;
-    if (!n.src || n.time < lane.geo.t0 - 60) continue;
-    for (const ln of n.lanes) { const part = lane.geo.hit(n, ln, x, y); if (part) found = { n, ln, part }; }
+    if (!n.gems || n.time < lane.geo.t0 - 60) continue;
+    for (const ln of n.lanes) { const part = lane.geo.hit(n, ln, x, y); if (part) found = { n, ln, part, gem: n.gems[ln] }; }
   }
   return found;
 }
 
+// Clique pega só a nota daquela cor; duplo clique pega o acorde inteiro; Shift/Ctrl+clique soma à seleção.
 function onLaneMouseDown(lane, e) {
   if (!editModel(lane) || !lane.geo) return;
   const chart = state.charts[0].chart;
@@ -1276,39 +1476,39 @@ function onLaneMouseDown(lane, e) {
   if (!pos) return;
   e.preventDefault();
   const hit = hitNote(lane, x, y);
-  if (e.button === 2) {   // botão direito: tira essa cor da nota (a nota some se era a única)
-    if (hit) edit(lane, () => { hit.n.src.lanes = hit.n.src.lanes.filter(l => l !== hit.ln); });
+  if (e.button === 2) {   // botão direito: apaga essa cor (o resto do acorde fica)
+    if (hit) edit(lane, () => { hit.gem.dead = true; });
     return;
   }
   if (e.button !== 0) return;
   const sel = new Set(selectionFor(lane) || []);
   if (hit) {
-    const src = hit.n.src;
     if (e.shiftKey || e.ctrlKey || e.metaKey) {
-      if (!sel.delete(src)) sel.add(src);
+      if (!sel.delete(hit.gem)) sel.add(hit.gem);
       setSelection(lane, sel);
       return;
     }
-    if (!sel.has(src)) setSelection(lane, [src]); else state.sel.lane = lane;
-    startDrag(lane, (hit.part === 2 && lane.view === "roll") || e.altKey ? "resize" : "move", src, pos, false);
+    if (e.detail === 2) setSelection(lane, Object.values(hit.n.gems));
+    else if (!sel.has(hit.gem)) setSelection(lane, [hit.gem]);
+    else state.sel.lane = lane;
+    startDrag(lane, (hit.part === 2 && lane.view === "roll") || e.altKey ? "resize" : "move", hit.gem, pos, false);
   } else if (e.shiftKey) {
     state.drag = { kind: "box", lane, x0: x, y0: y, x, y, add: sel };
   } else {
     const tick = snapTick(chart, chart.tm.tick(pos.time));
-    let note;
+    let gem;
     edit(lane, (m, list) => {
-      note = list.find(n => n.tick === tick);
-      if (note) { if (!note.lanes.includes(pos.lane)) note.lanes.push(pos.lane); }
-      else list.push(note = { tick, len: 0, lanes: [pos.lane], force: null });
+      gem = list.find(g => g.tick === tick && g.lane === pos.lane);
+      if (!gem) list.push(gem = { tick, len: 0, lane: pos.lane, force: list.find(g => g.tick === tick)?.force ?? null });
     });
-    setSelection(lane, [note]);
-    startDrag(lane, "move", note, pos, true);
+    setSelection(lane, [gem]);
+    startDrag(lane, "move", gem, pos, true);
   }
 }
 function startDrag(lane, kind, anchor, pos, pushed) {
   const chart = state.charts[0].chart;
   state.drag = { kind, lane, anchor, pushed, startTick: chart.tm.tick(pos.time), startLane: pos.lane, tap: chart.edit[lane.instr].tap,
-                 orig: new Map([...state.sel.set].map(n => [n, { tick: n.tick, len: n.len, lanes: n.lanes.slice() }])) };
+                 orig: new Map([...state.sel.set].map(g => [g, { tick: g.tick, len: g.len, lane: g.lane }])) };
 }
 window.addEventListener("mousemove", (e) => {
   const d = state.drag;
@@ -1323,23 +1523,23 @@ window.addEventListener("mousemove", (e) => {
   if (d.kind === "move") {
     const origs = [...d.orig.values()];
     const minTick = Math.min(...origs.map(o => o.tick));
-    const lanes = origs.flatMap(o => o.lanes);
+    const lanes = origs.map(o => o.lane);
     const dt = Math.max(-minTick, snapTick(chart, a.tick + delta) - a.tick);
     const dl = Math.max(-Math.min(...lanes), Math.min(4 - Math.max(...lanes), pos.lane - d.startLane));
     if (dt === (d.dt ?? 0) && dl === (d.dl ?? 0)) return;
     if (!d.pushed) { pushUndo(d.lane); d.pushed = true; }
     d.dt = dt; d.dl = dl;
-    for (const [n, o] of d.orig) { n.tick = o.tick + dt; n.lanes = o.lanes.map(l => l + dl); }
-    carryTap(m, [...d.orig].map(([n, o]) => [o.tick, n]), d.tap);
+    for (const [g, o] of d.orig) { g.tick = o.tick + dt; g.lane = o.lane + dl; }
+    carryTap(m, [...d.orig].map(([g, o]) => [o.tick, g]), m.diffs[d.lane.diff], d.tap);
   } else {
     const end = snapTick(chart, a.tick + a.len + delta);
     const dlen = Math.max(0, end - a.tick) - a.len;
     if (dlen === (d.dlen ?? 0)) return;
     if (!d.pushed) { pushUndo(d.lane); d.pushed = true; }
     d.dlen = dlen;
-    for (const [n, o] of d.orig) n.len = Math.max(0, o.len + dlen);
+    for (const [g, o] of d.orig) g.len = Math.max(0, o.len + dlen);
   }
-  m.diffs[d.lane.diff].sort((p, q) => p.tick - q.tick);
+  m.diffs[d.lane.diff].sort(byTickLane);
   m.dirty.add(d.lane.diff);
   changed(d.lane.instr);
 });
@@ -1353,7 +1553,8 @@ window.addEventListener("mouseup", () => {
     if (!p || !q) return;
     const [ta, tb] = [Math.min(p.time, q.time), Math.max(p.time, q.time)];
     const [la, lb] = [Math.min(p.lane, q.lane), Math.max(p.lane, q.lane)];
-    const inside = chart.tracks[d.lane.instr][d.lane.diff].filter(n => n.time >= ta && n.time <= tb && n.lanes.some(l => l >= la && l <= lb)).map(n => n.src);
+    const inside = chart.tracks[d.lane.instr][d.lane.diff].filter(n => n.time >= ta && n.time <= tb)
+      .flatMap(n => n.lanes.filter(l => l >= la && l <= lb).map(l => n.gems[l]));
     setSelection(d.lane, [...d.add, ...inside]);
     return;
   }
@@ -1412,7 +1613,10 @@ $("eSp").onclick = onActive(toggleSp);
 $("eDel").onclick = onActive(deleteSelected);
 $("eUndo").onclick = () => undoRedo(state.undo, state.redo);
 $("eRedo").onclick = () => undoRedo(state.redo, state.undo);
-$("eSave").onclick = saveChart;
+$("eSave").onclick = () => saveChart();
+$("eHelp").onclick = () => $("editbar").classList.toggle("show-help");
+$("eAi").onclick = () => { $("editbar").classList.toggle("show-ai"); if ($("editbar").classList.contains("show-ai")) $("aiText").focus(); };
+$("aiSend").onclick = () => saveChart($("aiText").value.trim());
 window.addEventListener("beforeunload", (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ======================================================================
@@ -1457,7 +1661,7 @@ $("timeline").onclick = (e) => {
   if (total) timeSource().seek((e.clientX - r.left) / r.width * total);
 };
 document.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
   if (editKey(e)) { e.preventDefault(); return; }
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   if (e.code === "ArrowLeft") timeSource().seek(timeSource().position - 5);
