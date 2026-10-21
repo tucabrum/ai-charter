@@ -1,0 +1,161 @@
+# =============================================================================
+# Regras de charting do ai-charter
+#
+# Este arquivo define COMO as charts são geradas. Para personalizar, copie-o,
+# altere só o que quiser e rode:  ai-charter musica.flac --rules minhas_regras.toml
+# (valores que você não mudar continuam vindo deste arquivo).
+#
+# Unidade "beats" = batidas (semínimas). 1.0 = uma batida, 0.5 = colcheia,
+# 0.25 = semicolcheia. "grid" = quantas subdivisões por batida são permitidas
+# (4 = semicolcheias, 2 = colcheias, 1 = só nas batidas).
+# =============================================================================
+
+[general]
+resolution = 192               # ticks por batida no arquivo .chart (padrão do Clone Hero)
+allow_triplets = true          # permite notas em quiálteras (tercinas) no Expert
+starpower_every_measures = 8   # uma frase de Star Power a cada N compassos
+starpower_phrase_beats = 4     # duração de cada frase de Star Power (em batidas)
+drum_fill_every_measures = 4   # bateria: uma virada de ativação do Star Power a cada N compassos (0 = nenhuma)
+min_stem_energy = 0.03         # stems mais fracos que isso (relativo à mix) não viram chart
+sections = true                # marca seções (Section 1, 2...) para o modo prática
+section_seconds = 25.0         # tamanho médio desejado de cada seção
+
+# ---------------------------------------------------------------------------
+# Detecção de notas em instrumentos com altura (guitarra, baixo, teclado)
+# ---------------------------------------------------------------------------
+[detection.guitar]
+fmin = "E2"            # nota mais grave procurada
+octaves = 5            # quantas oitavas acima de fmin analisar
+onset_delta = 0.07     # sensibilidade dos ataques (menor = detecta mais notas)
+min_rms_db = -35.0     # ignora ataques mais baixos que isso (ruído / vazamento)
+chord_ratio = 0.65     # quão forte a 2ª nota precisa ser para virar acorde (0-1)
+release_ratio = 0.35   # a nota "acaba" quando o volume cai abaixo disso × pico
+lane_window = 8        # nº de notas vizinhas usadas para decidir a lane pelo contorno
+
+[detection.bass]
+fmin = "E1"
+octaves = 4
+onset_delta = 0.07
+min_rms_db = -35.0
+chord_ratio = 0.9
+release_ratio = 0.35
+lane_window = 8
+
+[detection.keys]
+fmin = "A1"
+octaves = 6
+onset_delta = 0.07
+min_rms_db = -35.0
+chord_ratio = 0.6
+release_ratio = 0.3
+lane_window = 8
+
+# ---------------------------------------------------------------------------
+# Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
+# ---------------------------------------------------------------------------
+[drum_detection]
+kick_band = [30.0, 120.0]
+snare_band = [150.0, 400.0]
+snare_snap_band = [1500.0, 5000.0]
+hihat_band = [7000.0, 16000.0]
+threshold = 0.15             # força mínima (0-1) para aceitar uma batida
+dominance = 1.0              # bumbo: graves ≥ dominance × corpo da caixa (e vice-versa)
+crash_sustain_ratio = 0.3    # prato que mantém essa fração do volume após ~0,1 s vira crash
+crash_min_strength = 0.6
+
+# ---------------------------------------------------------------------------
+# Regras por dificuldade - guitarra, baixo e teclado (5 lanes)
+#   lanes:          quantas cores usar (5 = G R Y B O, 4 = sem laranja, 3 = G R Y)
+#   max_chord:      máximo de notas num acorde
+#   min_gap_beats:  menor distância entre duas notas
+#   allow_offgrid:  permite notas fora do grid (síncopes rápidas)
+#   sustain_min_beats: notas mais curtas que isso não têm sustain
+#   allow_hopos:    se false, força todas as notas a serem palhetadas (strum)
+#   min_reduction:  fração mínima de notas a remover em relação à dificuldade
+#                   acima (0.1 = pelo menos 10% a menos), para nunca ficar igual
+# ---------------------------------------------------------------------------
+[frets.expert]
+lanes = 5
+max_chord = 3
+min_gap_beats = 0.25
+allow_offgrid = true
+grid = 4
+sustain_min_beats = 0.5
+allow_hopos = true
+min_reduction = 0.0
+
+[frets.hard]
+lanes = 5
+max_chord = 2
+min_gap_beats = 0.5
+allow_offgrid = true
+grid = 2
+sustain_min_beats = 0.75
+allow_hopos = true
+min_reduction = 0.1
+
+[frets.medium]
+lanes = 4
+max_chord = 2
+min_gap_beats = 0.5
+allow_offgrid = false
+grid = 2
+sustain_min_beats = 1.0
+allow_hopos = false
+min_reduction = 0.15
+
+[frets.easy]
+lanes = 3
+max_chord = 1
+min_gap_beats = 1.0
+allow_offgrid = false
+grid = 1
+sustain_min_beats = 1.0
+allow_hopos = false
+min_reduction = 0.25
+
+# ---------------------------------------------------------------------------
+# Regras por dificuldade - bateria (Pro Drums, 4 lanes + bumbo)
+#   *_min_gap_beats: menor distância entre duas batidas da mesma peça
+#   max_hands:       quantas peças tocadas com as mãos ao mesmo tempo
+#   min_reduction:   como na guitarra
+# ---------------------------------------------------------------------------
+[drums.expert]
+kick_min_gap_beats = 0.25
+snare_min_gap_beats = 0.25
+hihat_min_gap_beats = 0.25
+crash = true
+max_hands = 2
+allow_offgrid = true
+grid = 4
+min_reduction = 0.0
+
+[drums.hard]
+kick_min_gap_beats = 0.5
+snare_min_gap_beats = 0.5
+hihat_min_gap_beats = 0.5
+crash = true
+max_hands = 2
+allow_offgrid = false
+grid = 2
+min_reduction = 0.1
+
+[drums.medium]
+kick_min_gap_beats = 1.0
+snare_min_gap_beats = 0.5
+hihat_min_gap_beats = 0.5
+crash = true
+max_hands = 1
+allow_offgrid = false
+grid = 2
+min_reduction = 0.15
+
+[drums.easy]
+kick_min_gap_beats = 2.0
+snare_min_gap_beats = 1.0
+hihat_min_gap_beats = 1.0
+crash = false
+max_hands = 1
+allow_offgrid = false
+grid = 1
+min_reduction = 0.25
