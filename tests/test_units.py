@@ -43,6 +43,22 @@ def test_lanes_follow_melodic_contour():
     assert all(0 <= lane <= 4 for lane in lanes)
 
 
+def test_six_note_run_is_repositioned_instead_of_repeating_a_lane():
+    # Escala de 6 notas subindo e voltando: não cabe em 5 lanes.
+    run = [52, 55, 57, 59, 62, 64, 62, 59]
+    ticks = [i * RES // 2 for i in range(len(run))]
+    lanes = assign_lanes(run, n_lanes=5, window=8, ticks=ticks, resolution=RES)
+    for i in range(1, len(run)):
+        assert lanes[i] != lanes[i - 1], f"nota diferente na mesma lane: {lanes}"
+    resets = [i for i in range(1, len(run))
+              if (run[i] > run[i - 1]) != (lanes[i] > lanes[i - 1])]
+    assert len(resets) == 1 and ticks[resets[0]] % RES == 0   # um reposicionamento, no início da batida
+    after = range(resets[0], len(run))
+    for i in after:   # depois do reposicionamento, cada nota fica sempre na mesma lane
+        for j in after:
+            assert (run[i] == run[j]) == (lanes[i] == lanes[j])
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)
