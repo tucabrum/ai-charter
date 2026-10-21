@@ -6,6 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Callable, Hashable, Sequence
 
+import numpy as np
+
 
 @dataclass
 class ChartNote:
@@ -88,14 +90,31 @@ def select_rhythm(cands: Sequence[Candidate], resolution: int, min_gap_beats: fl
 
 
 def enforce_reduction(chosen: list[Candidate], previous_count: int, min_reduction: float,
-                      resolution: int) -> list[Candidate]:
+                      resolution: int,
+                      group: Callable[[Candidate], Hashable] | None = None) -> list[Candidate]:
     """Garante que a dificuldade tenha pelo menos `min_reduction` (0-1) notas a menos
-    que a dificuldade acima, removendo primeiro as notas menos importantes."""
+    que a dificuldade acima, removendo primeiro as notas menos importantes.
+
+    `group(c)`: notas com o mesmo grupo (ex.: a mesma nota em cada repetição de
+    um riff) saem juntas, para as repetições continuarem iguais.
+    """
     limit = int(previous_count * (1.0 - min_reduction))
     if min_reduction <= 0 or len(chosen) <= limit:
         return chosen
-    ranked = sorted(chosen, key=lambda c: c.strength + position_weight(c.tick, resolution), reverse=True)
-    return sorted(ranked[:limit], key=lambda c: c.tick)
+    groups: dict[Hashable, list[Candidate]] = defaultdict(list)
+    for i, c in enumerate(chosen):
+        groups[group(c) if group else i].append(c)
+    # Remove os grupos menos importantes até caber no limite.
+    ranked = sorted(groups.values(), key=lambda g: np.mean(
+        [c.strength + position_weight(c.tick, resolution) for c in g]))
+    count = len(chosen)
+    removed: set[int] = set()
+    for g in ranked:
+        if count <= limit:
+            break
+        removed.update(id(c) for c in g)
+        count -= len(g)
+    return [c for c in chosen if id(c) not in removed]
 
 
 @dataclass
@@ -198,6 +217,17 @@ def star_power_for(notes: list[ChartNote], windows: list[tuple[int, int]]) -> li
             first, last = inside[0], inside[-1]
             phrases.append((first.tick, max(1, last.tick + last.length - first.tick + 1)))
     return phrases
+
+
+def star_power_for_phrases(phrases: list[tuple[int, int]],
+                           windows: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Star Power do vocal: em cada janela, a primeira frase (inteira) que a toca."""
+    chosen = []
+    for start, length in windows:
+        touching = [p for p in phrases if p[0] < start + length and p[0] + p[1] > start]
+        if touching and touching[0] not in chosen:
+            chosen.append(touching[0])
+    return chosen
 
 
 def drum_fills_for(notes: list[ChartNote], windows: list[tuple[int, int]], resolution: int,

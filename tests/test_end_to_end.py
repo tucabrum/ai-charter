@@ -24,7 +24,8 @@ def song(tmp_path_factory):
         shutil.move(paths[name], stems / f"{name}.wav")
     out = folder / "out"
     result = run(Options(input=paths["mix"], output_dir=out, separator="folder", stems_dir=stems,
-                         title="Synth", artist="Test", make_zip=True), log=lambda *_: None)
+                         title="Synth", artist="Test", make_zip=True, output_format="chart"),
+                 log=lambda *_: None)
     return result
 
 

@@ -10,8 +10,10 @@ Três modos:
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import librosa
@@ -23,8 +25,9 @@ from scipy.signal import butter, sosfiltfilt
 STEMS = ("guitar", "bass", "drums", "keys", "vocals", "other")
 
 # Nomes aceitos para cada stem quando o usuário fornece uma pasta.
+# Pode haver VÁRIAS guitarras (ex.: violao.wav + guitarra_solo.wav); as outras são únicas.
 ALIASES = {
-    "guitar": ("guitar", "guitars", "gtr"),
+    "guitar": ("guitar", "guitars", "gtr", "guitarra", "violao", "acoustic", "lead", "solo", "rhythm"),
     "bass": ("bass",),
     "drums": ("drums", "drum", "percussion"),
     "keys": ("keys", "piano", "keyboard", "synth"),
@@ -34,7 +37,7 @@ ALIASES = {
 AUDIO_EXTENSIONS = (".wav", ".flac", ".ogg", ".mp3", ".opus")
 
 
-def separate_demucs(mix_wav: Path, work_dir: Path, model: str = "htdemucs_6s") -> dict[str, Path]:
+def separate_demucs(mix_wav: Path, work_dir: Path, model: str = "htdemucs_6s") -> dict[str, list[Path]]:
     try:
         import demucs  # noqa: F401
     except ImportError as exc:
@@ -51,24 +54,33 @@ def separate_demucs(mix_wav: Path, work_dir: Path, model: str = "htdemucs_6s") -
     # O demucs chama o teclado de "piano".
     names = {"guitar": "guitar", "bass": "bass", "drums": "drums", "keys": "piano",
              "vocals": "vocals", "other": "other"}
-    return {ours: stem_dir / f"{theirs}.wav" for ours, theirs in names.items()
+    return {ours: [stem_dir / f"{theirs}.wav"] for ours, theirs in names.items()
             if (stem_dir / f"{theirs}.wav").exists()}
 
 
-def stems_from_folder(folder: Path) -> dict[str, Path]:
-    found: dict[str, Path] = {}
+def _base_name(filename: str) -> str:
+    """Simplifica o nome do arquivo: "Violão_2" -> "violao" (sem acentos, números e sufixos)."""
+    text = unicodedata.normalize("NFKD", filename.lower())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.split(r"[\s_\-.]+", re.sub(r"\d+$", "", text))[0]
+
+
+def stems_from_folder(folder: Path) -> dict[str, list[Path]]:
+    found: dict[str, list[Path]] = {}
     for file in sorted(folder.iterdir()):
         if file.suffix.lower() not in AUDIO_EXTENSIONS:
             continue
+        base = _base_name(file.stem)
         for stem, aliases in ALIASES.items():
-            if file.stem.lower() in aliases and stem not in found:
-                found[stem] = file
+            if base in aliases and (stem == "guitar" or stem not in found):
+                found.setdefault(stem, []).append(file)
+                break
     if not found:
         raise RuntimeError(f"Nenhum stem reconhecido em {folder} (use nomes como guitar.wav, bass.wav...)")
     return found
 
 
-def separate_simple(mix_wav: Path, work_dir: Path) -> dict[str, Path]:
+def separate_simple(mix_wav: Path, work_dir: Path) -> dict[str, list[Path]]:
     """Separação sem IA: bateria = parte percussiva, baixo = graves harmônicos,
     guitarra = resto harmônico. Não gera teclado nem voz."""
     y, sr = librosa.load(mix_wav, sr=None, mono=True)
@@ -80,12 +92,14 @@ def separate_simple(mix_wav: Path, work_dir: Path) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     stems = {}
     for name, signal in (("drums", percussive), ("bass", low), ("guitar", high)):
-        stems[name] = out_dir / f"{name}.wav"
-        sf.write(stems[name], np.asarray(signal, dtype=np.float32), sr)
+        stems[name] = [out_dir / f"{name}.wav"]
+        sf.write(stems[name][0], np.asarray(signal, dtype=np.float32), sr)
     return stems
 
 
-def separate(mode: str, mix_wav: Path, work_dir: Path, stems_dir: Path | None = None) -> dict[str, Path]:
+def separate(mode: str, mix_wav: Path, work_dir: Path,
+             stems_dir: Path | None = None) -> dict[str, list[Path]]:
+    """Retorna {stem: [arquivos]}; só "guitar" pode ter mais de um arquivo."""
     if mode == "demucs":
         return separate_demucs(mix_wav, work_dir)
     if mode == "folder":

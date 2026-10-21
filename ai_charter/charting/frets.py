@@ -204,8 +204,9 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
     previous_count = len(cands)
     for difficulty, r in rules.items():
         chosen = select_rhythm(cands, resolution, r.min_gap_beats, r.grid, r.allow_offgrid)
-        chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution)
         chosen = copy_repeats(chosen, cands, repeats, resolution, min_gap_beats=r.min_gap_beats)
+        chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution,
+                                   group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
         previous_count = len(chosen)
         lanes = assign_lanes([c.pitch for c in chosen], r.lanes, lane_window,
                              [c.tick for c in chosen], resolution)

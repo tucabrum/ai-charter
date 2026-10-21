@@ -25,6 +25,11 @@ def parse_args(argv: list[str] | None = None) -> Options:
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",
                         help="mapa de tempo constante ou variável (padrão: auto)")
+    parser.add_argument("--lyrics", type=Path,
+                        help="letra (texto, uma linha por frase) para gerar a faixa de vocal; "
+                             "padrão: um .txt com o mesmo nome da música, se existir")
+    parser.add_argument("--format", choices=("mid", "chart"), default="mid",
+                        help="formato da chart: mid (padrão, tem vocais) ou chart")
     parser.add_argument("--title", help="nome da música (padrão: lido das tags do arquivo)")
     parser.add_argument("--artist", help="artista (padrão: lido das tags do arquivo)")
     parser.add_argument("--zip", action="store_true", help="também cria um .zip da pasta da música")
@@ -37,11 +42,14 @@ def parse_args(argv: list[str] | None = None) -> Options:
         parser.error(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
     if not args.input.exists():
         parser.error(f"arquivo não encontrado: {args.input}")
+    if args.lyrics is not None and not args.lyrics.exists():
+        parser.error(f"arquivo de letra não encontrado: {args.lyrics}")
 
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
         rules_path=args.rules, instruments=instruments, tempo_mode=args.tempo,
-        title=args.title, artist=args.artist, make_zip=args.zip, keep_work=args.keep_work,
+        title=args.title, artist=args.artist, lyrics=args.lyrics, output_format=args.format,
+        make_zip=args.zip, keep_work=args.keep_work,
     )
 
 

@@ -38,8 +38,10 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
         }
         chosen = [c for group, gap in groups.values()
                   for c in select_rhythm(group, resolution, gap, r.grid, r.allow_offgrid)]
-        chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution)
         chosen = copy_repeats(chosen, hits, repeats, resolution, ident=lambda c: c.piece)
+        chosen = enforce_reduction(
+            chosen, previous_count, r.min_reduction, resolution,
+            group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick), c.piece))
         previous_count = len(chosen)
 
         by_tick: dict[int, set[str]] = {}

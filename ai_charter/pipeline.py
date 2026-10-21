@@ -15,12 +15,19 @@ from ai_charter.analysis.drums import detect_drum_hits
 from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
-from ai_charter.charting.common import Candidate, TrackChart, dedupe, quantize_tick, star_power_windows
+from ai_charter.analysis.vocals import detect_sung_notes
+from ai_charter.charting.common import (
+    Candidate, TrackChart, dedupe, quantize_tick, star_power_for_phrases, star_power_windows,
+)
 from ai_charter.charting.drums import build_drum_track
 from ai_charter.charting.frets import build_fret_track
+from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
+from ai_charter.charting.lyrics import read_lyrics
+from ai_charter.charting.vocals import VocalTrack, build_vocal_track
 from ai_charter.config import Rules, load_rules
 from ai_charter.export import audio
 from ai_charter.export.chart_writer import SongInfo, write_chart
+from ai_charter.export.midi_writer import write_midi
 from ai_charter.export.song_ini import write_song_ini
 from ai_charter.separation import separate
 
@@ -50,6 +57,8 @@ class Options:
     tempo_mode: str = "auto"
     title: str | None = None
     artist: str | None = None
+    lyrics: Path | None = None     # letra (texto, uma linha por frase); sem ela, não há vocal
+    output_format: str = "mid"     # "mid" (com vocais) ou "chart"
     make_zip: bool = False
     keep_work: bool = False
 
@@ -58,6 +67,8 @@ class Options:
 class Result:
     song_dir: Path
     tracks: dict[str, TrackChart] = field(default_factory=dict)
+    vocals: VocalTrack | None = None
+    guitar_sources: list[str] = field(default_factory=list)  # guitarra escolhida em cada compasso
     bpm: float = 0.0
     zip_path: Path | None = None
 
@@ -66,9 +77,24 @@ def _safe_name(text: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', "_", text).strip() or "song"
 
 
-def _stem_energy(path: Path, mix_rms: float) -> float:
-    y, _ = librosa.load(path, sr=ANALYSIS_SR, mono=True)
-    return float(np.sqrt(np.mean(y ** 2)) / (mix_rms + 1e-12))
+def _stem_energy(paths: list[Path], mix_rms: float) -> float:
+    """Volume do stem (o mais alto, se houver vários arquivos) relativo à mix."""
+    levels = []
+    for path in paths:
+        y, _ = librosa.load(path, sr=ANALYSIS_SR, mono=True)
+        levels.append(np.sqrt(np.mean(y ** 2)))
+    return float(max(levels) / (mix_rms + 1e-12))
+
+
+def _describe_runs(names: list[str]) -> str:
+    """["a", "a", "b"] -> "a (compassos 1-2), b (compasso 3)"."""
+    parts, start = [], 0
+    for i in range(1, len(names) + 1):
+        if i == len(names) or names[i] != names[start]:
+            span = f"compasso {start + 1}" if i - start == 1 else f"compassos {start + 1}-{i}"
+            parts.append(f"{names[start]} ({span})")
+            start = i
+    return ", ".join(parts)
 
 
 def _to_candidates(detected, tempo: TempoMap, rules: Rules) -> list[Candidate]:
@@ -86,13 +112,28 @@ def _to_candidates(detected, tempo: TempoMap, rules: Rules) -> list[Candidate]:
     return dedupe(cands)
 
 
-def chart_pitched(stem: Path, instrument: str, tempo: TempoMap, rules: Rules,
-                  sp_windows) -> TrackChart:
-    y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
+def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Rules,
+                  sp_windows) -> tuple[TrackChart, list[str]]:
+    """Chart de guitarra/baixo/teclado. Com várias guitarras, escolhe uma por compasso."""
     cfg = rules.detection[instrument]
-    detected = detect_pitched_notes(y, sr, cfg)
-    cands = _to_candidates(detected, tempo, rules)
-    return build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)
+    sources = []
+    for stem in stems:
+        y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
+        cands = _to_candidates(detect_pitched_notes(y, sr, cfg), tempo, rules)
+        sources.append(GuitarSource(stem.stem, cands, y, sr))
+    cands, chosen = merge_guitars(sources, tempo, rules.general.resolution, rules.guitar_selection)
+    track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)
+    return track, chosen
+
+
+def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_windows) -> VocalTrack:
+    y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
+    sung = detect_sung_notes(y, sr, rules.vocals)
+    lines = read_lyrics(lyrics, rules.vocals.language)
+    vocals = build_vocal_track(sung, lines, tempo, rules.general.resolution,
+                               rules.general.allow_triplets, rules.vocals)
+    vocals.star_power = star_power_for_phrases(vocals.phrases, sp_windows)
+    return vocals
 
 
 def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackChart:
@@ -143,6 +184,7 @@ def run(opts: Options, log=print) -> Result:
         sp_windows = star_power_windows(last_tick, res, rules.general.starpower_every_measures,
                                         rules.general.starpower_phrase_beats)
         tracks: dict[str, TrackChart] = {}
+        guitar_sources: list[str] = []
         for instrument in opts.instruments:
             stem = stems.get(instrument)
             if stem is None:
@@ -153,12 +195,29 @@ def run(opts: Options, log=print) -> Result:
                 log(f"    {instrument}: stem quase silencioso ({energy:.3f}), pulando")
                 continue
             if instrument == "drums":
-                track = chart_drums(stem, tempo, rules, sp_windows)
+                track = chart_drums(stem[0], tempo, rules, sp_windows)
             else:
-                track = chart_pitched(stem, instrument, tempo, rules, sp_windows)
+                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows)
+                if len(stem) > 1:
+                    guitar_sources = chosen
+                    log(f"    {instrument}: faixas usadas: {_describe_runs(chosen)}")
             counts = ", ".join(f"{d} {len(n)}" for d, n in track.notes.items())
             log(f"    {instrument}: {counts} notas")
             tracks[instrument] = track
+
+        vocals = None
+        lyrics = opts.lyrics
+        if lyrics is None and opts.input.with_suffix(".txt").exists():
+            lyrics = opts.input.with_suffix(".txt")  # letra com o mesmo nome da música
+        if "vocals" not in stems:
+            log("    vocals: sem stem de voz, pulando")
+        elif lyrics is None:
+            log("    vocals: sem letra (use --lyrics letra.txt), pulando")
+        elif opts.output_format != "mid":
+            log("    vocals: o formato .chart não tem faixa de vocal (use --format mid), pulando")
+        else:
+            vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows)
+            log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases")
 
         log("5/5 Exportando para o Clone Hero / YARG...")
         stem_entries: dict[str, str] = {}
@@ -169,7 +228,7 @@ def run(opts: Options, log=print) -> Result:
         else:
             for stem_name, (filename, key) in STEM_FILES.items():
                 if stem_name in stems:
-                    audio.to_ogg(stems[stem_name], song_dir / filename)
+                    audio.mix_to_ogg(stems[stem_name], song_dir / filename)
                     stem_entries[key] = filename
 
         info = SongInfo(
@@ -180,11 +239,15 @@ def run(opts: Options, log=print) -> Result:
         )
         sections = (find_sections(mix, ANALYSIS_SR, tempo, rules.general.section_seconds)
                     if rules.general.sections else [])
-        write_chart(song_dir / "notes.chart", info, tempo, tracks, sections)
-        write_song_ini(song_dir / "song.ini", info, tracks)
+        if opts.output_format == "mid":
+            write_midi(song_dir / "notes.mid", title, tempo, tracks, sections, vocals, last_tick)
+        else:
+            write_chart(song_dir / "notes.chart", info, tempo, tracks, sections)
+        write_song_ini(song_dir / "song.ini", info, tracks, vocals)
         audio.extract_cover(opts.input, song_dir / "album.png")
 
-        result = Result(song_dir=song_dir, tracks=tracks, bpm=tempo.average_bpm)
+        result = Result(song_dir=song_dir, tracks=tracks, vocals=vocals,
+                        guitar_sources=guitar_sources, bpm=tempo.average_bpm)
         if opts.make_zip:
             result.zip_path = Path(shutil.make_archive(str(song_dir), "zip", song_dir.parent, song_dir.name))
         return result
