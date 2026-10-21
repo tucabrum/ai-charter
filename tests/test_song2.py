@@ -130,7 +130,24 @@ def test_violao_strums_are_all_charted_as_consistent_chords(song):
     # Cada acorde usa o mesmo formato em pelo menos 90% das palhetadas.
     for chord, counts in shapes.items():
         assert counts.most_common(1)[0][1] >= 0.9 * sum(counts.values()), (chord, counts)
-    # Acordes vizinhos na progressão (C G Am F) têm formatos diferentes.
+    # Os 4 acordes (C G Am F) têm 4 formatos diferentes, na ordem do grave para o agudo.
     main = {chord: counts.most_common(1)[0][0] for chord, counts in shapes.items()}
-    for a, b in zip(song2.PROGRESSION, song2.PROGRESSION[1:] + song2.PROGRESSION[:1]):
-        assert main[a] != main[b], (a, b, main)
+    assert len(set(main.values())) == 4, main
+    order = sorted(main, key=lambda ch: {"F": 0, "G": 1, "Am": 2, "C": 3}[ch])
+    centers = [sum(main[ch]) / len(main[ch]) for ch in order]
+    assert centers == sorted(centers), main
+
+
+def test_riff_power_chords_are_two_note_chords(song):
+    """O riff (E5 E5 G5 G5 A5 A5 G5 E5) vira acordes de 2 notas, cada power chord sempre igual."""
+    _, midi = song
+    expert = midi_notes(midi["PART GUITAR"], 96, 100)
+    seen: dict[int, set] = {}
+    for bar in bars_of("riff"):
+        for beat, root in song2.RIFF:
+            lanes = tuple(sorted(expert[int(bar * MEASURE + beat * RES)]))
+            assert len(lanes) == 2, (bar, beat, lanes)
+            seen.setdefault(root, set()).add(lanes)
+    assert all(len(shapes) == 1 for shapes in seen.values()), seen
+    e5, g5, a5 = (next(iter(seen[r])) for r in (40, 43, 45))
+    assert sum(e5) < sum(g5) < sum(a5)        # sobe junto com o riff

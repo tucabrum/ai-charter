@@ -189,6 +189,74 @@ def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
     return lanes
 
 
+# Um acorde precisa aparecer pelo menos tantas vezes para ganhar um formato próprio na tabela.
+MIN_CHORD_OCCURRENCES = 3
+COST_SMALLER_SHAPE = 1.0      # usar um formato com menos notas que o acorde
+COST_SHARED_SHAPE = 3.0       # dois acordes diferentes com o mesmo formato
+COST_PER_LANE_FROM_SPREAD = 0.3
+
+
+def _shape_palette(n_lanes: int, max_chord: int) -> list[tuple[int, ...]]:
+    """Todos os formatos de acorde possíveis, do mais grave para o mais agudo.
+
+    Ex. com 5 lanes e até 3 notas: GR, GY, GRY, RY, RB, RYB, YB, YO, YBO, BO.
+    """
+    shapes = set()
+    for size in range(2, max_chord + 1):
+        for base in range(n_lanes):
+            shape = tuple(range(base, base + size))           # vizinhas (GRY, RY...)
+            if shape[-1] < n_lanes:
+                shapes.add(shape)
+        if size == 2:
+            shapes.update((b, b + 2) for b in range(n_lanes - 2))  # pulando uma (GY, RB...)
+    return sorted(shapes, key=lambda s: (np.mean(s), -len(s)))
+
+
+def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
+                       max_chord: int) -> dict[tuple[int, int], tuple[int, ...]]:
+    """Formato fixo para cada acorde da música (identificado por altura e nº de notas).
+
+    Os acordes são ordenados do mais grave para o mais agudo e distribuídos pelos
+    formatos disponíveis na mesma ordem (o contorno continua certo), preferindo
+    formatos com o nº de notas do acorde e evitando dois acordes no mesmo formato.
+    """
+    counts = Counter((round(c.pitch), size) for c, size in zip(chosen, sizes) if size >= 2)
+    chords = sorted(key for key, n in counts.items() if n >= MIN_CHORD_OCCURRENCES)
+    palette = _shape_palette(n_lanes, max_chord)
+    if not chords or not palette:
+        return {}
+    centers = np.array([np.mean(s) for s in palette])
+    targets = np.linspace(centers[0], centers[-1], len(chords)) if len(chords) > 1 else [np.mean(centers)]
+
+    def fit(i: int, j: int) -> float:
+        want, size = chords[i][1], len(palette[j])
+        if size > want:
+            return np.inf
+        return (COST_SMALLER_SHAPE if size < want else 0.0) + COST_PER_LANE_FROM_SPREAD * abs(centers[j] - targets[i])
+
+    # cost[i][j]: melhor custo dos acordes 0..i, com o acorde i no formato j (ordem crescente).
+    n, m = len(chords), len(palette)
+    cost = np.full((n, m), np.inf)
+    back = np.zeros((n, m), dtype=int)
+    cost[0] = [fit(0, j) for j in range(m)]
+    for i in range(1, n):
+        for j in range(m):
+            here = fit(i, j)
+            if here == np.inf:
+                continue
+            options = [cost[i - 1][p] + (COST_SHARED_SHAPE if p == j else 0.0) for p in range(j + 1)]
+            back[i][j] = int(np.argmin(options))
+            cost[i][j] = min(options) + here
+    j = int(np.argmin(cost[-1]))
+    if cost[-1][j] == np.inf:
+        return {}
+    table = {}
+    for i in range(n - 1, -1, -1):
+        table[chords[i]] = palette[j]
+        j = back[i][j]
+    return table
+
+
 def chord_shape(base: int, size: int, n_lanes: int) -> tuple[int, ...]:
     """Formato do acorde a partir da lane mais grave."""
     if size <= 1:
@@ -248,7 +316,9 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
                              max_lanes=[min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes])
         lanes = _unify_chord_lanes(chosen, lanes)
         lanes = _copy_repeated_lanes(chosen, lanes, repeats, resolution)
-        notes = [ChartNote(c.tick, chord_shape(lane, size, r.lanes))
+        # Acordes que se repetem usam a tabela de formatos; o resto segue as lanes.
+        table = _chord_shape_table(chosen, sizes, r.lanes, r.max_chord)
+        notes = [ChartNote(c.tick, table.get((round(c.pitch), size)) or chord_shape(lane, size, r.lanes))
                  for c, lane, size in zip(chosen, lanes, sizes)]
         _apply_sustains(notes, chosen, r, resolution)
         _apply_forcing(notes, resolution, r.allow_hopos)

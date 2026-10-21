@@ -40,6 +40,8 @@ class PitchedDetection:
     lane_window: int
     recognize_chords: bool
     chord_change_margin: float
+    power_chord_third_margin: float
+    power_chord_notes: int
 
 
 @dataclass

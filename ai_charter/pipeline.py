@@ -126,7 +126,7 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
         y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
         cands = _to_candidates(detect_pitched_notes(y, sr, cfg), tempo, rules)
         if cfg.recognize_chords:
-            label_chords(cands, rules.general.resolution, cfg.chord_change_margin)
+            label_chords(cands, rules.general.resolution, cfg)
         sources.append(GuitarSource(stem.stem, cands, y, sr))
     cands, chosen = merge_guitars(sources, tempo, rules.general.resolution, rules.guitar_selection)
     track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)

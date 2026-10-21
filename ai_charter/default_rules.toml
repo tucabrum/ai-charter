@@ -33,6 +33,8 @@ release_ratio = 0.35   # a nota "acaba" quando o volume cai abaixo disso × pico
 lane_window = 8        # nº de notas vizinhas usadas para decidir a lane pelo contorno
 recognize_chords = true      # reconhece acordes (C, Am, G5...) pelo conjunto de notas que soam
 chord_change_margin = 0.08   # tolerância para a troca de acorde cair no tempo (som anterior ainda soando)
+power_chord_third_margin = 0.008  # se "maior" e "menor" empatam até aqui, não há terça: é power chord
+power_chord_notes = 2        # notas de um power chord na chart (1 = nota simples)
 
 [detection.bass]
 fmin = "E1"
@@ -44,6 +46,8 @@ release_ratio = 0.35
 lane_window = 8
 recognize_chords = false
 chord_change_margin = 0.08
+power_chord_third_margin = 0.008
+power_chord_notes = 2
 
 [detection.keys]
 fmin = "A1"
@@ -55,6 +59,8 @@ release_ratio = 0.3
 lane_window = 8
 recognize_chords = true
 chord_change_margin = 0.08
+power_chord_third_margin = 0.008
+power_chord_notes = 2
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
