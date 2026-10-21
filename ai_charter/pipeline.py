@@ -16,7 +16,7 @@ from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
 from ai_charter.analysis.transcribe import transcribe_lyrics
-from ai_charter.analysis.vocals import detect_sung_notes
+from ai_charter.analysis.vocals import detect_sung_notes, detect_voice_segments
 from ai_charter.charting.common import (
     Candidate, TrackChart, dedupe, quantize_tick, star_power_for_phrases, star_power_windows,
 )
@@ -143,8 +143,9 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
 def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_windows) -> VocalTrack:
     y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
     sung = detect_sung_notes(y, sr, rules.vocals)
+    segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
     lines = read_lyrics(lyrics, rules.vocals.language)
-    vocals = build_vocal_track(sung, lines, tempo, rules.general.resolution,
+    vocals = build_vocal_track(sung, segments, lines, tempo, rules.general.resolution,
                                rules.general.allow_triplets, rules.vocals)
     vocals.star_power = star_power_for_phrases(vocals.phrases, sp_windows)
     return vocals
@@ -240,7 +241,8 @@ def run(opts: Options, log=print) -> Result:
                 log("    vocals: sem letra (use --lyrics letra.txt ou --auto-lyrics), pulando")
             else:
                 vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows)
-                log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases")
+                log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases"
+                    + (f" ({len(vocals.spoken)} sílabas faladas, sem nota)" if vocals.spoken else ""))
 
         log("5/5 Exportando para o Clone Hero / YARG...")
         stem_entries: dict[str, str] = {}

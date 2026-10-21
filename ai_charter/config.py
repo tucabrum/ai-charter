@@ -89,6 +89,7 @@ class VocalRules:
     pitch_split_semitones: float
     min_note_seconds: float
     phrase_gap_beats: float
+    sung_min_ratio: float
     language: str
     whisper_model: str
 

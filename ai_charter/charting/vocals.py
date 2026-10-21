@@ -1,4 +1,13 @@
-"""Monta a faixa de vocal: notas no grid, frases e a letra sílaba por sílaba."""
+"""Monta a faixa de vocal: notas no grid, frases e a letra sílaba por sílaba.
+
+O alinhamento da letra tem dois níveis:
+  1. LINHAS -> TRECHOS DE VOZ: a voz é dividida em trechos pela energia (canto e
+     fala), e cada linha da letra vai para o trecho cuja duração combina com a
+     quantidade de sílabas, sempre em ordem. Assim a letra não "escorrega".
+  2. Dentro de cada linha: se há notas cantadas suficientes, a linha é CANTADA e
+     cada sílaba vai para uma nota; senão, ela é FALADA: a letra aparece na tela
+     sem nota para cantar (como o Rock Band/Guitar Hero fazem com trechos falados).
+"""
 
 from __future__ import annotations
 
@@ -7,7 +16,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ai_charter.analysis.tempo import TempoMap
-from ai_charter.analysis.vocals import SungNote
+from ai_charter.analysis.vocals import SungNote, VoiceSegment
 from ai_charter.charting.common import quantize_tick
 from ai_charter.config import VocalRules
 
@@ -19,6 +28,14 @@ COST_LINE_MISMATCH = 2.0   # começo de linha da letra fora de uma pausa da voz 
 COST_MELISMA = 1.5         # nota extra vira "+" (a sílaba anterior continua)
 COST_MERGE = 2.5           # duas sílabas numa nota só
 COST_SKIP_NOTE = 3.0       # nota descartada (provavelmente ruído)
+
+# Custos do alinhamento linhas x trechos de voz.
+COST_EXTRA_SEGMENT = 0.6   # cada trecho a mais juntado numa linha
+COST_EXTRA_LINE = 0.5      # cada linha a mais no mesmo trecho (refrões sem pausa têm muitas)
+COST_SKIP_SEGMENT = 1.0    # trecho de voz sem letra (grito, eco, voz de apoio)
+COST_SKIP_LINE = 3.0       # linha da letra sem trecho de voz
+MAX_SEGMENTS_PER_LINE = 4
+MAX_LINES_PER_SEGMENT = 40
 
 
 @dataclass
@@ -34,6 +51,7 @@ class VocalTrack:
     notes: list[VocalNote]
     phrases: list[tuple[int, int]]                       # (tick, duração)
     star_power: list[tuple[int, int]] = field(default_factory=list)
+    spoken: list[tuple[int, str]] = field(default_factory=list)   # letra sem nota (trechos falados)
 
 
 def _to_grid(sung: list[SungNote], tempo: TempoMap, resolution: int,
@@ -134,20 +152,164 @@ def align_lyrics(notes: list[VocalNote], lines: list[list[str]],
     return texts, lines_of_notes
 
 
-def build_vocal_track(sung: list[SungNote], lines: list[list[str]], tempo: TempoMap,
-                      resolution: int, allow_triplets: bool, cfg: VocalRules) -> VocalTrack:
-    notes = _to_grid(sung, tempo, resolution, allow_triplets)
-    starts = _audio_phrase_starts(notes, cfg.phrase_gap_beats * resolution)
-    texts, line_numbers = align_lyrics(notes, lines, starts)
+def align_lines_to_segments(lines: list[list[str]],
+                            segments: list[VoiceSegment]) -> list[tuple[float, float] | None]:
+    """Para cada linha da letra, o intervalo de tempo (s) em que ela é cantada/falada.
 
-    kept = [(note, text, line) for note, text, line in zip(notes, texts, line_numbers) if text is not None]
-    for note, text, _ in kept:
-        note.lyric = text
+    Programação dinâmica sobre (linhas, trechos): uma linha pode ocupar vários
+    trechos seguidos, ou várias linhas um trecho só; o custo mede o quanto o número
+    de sílabas combina com o número de ATAQUES de voz no trecho (cada sílaba,
+    cantada ou falada, costuma gerar um ataque; a duração não serve, porque fala
+    é bem mais rápida que canto).
+    """
+    n_lines, n_segs = len(lines), len(segments)
+    if not n_lines or not n_segs:
+        return [None] * n_lines
+    syllables = [len(line) for line in lines]
+    attacks = [len(s.onsets) for s in segments]
+    # Proporção sílabas/ataques da música (às vezes um ataque cobre 2 sílabas, ou vice-versa).
+    ratio = sum(syllables) / max(sum(attacks), 1)
 
-    # Cada linha da letra vira uma frase (do início da 1ª nota ao fim da última).
-    phrases = []
-    for line in sorted({line for _, _, line in kept}):
-        members = [note for note, _, ln in kept if ln == line]
-        start = members[0].tick
-        phrases.append((start, members[-1].tick + members[-1].length - start))
-    return VocalTrack(notes=[note for note, _, _ in kept], phrases=phrases)
+    def fit(n_syll: int, n_attacks: int) -> float:
+        return abs(np.log((n_syll + 1) / (n_attacks * ratio + 1)))
+
+    INF = float("inf")
+    cost = np.full((n_lines + 1, n_segs + 1), INF)
+    back: dict[tuple[int, int], tuple[int, int]] = {}
+    cost[0, 0] = 0.0
+    for j in range(n_lines + 1):
+        for i in range(n_segs + 1):
+            here = cost[j, i]
+            if here == INF:
+                continue
+            moves = []
+            if i < n_segs:
+                moves.append((j, i + 1, COST_SKIP_SEGMENT))
+            if j < n_lines:
+                moves.append((j + 1, i, COST_SKIP_LINE))
+            for q in range(1, MAX_SEGMENTS_PER_LINE + 1):          # 1 linha, q trechos
+                if j < n_lines and i + q <= n_segs:
+                    moves.append((j + 1, i + q, fit(syllables[j], sum(attacks[i:i + q]))
+                                  + COST_EXTRA_SEGMENT * (q - 1)))
+            for p in range(2, MAX_LINES_PER_SEGMENT + 1):           # p linhas, 1 trecho
+                if j + p <= n_lines and i < n_segs:
+                    moves.append((j + p, i + 1, fit(sum(syllables[j:j + p]), attacks[i])
+                                  + COST_EXTRA_LINE * (p - 1)))
+            for nj, ni, step in moves:
+                if here + step < cost[nj, ni]:
+                    cost[nj, ni] = here + step
+                    back[(nj, ni)] = (j, i)
+
+    spans: list[tuple[float, float] | None] = [None] * n_lines
+    j, i = n_lines, n_segs
+    while (j, i) != (0, 0):
+        pj, pi = back[(j, i)]
+        if j > pj and i > pi:
+            start, end = segments[pi].start, segments[i - 1].end
+            if j - pj == 1:
+                spans[pj] = (start, end)
+            else:   # várias linhas num trecho: corta nas pausas internas
+                bounds = [start] + _cut_points(segments[pi], syllables[pj:j]) + [end]
+                for k, (a, b) in zip(range(pj, j), zip(bounds, bounds[1:])):
+                    spans[k] = (a, b)
+        j, i = pj, pi
+    return spans
+
+
+def _cut_points(segment: VoiceSegment, syllables: list[int]) -> list[float]:
+    """Onde cortar um trecho com várias linhas: nas pausas internas que melhor
+    combinam com a posição esperada de cada corte (pela proporção de sílabas),
+    preferindo as pausas mais longas. Sem pausa por perto, corta na posição esperada.
+    """
+    duration = segment.end - segment.start
+    total, targets, t = sum(syllables), [], segment.start
+    for n in syllables[:-1]:
+        t += duration * n / total
+        targets.append(t)
+    pauses = [((a + b) / 2, b - a) for a, b in segment.pauses]
+    if not pauses:
+        return targets
+    # Programação dinâmica: cada corte usa uma pausa diferente, em ordem (ou fica no alvo).
+    n_t, n_p = len(targets), len(pauses)
+    far = 0.15 * duration                      # pausa longe demais do alvo não serve
+    INF = float("inf")
+    cost = np.full((n_t + 1, n_p + 1), INF)
+    choice: dict[tuple[int, int], tuple[int, int, float]] = {}
+    cost[0, :] = 0.0
+    for k in range(1, n_t + 1):
+        for q in range(n_p + 1):
+            # corte k sem pausa (fica no alvo)
+            if cost[k - 1, q] + 1.0 < cost[k, q]:
+                cost[k, q] = cost[k - 1, q] + 1.0
+                choice[(k, q)] = (k - 1, q, targets[k - 1])
+            # corte k na pausa q-1
+            if q >= 1:
+                mid, length = pauses[q - 1]
+                miss = abs(mid - targets[k - 1])
+                if miss <= far:
+                    step = miss / far - min(length, 0.5)
+                    best_prev = min(range(q), key=lambda r: cost[k - 1, r])
+                    total_cost = cost[k - 1, best_prev] + step
+                    if total_cost < cost[k, q]:
+                        cost[k, q] = total_cost
+                        choice[(k, q)] = (k - 1, best_prev, mid)
+    q = int(np.argmin(cost[n_t]))
+    cuts, k = [], n_t
+    while k > 0:
+        k, q, at = choice[(k, q)]
+        cuts.append(at)
+    return sorted(cuts)
+
+
+def _spread(times: list[float], start: float, end: float, count: int) -> list[float]:
+    """`count` instantes para as sílabas faladas: os ataques do trecho, ou espaçados por igual."""
+    inside = [t for t in times if start <= t < end]
+    if len(inside) >= count:
+        picks = np.linspace(0, len(inside) - 1, count).round().astype(int)
+        return [inside[k] for k in picks]
+    return list(np.linspace(start, start + (end - start) * (count - 1) / max(count, 1), count))
+
+
+def build_vocal_track(sung: list[SungNote], segments: list[VoiceSegment], lines: list[list[str]],
+                      tempo: TempoMap, resolution: int, allow_triplets: bool, cfg: VocalRules) -> VocalTrack:
+    spans = align_lines_to_segments(lines, segments)
+    onsets = sorted(t for s in segments for t in s.onsets)
+    track = VocalTrack(notes=[], phrases=[])
+    sixteenth = resolution // 4
+    for line, span in zip(lines, spans):
+        if span is None:
+            continue
+        start, end = span
+        inside = [s for s in sung if start - 0.05 <= s.time < end]
+        if len(inside) >= cfg.sung_min_ratio * len(line):
+            # Linha cantada: cada sílaba numa nota.
+            notes = _to_grid(inside, tempo, resolution, allow_triplets)
+            starts = [True] + [False] * (len(notes) - 1)
+            texts, _ = align_lyrics(notes, [line], starts)
+            kept = [n for n, text in zip(notes, texts) if text is not None]
+            for note, text in zip(notes, texts):
+                if text is not None:
+                    note.lyric = text
+            if kept:
+                track.notes += kept
+                track.phrases.append((kept[0].tick, kept[-1].tick + kept[-1].length - kept[0].tick))
+                continue
+        # Linha falada: só a letra, sem nota para cantar.
+        ticks = []
+        for t in _spread(onsets, start, end, len(line)):
+            tick = quantize_tick(tempo.time_to_tick(t), resolution, allow_triplets)
+            ticks.append(max(tick, ticks[-1] + sixteenth) if ticks else tick)
+        track.spoken += list(zip(ticks, line))
+        track.phrases.append((ticks[0], ticks[-1] + sixteenth - ticks[0]))
+    # Uma nota não pode invadir a seguinte (linhas vizinhas podem se encostar).
+    for note, nxt in zip(track.notes, track.notes[1:]):
+        note.length = max(1, min(note.length, nxt.tick - note.tick))
+    # Frases também não podem se sobrepor.
+    track.phrases.sort()
+    fixed = []
+    for (tick, length), nxt in zip(track.phrases, track.phrases[1:] + [(None, None)]):
+        if nxt[0] is not None:
+            length = max(1, min(length, nxt[0] - tick))
+        fixed.append((tick, length))
+    track.phrases = fixed
+    return track
