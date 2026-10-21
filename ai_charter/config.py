@@ -73,6 +73,7 @@ class VocalRules:
     min_note_seconds: float
     phrase_gap_beats: float
     language: str
+    whisper_model: str
 
 
 @dataclass

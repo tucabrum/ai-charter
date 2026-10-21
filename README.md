@@ -56,6 +56,7 @@ Opções úteis:
 | `--separator folder --stems PASTA` | usa stems que você já tem (`guitar.wav`, `bass.wav`, `drums.wav`, `piano.wav`, `vocals.wav`, `other.wav`...) |
 | `--separator none` | sem IA, só filtros simples (qualidade bem menor; bom para testes) |
 | `--lyrics letra.txt` | letra para a faixa de vocal (padrão: um `.txt` com o mesmo nome da música) |
+| `--auto-lyrics` | sem letra, transcreve a voz com o Whisper e salva um rascunho para revisar |
 | `--format chart` | gera `notes.chart` em vez de `notes.mid` (o `.chart` não tem vocal) |
 | `--tempo constant` / `variable` | força BPM fixo ou variável (padrão: decide sozinho) |
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
@@ -74,6 +75,22 @@ O programa divide as palavras em sílabas (português por padrão; `language = "
 para inglês), detecta as notas cantadas e coloca cada sílaba na sua nota. No jogo, cada
 sílaba no meio de uma palavra aparece com hífen (`ca-` `mi-` `nho`). Se alguma palavra for
 dividida errado, escreva-a já com hífens na letra (ex.: `sa-u-da-de`).
+
+### Letra automática (`--auto-lyrics`)
+
+Sem arquivo de letra, o programa pode **transcrever a voz** com o Whisper (modelo de
+reconhecimento de fala de código aberto, que roda no seu computador):
+
+```bash
+pip install -e ".[lyrics]"
+ai-charter musica.flac --auto-lyrics
+```
+
+Ele salva o resultado em `letra_automatica.txt` (dentro da pasta da música) e já gera o vocal
+com ela. O Whisper foi treinado principalmente com fala, então **erra mais em canto**: revise o
+arquivo e rode de novo com `--lyrics letra_automatica.txt`. Na primeira vez o modelo é baixado
+da internet (depois funciona offline). O tamanho do modelo fica em `whisper_model` nas regras
+(`tiny` é rápido e erra mais; `large-v3` é o mais preciso e o mais pesado).
 
 ## Várias guitarras (violão + guitarra solo)
 
@@ -124,6 +141,7 @@ ai_charter/
 ├── default_rules.toml  regras padrão de charting
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
 ├── analysis/           "ouvir" o áudio
+│   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
 │   ├── pitched.py      notas de guitarra/baixo/teclado: ataque, altura, acorde, duração
 │   ├── drums.py        bumbo, caixa, chimbal e crash por faixas de frequência
@@ -173,8 +191,8 @@ Os testes geram duas músicas sintéticas com notas conhecidas e conferem se a c
 
 ## Limitações atuais e próximos passos
 
-- **Vocais** precisam da letra em texto; ainda não há transcrição automática da letra
-  (um modelo como o Whisper poderia fazer isso no futuro).
+- **Letra automática** (`--auto-lyrics`) não foi testada com o modelo de verdade (o ambiente de
+  desenvolvimento não consegue baixá-lo); erros de transcrição em canto são esperados.
 - **Várias guitarras** só são separadas quando você fornece os stems; o Demucs junta todas
   as guitarras num stem só.
 - **Bateria**: tons (azul/verde sem prato) e prato de condução ainda não são detectados separadamente.

@@ -86,7 +86,8 @@ onset_delta = 0.1            # sensibilidade para novos ataques dentro de um tre
 pitch_split_semitones = 0.7  # mudança de afinação que separa duas notas ligadas
 min_note_seconds = 0.08      # notas mais curtas que isso são descartadas
 phrase_gap_beats = 0.75      # pausa (em batidas) que separa duas frases
-language = "pt"              # idioma para dividir sílabas: "pt" ou "en"
+language = "pt"              # idioma da letra (sílabas e transcrição): "pt" ou "en"
+whisper_model = "small"      # --auto-lyrics: tiny, base, small, medium, large-v3 (maior = melhor e mais lento)
 
 # ---------------------------------------------------------------------------
 # Regras por dificuldade - guitarra, baixo e teclado (5 lanes)

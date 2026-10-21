@@ -15,6 +15,7 @@ from ai_charter.analysis.drums import detect_drum_hits
 from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
+from ai_charter.analysis.transcribe import transcribe_lyrics
 from ai_charter.analysis.vocals import detect_sung_notes
 from ai_charter.charting.common import (
     Candidate, TrackChart, dedupe, quantize_tick, star_power_for_phrases, star_power_windows,
@@ -58,6 +59,7 @@ class Options:
     title: str | None = None
     artist: str | None = None
     lyrics: Path | None = None     # letra (texto, uma linha por frase); sem ela, não há vocal
+    auto_lyrics: bool = False      # sem letra: transcreve com o Whisper (rascunho)
     output_format: str = "mid"     # "mid" (com vocais) ou "chart"
     make_zip: bool = False
     keep_work: bool = False
@@ -211,13 +213,22 @@ def run(opts: Options, log=print) -> Result:
             lyrics = opts.input.with_suffix(".txt")  # letra com o mesmo nome da música
         if "vocals" not in stems:
             log("    vocals: sem stem de voz, pulando")
-        elif lyrics is None:
-            log("    vocals: sem letra (use --lyrics letra.txt), pulando")
         elif opts.output_format != "mid":
             log("    vocals: o formato .chart não tem faixa de vocal (use --format mid), pulando")
         else:
-            vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows)
-            log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases")
+            if lyrics is None and opts.auto_lyrics:
+                lyrics = song_dir / "letra_automatica.txt"
+                log(f"    vocals: transcrevendo a letra com o Whisper (modelo {rules.vocals.whisper_model})...")
+                lines = transcribe_lyrics(stems["vocals"][0], rules.vocals.language,
+                                          rules.vocals.whisper_model,
+                                          gap_seconds=rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
+                lyrics.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                log(f"    vocals: rascunho da letra salvo em {lyrics} — revise e rode de novo com --lyrics")
+            if lyrics is None:
+                log("    vocals: sem letra (use --lyrics letra.txt ou --auto-lyrics), pulando")
+            else:
+                vocals = chart_vocals(stems["vocals"][0], lyrics, tempo, rules, sp_windows)
+                log(f"    vocals: {len(vocals.notes)} notas em {len(vocals.phrases)} frases")
 
         log("5/5 Exportando para o Clone Hero / YARG...")
         stem_entries: dict[str, str] = {}

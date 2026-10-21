@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from ai_charter.analysis.tempo import TempoMap
+from ai_charter.analysis.transcribe import TimedWord, transcribe_lyrics, words_to_lines
 from ai_charter.charting.common import ChartNote, TrackChart
 from ai_charter.charting.guitar_select import choose_sources
 from ai_charter.charting.lyrics import line_syllables, syllabify_en, syllabify_pt
@@ -106,3 +107,16 @@ def test_midi_file_layout(tmp_path):
     assert [v for _, k, v in midi["PART VOCALS"] if k == "lyric"] == ["can-", "ção"]
     assert midi_notes(midi["PART VOCALS"], 105, 105) == {0: [0]}           # frase
     assert ("text", "[section Section 1]") in [(k, v) for _, k, v in midi["EVENTS"]]
+
+
+def test_transcribed_words_are_grouped_in_lines_by_pauses():
+    words = [TimedWord(" No", 0.0, 0.2), TimedWord(" caminho", 0.25, 0.8), TimedWord(" da", 0.85, 1.0),
+             TimedWord(" manhã,", 1.05, 2.0), TimedWord(" o", 2.6, 2.8), TimedWord(" sol", 2.85, 3.2)]
+    assert words_to_lines(words, gap_seconds=0.45) == ["No caminho da manhã,", "o sol"]
+
+
+def test_auto_lyrics_explains_how_to_install(monkeypatch, tmp_path):
+    import sys
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)   # simula pacote não instalado
+    with pytest.raises(RuntimeError, match=r"ai-charter\[lyrics\]"):
+        transcribe_lyrics(tmp_path / "vocals.wav", "pt", "small", 0.45)

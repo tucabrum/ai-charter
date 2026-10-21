@@ -28,6 +28,9 @@ def parse_args(argv: list[str] | None = None) -> Options:
     parser.add_argument("--lyrics", type=Path,
                         help="letra (texto, uma linha por frase) para gerar a faixa de vocal; "
                              "padrão: um .txt com o mesmo nome da música, se existir")
+    parser.add_argument("--auto-lyrics", action="store_true",
+                        help="sem letra, transcreve a voz com o Whisper e salva um rascunho "
+                             "(letra_automatica.txt) para revisar; precisa de: pip install \"ai-charter[lyrics]\"")
     parser.add_argument("--format", choices=("mid", "chart"), default="mid",
                         help="formato da chart: mid (padrão, tem vocais) ou chart")
     parser.add_argument("--title", help="nome da música (padrão: lido das tags do arquivo)")
@@ -48,7 +51,8 @@ def parse_args(argv: list[str] | None = None) -> Options:
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
         rules_path=args.rules, instruments=instruments, tempo_mode=args.tempo,
-        title=args.title, artist=args.artist, lyrics=args.lyrics, output_format=args.format,
+        title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
+        output_format=args.format,
         make_zip=args.zip, keep_work=args.keep_work,
     )
 
