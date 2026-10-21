@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-charter"
+version = "0.1.0"
+description = "Gera charts de Clone Hero / YARG automaticamente a partir de um arquivo de música"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# Separação de stems com IA (baixa o PyTorch, que é grande).
+separation = ["demucs>=4.0"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+ai-charter = "ai_charter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ai_charter*"]
+
+[tool.setuptools.package-data]
+ai_charter = ["default_rules.toml"]
