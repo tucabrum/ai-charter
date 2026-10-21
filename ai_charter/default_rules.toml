@@ -26,6 +26,7 @@ section_seconds = 25.0         # tamanho médio desejado de cada seção
 [detection.guitar]
 fmin = "E2"            # nota mais grave procurada
 octaves = 5            # quantas oitavas acima de fmin analisar
+onset_method = "both"  # como achar ataques: "energy" (estalo), "pitch" (troca de nota) ou "both"
 onset_delta = 0.04     # sensibilidade dos ataques (menor = detecta mais notas)
 min_rms_db = -35.0     # ignora ataques mais baixos que isso (ruído / vazamento)
 chord_ratio = 0.65     # quão forte a 2ª nota precisa ser para virar acorde (0-1)
@@ -39,6 +40,7 @@ power_chord_notes = 2        # notas de um power chord na chart (1 = nota simple
 [detection.bass]
 fmin = "E1"
 octaves = 4
+onset_method = "both"
 onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.9
@@ -52,6 +54,7 @@ power_chord_notes = 2
 [detection.keys]
 fmin = "A1"
 octaves = 6
+onset_method = "both"
 onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.6
@@ -95,8 +98,8 @@ min_hold_measures = 2       # depois de trocar, fica pelo menos esse nº de comp
 [sanitize]
 enabled = true
 noise_ratio = 3.0            # ruído de fundo a partir de quantas vezes o normal da faixa
-min_found = 0.75             # menos que isso do ritmo típico encontrado = bagunçado
-max_extra = 0.25             # mais que isso de notas fora do ritmo típico = bagunçado
+min_found = 0.9              # menos que isso do ritmo típico encontrado = bagunçado
+max_extra = 0.1              # mais que isso de notas fora do ritmo típico = bagunçado
 min_groove_measures = 3      # o ritmo típico precisa aparecer em pelo menos N compassos
 
 # ---------------------------------------------------------------------------

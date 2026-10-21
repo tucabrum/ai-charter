@@ -25,6 +25,7 @@ dev = ["pytest>=7"]
 
 [project.scripts]
 ai-charter = "ai_charter.cli:main"
+ai-charter-compare = "ai_charter.compare:main"
 
 [tool.setuptools.packages.find]
 include = ["ai_charter*"]

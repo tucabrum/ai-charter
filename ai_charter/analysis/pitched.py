@@ -77,8 +77,8 @@ def estimate_pitches(spectrum: np.ndarray, chord_ratio: float, max_voices: int =
     return found
 
 
-def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
-    """Envelope de ataques (quanto a energia "subiu" a cada frame), resistente a chiado.
+def _energy_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Ataques pela subida de ENERGIA (bom para palhetadas, notas com "estalo").
 
     1. Subtração espectral: em cada faixa de frequência, estima o ruído de fundo
        (o nível que está sempre presente nos últimos ~2 s) e o remove. Chiado
@@ -92,6 +92,31 @@ def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
     clean = np.maximum(mel - floor, 0) + 1e-10 * mel.max()
     return librosa.onset.onset_strength(S=librosa.power_to_db(clean, ref=np.max), sr=sr,
                                         hop_length=HOP, lag=2, max_size=3)
+
+
+def _pitch_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Ataques pela TROCA DE NOTA: subida de energia em cada semitom (espectro CQT).
+
+    Numa guitarra distorcida (uma "parede de som") o volume quase não muda quando
+    a nota muda; o que muda é qual semitom soa. top_db=40 ignora o que está muito
+    abaixo do pico (senão, a cauda das notas vira "ataque").
+    """
+    cqt = np.abs(librosa.cqt(y, sr=sr, hop_length=HOP, fmin=librosa.note_to_hz("E1"),
+                             n_bins=84, bins_per_octave=12)) ** 2
+    return librosa.onset.onset_strength(S=librosa.power_to_db(cqt, ref=np.max, top_db=40), sr=sr,
+                                        hop_length=HOP, lag=2, max_size=3)
+
+
+def onset_envelope(y: np.ndarray, sr: int, method: str = "energy", pitch_weight: float = 0.5) -> np.ndarray:
+    """Envelope de ataques. method: "energy", "pitch" ou "both" (soma dos dois)."""
+    if method == "energy":
+        return _energy_envelope(y, sr)
+    if method == "pitch":
+        return _pitch_envelope(y, sr)
+    energy, pitch = _energy_envelope(y, sr), _pitch_envelope(y, sr)
+    n = min(len(energy), len(pitch))
+    normalize = lambda e: e[:n] / (np.percentile(e[:n], 99) + 1e-9)  # noqa: E731
+    return normalize(energy) + pitch_weight * normalize(pitch)
 
 
 def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 0.25) -> np.ndarray:
@@ -110,7 +135,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
         return []
 
     # --- 1. Ataques ---------------------------------------------------------
-    onset_env = onset_envelope(y, sr)
+    onset_env = onset_envelope(y, sr, cfg.onset_method)
     # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
     # palhetado, em que as cordas soam uma logo após a outra).
     onset_frames = librosa.onset.onset_detect(

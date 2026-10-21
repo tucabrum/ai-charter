@@ -151,6 +151,7 @@ ai_charter/
 ├── config.py           lê as regras do arquivo .toml
 ├── default_rules.toml  regras padrão de charting
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
+├── compare.py          compara uma chart gerada com uma de referência (ai-charter-compare)
 ├── analysis/           "ouvir" o áudio
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
@@ -190,6 +191,20 @@ Ideias principais:
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
   mínima entre notas e o grid permitido.
+
+## Comparando com uma chart de referência
+
+Para medir a qualidade, compare a chart gerada com uma chart feita por uma pessoa (ex.: a
+oficial do jogo), das mesmas faixas de áudio:
+
+```bash
+ai-charter-compare oficial/notes.mid gerada/notes.mid
+```
+
+O relatório não pontua se a cor da nota é a mesma (charts são subjetivas). Ele mede, por
+instrumento e dificuldade: quantas notas da referência aparecem no mesmo momento (recall) e quantas
+geradas existem na referência (precisão), acorde × nota simples, contorno (subir/descer/repetir
+juntas), sustains, densidade, resultados por seção e, nos vocais, tempo, afinação, sílaba e frases.
 
 ## Testes
 

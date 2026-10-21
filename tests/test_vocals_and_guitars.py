@@ -160,3 +160,22 @@ def test_sanitize_leaves_clean_sparse_measures_alone():
     rules = load_rules().sanitize
     result, simplified = sanitize(cands, audio, sr, tempo, RES, rules)
     assert simplified == [] and result == cands
+
+
+def test_compare_chart_with_itself_and_finds_time_offset(tmp_path):
+    from ai_charter.compare import best_offset, read_chart, score_track
+
+    tempo = TempoMap(np.arange(64) * 0.5, RES)
+    rng = np.random.default_rng(3)
+    ticks = sorted(set(int(t) for t in rng.integers(0, 50, 40) * (RES // 4)))   # ritmo irregular
+    notes = [ChartNote(t, (i % 5,), length=RES if i % 4 == 0 else 0) for i, t in enumerate(ticks)]
+    path = tmp_path / "a.mid"
+    write_midi(path, "A", tempo, {"guitar": TrackChart(notes={"expert": notes})}, [0], None, RES * 30)
+
+    events = read_chart(path).tracks["PART GUITAR"]["expert"]
+    same = score_track(events, events, 0.05, 20.0)
+    assert same.recall == same.precision == 1.0 and same.contour_agree == 100.0
+
+    times = [e.time for e in events]
+    late = [t + 0.3 for t in times]                       # a mesma chart, 0,3 s atrasada
+    assert abs(best_offset(times, late) + 0.3) < 0.01      # precisa voltar 0,3 s

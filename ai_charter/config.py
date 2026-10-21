@@ -33,6 +33,7 @@ class GeneralRules:
 class PitchedDetection:
     fmin: str
     octaves: int
+    onset_method: str
     onset_delta: float
     min_rms_db: float
     chord_ratio: float

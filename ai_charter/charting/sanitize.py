@@ -9,7 +9,8 @@ acordes trocados. Em vez de passar isso para a chart, o programa decide:
   2. Mede, em cada compasso, o RUÍDO de fundo (energia aguda que fica entre as
      notas, comparada com o resto da faixa) e quanto o ritmo detectado foge
      do típico (palhetadas faltando ou notas fora do lugar).
-  3. Compasso com ruído alto E ritmo bagunçado é "confuso" e vira um caminho
+  3. Compasso com ruído alto E ritmo bagunçado (palhetadas faltando, notas fora
+     do lugar ou mais acordes do que a faixa costuma ter por compasso) é "confuso" e vira um caminho
      regular: o ritmo típico, com um acorde só (o mais provável entre os acordes
      conhecidos). Em trechos de notas simples (solo), sem ritmo típico, só tira
      as notas fora do grid de colcheias - nunca inventa notas.
@@ -26,7 +27,7 @@ from dataclasses import replace
 import librosa
 import numpy as np
 
-from ai_charter.analysis.chords import is_single_note
+from ai_charter.analysis.chords import CHORDS, is_single_note
 from ai_charter.analysis.tempo import TempoMap
 from ai_charter.charting.common import Candidate
 from ai_charter.config import SanitizeRules
@@ -70,6 +71,15 @@ def sanitize(cands: list[Candidate], audio: np.ndarray, sr: int, tempo: TempoMap
 
     # 2. Ruído e "bagunça" de cada compasso.
     noise = _noise_by_measure(audio, sr, tempo, measure, sorted(by_measure))
+
+    def roots(notes: list[Candidate]) -> int:
+        """Quantos acordes diferentes (pela fundamental) há no compasso."""
+        return len({CHORDS[c.chord][0] for c in notes if c.chord >= 0 and not is_single_note(c.chord)})
+
+    # Quantos acordes por compasso a faixa costuma ter (nos compassos sem ruído).
+    quiet = [roots(notes) for m, notes in by_measure.items() if noise.get(m, 0.0) < rules.noise_ratio]
+    usual_roots = float(np.median([r for r in quiet if r > 0])) if any(quiet) else 1.0
+
     confused = []
     for m, notes in by_measure.items():
         if noise.get(m, 0.0) < rules.noise_ratio:
@@ -80,7 +90,7 @@ def sanitize(cands: list[Candidate], audio: np.ndarray, sr: int, tempo: TempoMap
             extra = len(positions - groove) / len(positions)
         else:
             found, extra = 1.0, sum(p % (resolution // 2) != 0 for p in positions) / len(positions)
-        if found < rules.min_found or extra > rules.max_extra:
+        if found < rules.min_found or extra > rules.max_extra or roots(notes) > usual_roots:
             confused.append(m)
     if not confused:
         return cands, []
