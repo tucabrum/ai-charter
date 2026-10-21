@@ -38,7 +38,7 @@ def test_one_strum_chord_between_stable_groups_follows_the_closest_group():
     cfg = load_rules().detection["guitar"]
     cands = ([strum(i * RES // 2, C) for i in range(4)]
              + [strum(2 * RES, G, {C: 0.85, A: 0.6})]    # som de troca: parece G, mas C ainda soa
-             + [strum(2 * RES + (i + 1) * RES // 2, A) for i in range(4)])
+             + [strum(4 * RES + i * RES // 2, A) for i in range(4)])
     label_chords(cands, RES, cfg)
     roots = [CHORDS[c.chord][0] for c in cands]
     assert roots == [0] * 5 + [9] * 4
@@ -51,6 +51,11 @@ def test_isolated_octave_spikes_are_fixed_but_octave_riffs_stay():
     spiky = notes([40, 40, 40, 52, 40, 40, 28, 40, 40])
     _fix_octave_spikes(spiky)
     assert [n.pitch for n in spiky] == [40] * 9
+
+    # Nota repetida com o começo ouvido uma oitava acima (o harmônico da anterior).
+    late = notes([66, 66, 66, 54, 54, 54, 54, 54])
+    _fix_octave_spikes(late)
+    assert [n.pitch for n in late] == [54] * 8
 
     riff = notes([40, 52, 40, 52, 40, 52, 40, 52])
     _fix_octave_spikes(riff)

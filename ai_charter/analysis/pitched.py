@@ -245,3 +245,36 @@ def _fix_octave_spikes(notes: list[DetectedNote]) -> None:
         agree = int(np.sum(np.abs(context - center) <= 1))
         if abs(abs(distance) - 12) <= 0.5 and agree >= 3:
             notes[i].pitch = original[i] - 12 * np.sign(distance)
+    _fix_octave_blocks(notes)
+
+
+MAX_WRONG_OCTAVE_BLOCK = 3   # notas seguidas na oitava errada que ainda são corrigidas
+MIN_RIGHT_OCTAVE_BLOCK = 4
+
+
+def _fix_octave_blocks(notes: list[DetectedNote]) -> None:
+    """Corrige o começo (ou fim) de uma nota repetida ouvido na oitava errada.
+
+    Ex.: Fá# repetido 8 vezes, mas as 3 primeiras saem uma oitava acima (o detector
+    ainda "ouve" o harmônico da nota anterior). Numa sequência da MESMA nota (mesma
+    classe: Fá#, Fá#...), se há só uma mudança de oitava, o bloco menor (até 3 notas)
+    vai para a oitava do bloco maior (4+). Riffs de oitava (que alternam várias
+    vezes) têm mais de uma mudança e não são afetados.
+    """
+    i = 0
+    while i < len(notes):
+        j = i
+        while j + 1 < len(notes) and round(notes[j + 1].pitch - notes[i].pitch) % 12 == 0:
+            j += 1
+        run = notes[i:j + 1]
+        octaves = [round(n.pitch) for n in run]
+        switches = [k for k in range(1, len(run)) if octaves[k] != octaves[k - 1]]
+        if len(switches) == 1:
+            k = switches[0]
+            first, second = run[:k], run[k:]
+            short, long = (first, second) if len(first) < len(second) else (second, first)
+            if len(short) <= MAX_WRONG_OCTAVE_BLOCK and len(long) >= MIN_RIGHT_OCTAVE_BLOCK:
+                target = round(long[0].pitch)
+                for n in short:
+                    n.pitch += target - round(n.pitch)
+        i = j + 1

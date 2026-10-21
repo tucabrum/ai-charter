@@ -134,6 +134,9 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
             left, right = labels[a1 - 1], labels[c0]
             labels[b0] = left if items[b0].chord_scores[left] >= items[b0].chord_scores[right] else right
 
+    # Ritmo harmônico: os acordes trocam nos tempos fortes (de preferência no compasso).
+    _follow_harmonic_rhythm(items, labels, resolution)
+
     # Tipo do acorde decidido por trecho (palhetadas seguidas com a mesma fundamental).
     start = 0
     while start < len(items):
@@ -162,6 +165,93 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
         if c.end_tick - c.tick >= accent_ticks:
             c.voices = max(c.voices, min(chord_voices(label), cfg.accent_chord_notes))
         c.pitch = fixed.get(root, c.pitch)
+
+
+# Custo de trocar de acorde em cada colcheia do compasso 4/4 (0 = "1", 4 = 3º tempo).
+# Trocar no 1º tempo é o normal; no 3º é comum; nos outros, só com bastante evidência.
+CHANGE_COST = [0.15, 1.2, 1.0, 1.2, 0.4, 1.2, 1.0, 1.2]
+SLOTS_PER_BAR = len(CHANGE_COST)
+OTHER_ROOT_LOSS = 0.03   # custo mínimo de uma palhetada usar outra fundamental que não a dela
+PASSAGE_GAP_BEATS = 2       # pausa maior que isso separa dois trechos de acordes
+MIN_PASSAGE_STRUMS = 8      # trechos menores não têm "ritmo harmônico" para seguir
+MIN_STRUMS_PER_CHORD = 4    # palhetadas por acorde, em média, para o trecho ser de base (e não riff)
+
+# Pontuação de cada fundamental (0-11): o melhor acorde (não nota simples) dela.
+_ROOT_OF = np.array([root for root, _ in CHORDS])
+
+
+def _root_scores(scores: np.ndarray) -> np.ndarray:
+    masked = np.where(SINGLE_NOTE_MASK, -np.inf, scores)
+    return np.array([masked[_ROOT_OF == r].max() for r in range(12)])
+
+
+def _follow_harmonic_rhythm(items: list[Candidate], labels: list[int], resolution: int) -> None:
+    """Escolhe o acorde de cada TEMPO do trecho, preferindo trocas no início do compasso.
+
+    Em músicas com acordes palhetados, o acorde quase sempre troca no 1º tempo do
+    compasso (às vezes no 3º). O reconhecimento palhetada a palhetada erra perto
+    das trocas (o acorde anterior ainda soa) e no meio de acordes longos, e o
+    resultado é uma troca de cor no meio do compasso que não existe na música.
+
+    Para cada trecho de acordes seguidos, um Viterbi escolhe uma fundamental por
+    colcheia: o custo de cada colcheia é o quanto as palhetadas dela "perdem" ao
+    usar aquela fundamental em vez da preferida delas, e trocar custa CHANGE_COST
+    conforme a posição no compasso. Como não sabemos onde começa o compasso (o
+    detector de andamento acha as batidas, não o "1", e às vezes trava no
+    contratempo), as 8 posições possíveis são testadas e fica a de menor custo.
+    """
+    k = 0
+    while k < len(items):
+        end = k
+        while end + 1 < len(items) and items[end + 1].tick - items[end].tick <= PASSAGE_GAP_BEATS * resolution:
+            end += 1
+        strums = end - k + 1
+        changes = len(_runs([CHORDS[labels[j]][0] for j in range(k, end + 1)]))
+        # Riffs (acorde trocando a cada uma ou duas palhetadas) ficam como estão:
+        # só trechos de base, com cada acorde palhetado várias vezes, seguem o compasso.
+        if strums >= MIN_PASSAGE_STRUMS and strums / changes >= MIN_STRUMS_PER_CHORD:
+            _passage_rhythm(items, labels, k, end + 1, resolution)
+        k = end + 1
+
+
+def _passage_rhythm(items: list[Candidate], labels: list[int], start: int, end: int, resolution: int) -> None:
+    slot_ticks = resolution // 2   # uma colcheia
+    all_slots = [round(items[k].tick / slot_ticks) for k in range(start, end)]
+    # Só colcheias com palhetada: trocar numa colcheia vazia seria o mesmo que
+    # trocar na próxima palhetada, mas com o custo de outra posição do compasso.
+    slots = sorted(set(all_slots))
+    index = {slot: i for i, slot in enumerate(slots)}
+    roots = sorted({CHORDS[labels[k]][0] for k in range(start, end)})
+    # loss[i, r]: quanto as palhetadas da colcheia slots[i] perdem usando a fundamental roots[r].
+    loss = np.zeros((len(slots), len(roots)))
+    for k, slot in zip(range(start, end), all_slots):
+        # Parte do acorde já decidido para a palhetada (que já leva em conta o acorde
+        # anterior ainda soando): ele não perde nada; os outros perdem a diferença de
+        # pontuação, e pelo menos OTHER_ROOT_LOSS.
+        per_root = _root_scores(items[k].chord_scores)[roots]
+        here = np.maximum(per_root.max() - per_root, OTHER_ROOT_LOSS)
+        here[roots.index(CHORDS[labels[k]][0])] = 0.0
+        loss[index[slot]] += here
+    best_total, best_path = np.inf, None
+    for phase in range(SLOTS_PER_BAR):
+        cost = loss[0].copy()
+        back = np.zeros((len(slots), len(roots)), dtype=int)
+        for i in range(1, len(slots)):
+            change = CHANGE_COST[(slots[i] - phase) % SLOTS_PER_BAR]
+            move = cost.min() + change
+            back[i] = np.where(cost <= move, np.arange(len(roots)), int(np.argmin(cost)))
+            cost = np.minimum(cost, move) + loss[i]
+        if cost.min() < best_total:
+            best_total = cost.min()
+            path = [int(np.argmin(cost))]
+            for i in range(len(slots) - 1, 0, -1):
+                path.append(int(back[i][path[-1]]))
+            best_path = path[::-1]
+    for k, slot in zip(range(start, end), all_slots):
+        root = roots[best_path[index[slot]]]
+        if CHORDS[labels[k]][0] != root:
+            same_root = np.where((_ROOT_OF == root) & ~SINGLE_NOTE_MASK)[0]
+            labels[k] = int(same_root[np.argmax(items[k].chord_scores[same_root])])
 
 
 def _runs(values: list) -> list[tuple[int, int]]:
