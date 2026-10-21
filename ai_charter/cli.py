@@ -37,6 +37,8 @@ def parse_args(argv: list[str] | None = None) -> Options:
     parser.add_argument("--artist", help="artista (padrão: lido das tags do arquivo)")
     parser.add_argument("--zip", action="store_true", help="também cria um .zip da pasta da música")
     parser.add_argument("--keep-work", action="store_true", help="não apaga os arquivos temporários")
+    parser.add_argument("--view", action="store_true",
+                        help="ao terminar, abre a música no visualizador (navegador)")
     args = parser.parse_args(argv)
 
     instruments = tuple(i.strip() for i in args.instruments.split(",") if i.strip())
@@ -59,6 +61,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
 
 def main(argv: list[str] | None = None) -> None:
     opts = parse_args(argv)
+    view = "--view" in (argv if argv is not None else sys.argv[1:])
     try:
         result = run(opts)
     except (RuntimeError, ValueError) as exc:
@@ -68,6 +71,9 @@ def main(argv: list[str] | None = None) -> None:
     if result.zip_path:
         print(f"Arquivo .zip: {result.zip_path}")
     print("Copie essa pasta para a pasta de músicas do Clone Hero ou do YARG e faça um rescan.")
+    if view:
+        from ai_charter.view import serve
+        serve(result.song_dir)
 
 
 if __name__ == "__main__":

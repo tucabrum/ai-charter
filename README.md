@@ -153,6 +153,8 @@ ai_charter/
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
 ├── compare.py          compara uma chart gerada com uma de referência (ai-charter-compare)
 ├── critic.py           aponta defeitos de jogabilidade, sem referência (ai-charter-critic)
+├── view.py             visualizador no navegador (ai-charter-view)
+├── viewer/index.html   a página do visualizador (funciona sozinha, sem instalar nada)
 ├── analysis/           "ouvir" o áudio
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
@@ -216,6 +218,26 @@ ai-charter-critic gerada/notes.mid
 
 Ele conta acordes de 3+ notas (chart "inflada"), trocas relâmpago (um acorde de uma palhetada só
 entre dois grupos estáveis), picos (a nota pula 3+ lanes e volta) e o trecho mais denso.
+
+## Visualizador: ver a chart tocando sem abrir o jogo
+
+```bash
+ai-charter-view "output/Phoenix - Lasso"                                  # abre no navegador
+ai-charter-view "output/Phoenix - Lasso" --compare "oficial/notes.mid"     # e a oficial ao lado
+ai-charter musica.flac --view                                             # gera e já abre
+```
+
+A página toca o áudio (todos os stems, com mute por stem no botão **Áudio**) e mostra a pista
+como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), sustains, Star Power
+(azul-claro), pratos e tons da bateria, batidas, compassos e seções. Em cima ficam a linha do tempo
+(clique para pular) e os vocais (afinação e letra, com as sílabas cantadas destacadas).
+
+- **+ Pista** abre outra pista lado a lado (outro instrumento, outra dificuldade ou a chart de
+  comparação), e cada pista tem seus próprios seletores.
+- **Espaço** toca/pausa; **← →** voltam/avançam 5 s; **Velocidade** 0,5× e 0,75× para trechos difíceis;
+  **Pista** muda quantos segundos de notas aparecem.
+- Lê `notes.mid` e `notes.chart`. Também dá para abrir `ai_charter/viewer/index.html` direto no
+  navegador e usar **Abrir pasta** (ou arrastar a pasta da música para a página).
 
 ## Testes
 

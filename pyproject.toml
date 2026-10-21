@@ -27,9 +27,10 @@ dev = ["pytest>=7"]
 ai-charter = "ai_charter.cli:main"
 ai-charter-compare = "ai_charter.compare:main"
 ai-charter-critic = "ai_charter.critic:main"
+ai-charter-view = "ai_charter.view:main"
 
 [tool.setuptools.packages.find]
 include = ["ai_charter*"]
 
 [tool.setuptools.package-data]
-ai_charter = ["default_rules.toml"]
+ai_charter = ["default_rules.toml", "viewer/*.html"]
