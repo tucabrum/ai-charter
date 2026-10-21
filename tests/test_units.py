@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from ai_charter.analysis.tempo import TempoMap
-from ai_charter.charting.common import Candidate, quantize_tick, select_rhythm, star_power_windows
+from ai_charter.charting.common import (
+    Candidate, ChartNote, drum_fills_for, quantize_tick, select_rhythm, star_power_windows,
+)
 from ai_charter.charting.frets import FORCE_FLAG, assign_lanes, build_fret_track, chord_shape
 from ai_charter.config import load_rules
 from ai_charter.export.chart_writer import SongInfo, write_chart
@@ -82,6 +84,15 @@ def test_star_power_windows_are_regular():
     windows = star_power_windows(last_tick=RES * 4 * 40, resolution=RES, every_measures=8, phrase_beats=4)
     starts = [w[0] for w in windows]
     assert np.all(np.diff(starts) == RES * 4 * 8)
+
+
+def test_drum_fills_end_on_downbeat_and_avoid_star_power():
+    measure = RES * 4
+    notes = [ChartNote(t, (1,)) for t in range(0, measure * 16 + 1, RES)]   # uma nota por batida
+    windows = [(measure * 4, RES * 4)]                                        # Star Power no compasso 4
+    fills = drum_fills_for(notes, windows, RES, every_measures=4)
+    assert fills == [(measure * 8 - 2 * RES, 2 * RES), (measure * 12 - 2 * RES, 2 * RES),
+                     (measure * 16 - 2 * RES, 2 * RES)]
 
 
 def test_user_rules_override_defaults(tmp_path):
