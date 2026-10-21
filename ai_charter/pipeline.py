@@ -112,6 +112,8 @@ def _to_candidates(detected, tempo: TempoMap, rules: Rules) -> list[Candidate]:
             voices=n.voices,
             chord_scores=n.chord_scores,
             lowest_by_class=n.lowest_by_class,
+            fifth_ratio=n.fifth_ratio,
+            third_ratio=n.third_ratio,
         )
         for n in detected
     ]

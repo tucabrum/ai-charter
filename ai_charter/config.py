@@ -40,6 +40,9 @@ class PitchedDetection:
     release_ratio: float
     lane_window: int
     recognize_chords: bool
+    chord_fifth_ratio: float
+    chord_third_ratio: float
+    chord_smoothing: int
     chord_change_margin: float
     power_chord_third_margin: float
     power_chord_notes: int

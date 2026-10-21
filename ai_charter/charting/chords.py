@@ -1,6 +1,7 @@
 """Decide o acorde de cada nota e deixa cada acorde SEMPRE com o mesmo formato.
 
-1. Cada nota recebe o acorde (ou nota simples) mais parecido (analysis/chords.py).
+1. Acorde ou nota simples: decidido pelo espectro por semitom (ver chordal_notes).
+   Nos acordes, qual acorde é: o modelo mais parecido (analysis/chords.py).
 2. Correções (só quando o acorde corrigido também pontua quase igual na nota):
    - troca de acorde: nas primeiras palhetadas de um acorde novo, o acorde
      anterior ainda está soando e "puxa" o reconhecimento para trás. Se a
@@ -24,6 +25,8 @@ from collections import defaultdict
 import numpy as np
 
 from ai_charter.analysis.chords import CHORDS, chord_voices, is_single_note
+
+SINGLE_NOTE_MASK = np.array([is_single_note(i) for i in range(len(CHORDS))])
 from ai_charter.charting.common import Candidate
 from ai_charter.config import PitchedDetection
 
@@ -33,7 +36,7 @@ MIN_RINGING_STRUMS = 3
 
 def _decide_kind(items: list[Candidate], labels: list[int], start: int, end: int,
                  third_margin: float) -> None:
-    """Decide o tipo (nota, maior, menor ou power chord) de um trecho com a mesma fundamental.
+    """Decide o tipo (maior, menor ou power chord) de um trecho com a mesma fundamental.
 
     Somar as pontuações do trecho inteiro é bem mais confiável que olhar uma
     palhetada só. Power chord (fundamental + quinta) não tem terça: se "maior" e
@@ -42,30 +45,50 @@ def _decide_kind(items: list[Candidate], labels: list[int], start: int, end: int
     """
     root = CHORDS[labels[start]][0]
     span = range(start, end + 1)
-    notes = sum(is_single_note(labels[k]) for k in span)
-    if notes * 2 > len(span):
-        kind = "note"
+    major_index, minor_index = CHORDS.index((root, "")), CHORDS.index((root, "m"))
+    # Diferença maior x menor de cada palhetada (em valor absoluto, para um lado
+    # não "cancelar" o outro quando o acorde anterior ainda soa no começo).
+    gaps = [abs(items[k].chord_scores[major_index] - items[k].chord_scores[minor_index]) for k in span]
+    total = sum(items[k].chord_scores for k in span)
+    if np.mean(gaps) < third_margin:
+        kind = "5"
     else:
-        major_index, minor_index = CHORDS.index((root, "")), CHORDS.index((root, "m"))
-        # Diferença maior x menor de cada palhetada (em valor absoluto, para um lado
-        # não "cancelar" o outro quando o acorde anterior ainda soa no começo).
-        gaps = [abs(items[k].chord_scores[major_index] - items[k].chord_scores[minor_index]) for k in span]
-        total = sum(items[k].chord_scores for k in span)
-        if np.mean(gaps) < third_margin:
-            kind = "5"
-        else:
-            kind = "" if total[major_index] > total[minor_index] else "m"
+        kind = "" if total[major_index] > total[minor_index] else "m"
     for k in span:
         labels[k] = CHORDS.index((root, kind))
 
 
+def chordal_notes(items: list[Candidate], cfg: PitchedDetection) -> list[bool]:
+    """Quais notas são acordes (e não notas simples).
+
+    Decidido pelo espectro por semitom, que distingue uma nota distorcida (cheia de
+    harmônicos) de um acorde de verdade: o estimador achou 2+ notas, OU soa forte
+    uma quinta (+7) ou uma terça logo acima da nota grave (os harmônicos de uma nota
+    simples ficam uma oitava ou mais acima). Como acorde x nota vem em trechos,
+    a decisão final é a maioria entre as notas vizinhas.
+    """
+    poly = [c.voices >= 2 or c.fifth_ratio >= cfg.chord_fifth_ratio or c.third_ratio >= cfg.chord_third_ratio
+            for c in items]
+    half = cfg.chord_smoothing
+    return [float(np.mean(poly[max(0, k - half): k + half + 1])) > 0.5 for k in range(len(items))]
+
+
 def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection) -> None:
     """Preenche `chord`, `voices` e `pitch` das notas que têm pontuação de acorde."""
-    items = [c for c in cands if c.chord_scores is not None]
+    scored = [c for c in cands if c.chord_scores is not None]
+    if not scored:
+        return
+    chordal = chordal_notes(scored, cfg)
+    for c, is_chord in zip(scored, chordal):
+        if not is_chord:   # nota simples: fica com a altura estimada
+            c.voices = 1
+            c.chord = CHORDS.index((round(c.pitch) % 12, "note"))
+    items = [c for c, is_chord in zip(scored, chordal) if is_chord]
     if not items:
         return
     margin = cfg.chord_change_margin
-    labels = [int(np.argmax(c.chord_scores)) for c in items]
+    # Qual acorde: o modelo de acorde mais parecido (sem os modelos de nota simples).
+    labels = [int(np.argmax(np.where(SINGLE_NOTE_MASK, -np.inf, c.chord_scores))) for c in items]
 
     def root(k: int) -> int:
         return CHORDS[labels[k]][0]
@@ -106,23 +129,18 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
         _decide_kind(items, labels, start, end, cfg.power_chord_third_margin)
         start = end + 1
 
-    # Altura fixa de cada fundamental (nos acordes): a mediana da nota grave dela.
+    # Altura fixa de cada fundamental: a mediana da nota grave dela.
     lows: dict[int, list[float]] = defaultdict(list)
     for c, label in zip(items, labels):
         root = CHORDS[label][0]
         low = c.lowest_by_class[root] if c.lowest_by_class is not None else np.nan
-        if not is_single_note(label) and not np.isnan(low):
+        if not np.isnan(low):
             lows[root].append(low)
     fixed = {root: float(np.median(v)) for root, v in lows.items()}
 
     for c, label in zip(items, labels):
         root = CHORDS[label][0]
         c.chord = label
-        if is_single_note(label):
-            c.voices = 1
-            if round(c.pitch) % 12 != root and not np.isnan(c.lowest_by_class[root]):
-                c.pitch = float(c.lowest_by_class[root])   # a nota estimada não bate com a reconhecida
-        else:
-            power_chord = CHORDS[label][1] == "5"
-            c.voices = cfg.power_chord_notes if power_chord else chord_voices(label)
-            c.pitch = fixed.get(root, c.pitch)
+        power_chord = CHORDS[label][1] == "5"
+        c.voices = cfg.power_chord_notes if power_chord else chord_voices(label)
+        c.pitch = fixed.get(root, c.pitch)

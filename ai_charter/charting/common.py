@@ -38,6 +38,8 @@ class Candidate:
     chord: int = -1   # acorde reconhecido (índice em analysis.chords.CHORDS), -1 = nenhum
     chord_scores: np.ndarray | None = None
     lowest_by_class: np.ndarray | None = None
+    fifth_ratio: float = 0.0
+    third_ratio: float = 0.0
 
 
 def quantize_tick(tick: float, resolution: int, allow_triplets: bool) -> int:

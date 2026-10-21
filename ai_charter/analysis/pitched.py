@@ -38,6 +38,10 @@ class DetectedNote:
     # e a nota (MIDI) mais grave que soa forte em cada uma das 12 classes (Dó, Dó#...).
     chord_scores: np.ndarray | None = None
     lowest_by_class: np.ndarray | None = None
+    # Energia uma quinta (+7) e uma terça (+3/+4, +15/+16) acima da nota mais grave,
+    # relativa a ela. Uma nota simples (mesmo distorcida) quase não tem; acordes têm.
+    fifth_ratio: float = 0.0
+    third_ratio: float = 0.0
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -183,7 +187,13 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             continue
 
         scores = lowest = None
+        fifth = third = 0.0
         if cfg.recognize_chords:
+            root = min(bins)
+            base = spectrum[root] + 1e-12
+            fifth = float(spectrum[root + 7] / base) if root + 7 < len(spectrum) else 0.0
+            thirds = [spectrum[root + k] for k in (3, 4, 15, 16) if root + k < len(spectrum)]
+            third = float(max(thirds) / base) if thirds else 0.0
             # Acordes: janela mais longa (até ~230 ms), para "ouvir" todas as cordas.
             chord_spectrum = cqt[:, a:max(b, min(frame + 20, next_frame))].mean(axis=1)
             scores = chord_scores(chord_spectrum, int(fmin_midi))
@@ -204,5 +214,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             strength=float(min(onset_env[frame] / env_scale, 1.5)),
             chord_scores=scores,
             lowest_by_class=lowest,
+            fifth_ratio=fifth,
+            third_ratio=third,
         ))
     return notes
