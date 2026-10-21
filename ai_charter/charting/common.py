@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Callable, Hashable, Sequence
 
 
 @dataclass
@@ -95,6 +96,73 @@ def enforce_reduction(chosen: list[Candidate], previous_count: int, min_reductio
         return chosen
     ranked = sorted(chosen, key=lambda c: c.strength + position_weight(c.tick, resolution), reverse=True)
     return sorted(ranked[:limit], key=lambda c: c.tick)
+
+
+@dataclass
+class Repeats:
+    """Blocos de 4 batidas que se repetem na música.
+
+    Os blocos começam em `origin` (não necessariamente no "1" do compasso:
+    o programa não sabe onde o compasso começa de verdade).
+    """
+    origin: int
+    length: int
+    source: dict[int, int]   # bloco -> primeiro bloco com conteúdo idêntico
+
+    def block(self, tick: int) -> int:
+        return (tick - self.origin) // self.length
+
+    def offset(self, tick: int) -> int:
+        return (tick - self.origin) % self.length
+
+    def source_of(self, tick: int) -> int:
+        b = self.block(tick)
+        return self.source.get(b, b)
+
+
+def find_repeats(cands: Sequence[Candidate], resolution: int,
+                 key: Callable[[Candidate], Hashable]) -> Repeats:
+    """Encontra blocos de 4 batidas com conteúdo idêntico (mesmo ritmo e notas).
+
+    `key(c)` diz o que conta como "igual" (ex.: a nota, ou a peça da bateria).
+    Testa os 4 pontos de início possíveis e fica com o que acha mais repetições.
+    """
+    length = resolution * 4
+    best = None
+    for beat in range(4):
+        origin = beat * resolution - length
+        content: dict[int, list] = defaultdict(list)
+        for c in cands:
+            content[(c.tick - origin) // length].append(((c.tick - origin) % length, key(c)))
+        first: dict[tuple, int] = {}
+        source = {b: first.setdefault(tuple(sorted(content[b], key=repr)), b) for b in sorted(content)}
+        repeated = sum(1 for b, s in source.items() if b != s)
+        if best is None or repeated > best[0]:
+            best = (repeated, Repeats(origin, length, source))
+    return best[1] if best else Repeats(0, length, {})
+
+
+def copy_repeats(chosen: Sequence[Candidate], cands: Sequence[Candidate], repeats: Repeats,
+                 resolution: int, ident: Callable[[Candidate], Hashable] = lambda c: None,
+                 min_gap_beats: float = 0.0) -> list[Candidate]:
+    """Faz cada bloco repetido usar a MESMA escolha de notas do original.
+
+    Sem isso, duas repetições de um riff podem perder notas diferentes ao
+    simplificar (por pequenas diferenças de volume na gravação).
+    `ident(c)` distingue notas na mesma posição (ex.: peça da bateria).
+    """
+    kept = {(repeats.block(c.tick), repeats.offset(c.tick), ident(c)) for c in chosen}
+    result = [c for c in cands
+              if (repeats.source_of(c.tick), repeats.offset(c.tick), ident(c)) in kept]
+    if min_gap_beats > 0:
+        # Na emenda entre blocos, garante a distância mínima entre notas.
+        min_gap = min_gap_beats * resolution
+        cleaned: list[Candidate] = []
+        for c in sorted(result, key=lambda c: c.tick):
+            if not cleaned or c.tick - cleaned[-1].tick >= min_gap - 1e-6:
+                cleaned.append(c)
+        result = cleaned
+    return sorted(result, key=lambda c: c.tick)
 
 
 def dedupe(cands: list[Candidate]) -> list[Candidate]:

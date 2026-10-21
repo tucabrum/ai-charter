@@ -86,6 +86,25 @@ def test_difficulties_get_simpler():
     assert max(lane for n in track.notes["easy"] for lane in n.lanes) <= 2
 
 
+def test_repeated_riffs_are_charted_the_same_in_every_difficulty():
+    rng = np.random.default_rng(1)
+    riff = [52, 55, 57, 59, 62, 64, 62, 59]          # 8 colcheias = 4 batidas
+    offset = RES * 2                                 # começa no 3º tempo do compasso
+    cands = [
+        Candidate(tick=offset + i * RES // 2, pitch=riff[i % 8], end_tick=offset + i * RES // 2 + 40,
+                  strength=float(rng.uniform(0.5, 1.0)))   # volume varia a cada repetição
+        for i in range(8 * 6)
+    ]
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    for difficulty, notes in track.notes.items():
+        blocks: dict[int, list] = {}
+        for n in notes:
+            k, pos = divmod(n.tick - offset, RES * 4)
+            blocks.setdefault(k, []).append((pos, n.lanes))
+        first = blocks[0]
+        assert all(b == first for b in blocks.values()), difficulty
+
+
 def test_easy_forces_natural_hopos_to_strum():
     rules = load_rules()
     rules.frets["easy"].min_gap_beats = 0.25

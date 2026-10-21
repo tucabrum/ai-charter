@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import numpy as np
 
+from collections import defaultdict
+
 from ai_charter.charting.common import (
-    Candidate, ChartNote, TrackChart, enforce_reduction, select_rhythm, star_power_for,
+    Candidate, ChartNote, Repeats, TrackChart, copy_repeats, enforce_reduction, find_repeats,
+    select_rhythm, star_power_for,
 )
 from ai_charter.config import FretDifficultyRules
 
@@ -112,6 +115,46 @@ def assign_lanes(pitches: list[float], n_lanes: int, window: int,
     return result[::-1]
 
 
+def _copy_repeated_lanes(chosen: list[Candidate], lanes: list[int], repeats: Repeats,
+                         resolution: int) -> list[int]:
+    """Faz cada bloco repetido usar as mesmas lanes do bloco original.
+
+    Só copia se a emenda com as notas vizinhas não quebrar mais regras do que
+    antes (ex.: a primeira nota copiada cair na mesma lane da nota anterior,
+    sendo outra nota). Detalhes menores, como o tamanho de um salto, não impedem a cópia.
+    """
+    lanes = list(lanes)
+    indexes: dict[int, list[int]] = defaultdict(list)
+    for i, c in enumerate(chosen):
+        indexes[repeats.block(c.tick)].append(i)
+
+    def seam_violations(idx: list[int], values: list[int]) -> int:
+        """Quantas quebras de regra há nas emendas do bloco com os vizinhos."""
+        pairs = []
+        if idx[0] > 0:
+            pairs.append((idx[0] - 1, idx[0], lanes[idx[0] - 1], values[0]))
+        if idx[-1] + 1 < len(chosen):
+            pairs.append((idx[-1], idx[-1] + 1, values[-1], lanes[idx[-1] + 1]))
+        return sum(
+            _transition_cost(chosen[j].pitch - chosen[i].pitch, a, b,
+                             chosen[j].tick % resolution == 0) >= COST_RESET_ON_BEAT
+            for i, j, a, b in pairs
+        )
+
+    for block in sorted(indexes):
+        source = repeats.source.get(block, block)
+        if source == block or source not in indexes:
+            continue
+        src, dst = indexes[source], indexes[block]
+        if [repeats.offset(chosen[i].tick) for i in src] != [repeats.offset(chosen[i].tick) for i in dst]:
+            continue
+        new, old = [lanes[i] for i in src], [lanes[i] for i in dst]
+        if new != old and seam_violations(dst, new) <= seam_violations(dst, old):
+            for i, lane in zip(dst, new):
+                lanes[i] = lane
+    return lanes
+
+
 def chord_shape(base: int, size: int, n_lanes: int) -> tuple[int, ...]:
     """Formato do acorde a partir da lane mais grave."""
     if size <= 1:
@@ -156,13 +199,17 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
                      sp_windows: list[tuple[int, int]]) -> TrackChart:
     """Monta as quatro dificuldades a partir das notas candidatas (já quantizadas)."""
     track = TrackChart(notes={})
+    # Trechos com o mesmo ritmo e as mesmas notas são charteados igualzinho.
+    repeats = find_repeats(cands, resolution, key=lambda c: (round(c.pitch), c.voices))
     previous_count = len(cands)
     for difficulty, r in rules.items():
         chosen = select_rhythm(cands, resolution, r.min_gap_beats, r.grid, r.allow_offgrid)
         chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution)
+        chosen = copy_repeats(chosen, cands, repeats, resolution, min_gap_beats=r.min_gap_beats)
         previous_count = len(chosen)
         lanes = assign_lanes([c.pitch for c in chosen], r.lanes, lane_window,
                              [c.tick for c in chosen], resolution)
+        lanes = _copy_repeated_lanes(chosen, lanes, repeats, resolution)
         notes = [
             ChartNote(c.tick, chord_shape(lane, min(c.voices, r.max_chord), r.lanes))
             for c, lane in zip(chosen, lanes)

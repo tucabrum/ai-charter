@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from ai_charter.analysis.drums import CRASH, HIHAT, KICK, SNARE
 from ai_charter.charting.common import (
-    Candidate, ChartNote, TrackChart, drum_fills_for, enforce_reduction, select_rhythm,
-    star_power_for,
+    Candidate, ChartNote, TrackChart, copy_repeats, drum_fills_for, enforce_reduction,
+    find_repeats, select_rhythm, star_power_for,
 )
 from ai_charter.config import DrumDifficultyRules
 
@@ -22,6 +22,8 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
                      resolution: int, sp_windows: list[tuple[int, int]],
                      fill_every_measures: int) -> TrackChart:
     track = TrackChart(notes={})
+    # Trechos com as mesmas batidas são charteados igualzinho.
+    repeats = find_repeats(cands, resolution, key=lambda c: c.piece)
     previous_count = len(cands)
     for difficulty, r in rules.items():
         # Sem crash nesta dificuldade: o crash vira um prato comum (amarelo).
@@ -37,6 +39,7 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
         chosen = [c for group, gap in groups.values()
                   for c in select_rhythm(group, resolution, gap, r.grid, r.allow_offgrid)]
         chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution)
+        chosen = copy_repeats(chosen, hits, repeats, resolution, ident=lambda c: c.piece)
         previous_count = len(chosen)
 
         by_tick: dict[int, set[str]] = {}
