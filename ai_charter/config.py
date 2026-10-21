@@ -57,6 +57,15 @@ class DrumDetection:
 
 
 @dataclass
+class SanitizeRules:
+    enabled: bool
+    noise_ratio: float
+    min_found: float
+    max_extra: float
+    min_groove_measures: int
+
+
+@dataclass
 class GuitarSelectionRules:
     active_db: float
     weight_loudness: float
@@ -110,6 +119,7 @@ class Rules:
     detection: dict[str, PitchedDetection]
     drum_detection: DrumDetection
     guitar_selection: GuitarSelectionRules
+    sanitize: SanitizeRules
     vocals: VocalRules
     frets: dict[str, FretDifficultyRules]
     drums: dict[str, DrumDifficultyRules]
@@ -154,6 +164,7 @@ def load_rules(path: str | Path | None = None) -> Rules:
         },
         drum_detection=_build(DrumDetection, data["drum_detection"], "drum_detection"),
         guitar_selection=_build(GuitarSelectionRules, data["guitar_selection"], "guitar_selection"),
+        sanitize=_build(SanitizeRules, data["sanitize"], "sanitize"),
         vocals=_build(VocalRules, data["vocals"], "vocals"),
         frets={d: _build(FretDifficultyRules, data["frets"][d], f"frets.{d}") for d in DIFFICULTIES},
         drums={d: _build(DrumDifficultyRules, data["drums"][d], f"drums.{d}") for d in DIFFICULTIES},

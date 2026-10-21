@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 import librosa
 import numpy as np
+from scipy.ndimage import percentile_filter
 
 from ai_charter.analysis.chords import chord_scores
 from ai_charter.config import PitchedDetection
@@ -76,6 +77,23 @@ def estimate_pitches(spectrum: np.ndarray, chord_ratio: float, max_voices: int =
     return found
 
 
+def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Envelope de ataques (quanto a energia "subiu" a cada frame), resistente a chiado.
+
+    1. Subtração espectral: em cada faixa de frequência, estima o ruído de fundo
+       (o nível que está sempre presente nos últimos ~2 s) e o remove. Chiado
+       constante some; palhetadas, que são rápidas, continuam.
+    2. SuperFlux (lag=2, max_size=3): pega ataques fracos (palhetada para cima)
+       sem confundir vibrato de nota longa com ataque novo.
+    """
+    mel = librosa.feature.melspectrogram(y=y, sr=sr, hop_length=HOP, n_mels=128)
+    window = max(3, int(2.0 * sr / HOP))
+    floor = percentile_filter(mel, percentile=10, size=(1, window), mode="nearest")
+    clean = np.maximum(mel - floor, 0) + 1e-10 * mel.max()
+    return librosa.onset.onset_strength(S=librosa.power_to_db(clean, ref=np.max), sr=sr,
+                                        hop_length=HOP, lag=2, max_size=3)
+
+
 def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 0.25) -> np.ndarray:
     """Para cada classe de nota (Dó, Dó#...), a nota MIDI mais grave que soa forte (NaN se nenhuma)."""
     result = np.full(12, np.nan)
@@ -92,9 +110,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
         return []
 
     # --- 1. Ataques ---------------------------------------------------------
-    # SuperFlux (lag=2, max_size=3): pega ataques fracos (palhetada para cima no
-    # violão) sem confundir vibrato de nota longa com um ataque novo.
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP, lag=2, max_size=3)
+    onset_env = onset_envelope(y, sr)
     # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
     # palhetado, em que as cordas soam uma logo após a outra).
     onset_frames = librosa.onset.onset_detect(

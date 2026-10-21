@@ -137,3 +137,26 @@ def test_chord_recognition_from_spectrum():
     assert chord_name(int(np.argmax(chord_scores(spectrum([45, 52, 57, 60, 64]), 40)))) == "Am"
     single = int(np.argmax(chord_scores(spectrum([64]), 40)))
     assert chord_name(single) == "E" and is_single_note(single)    # nota simples, não acorde de Mi
+
+
+def test_sanitize_leaves_clean_sparse_measures_alone():
+    from ai_charter.charting.common import Candidate
+    from ai_charter.charting.sanitize import sanitize
+
+    sr = 22050
+    tempo = TempoMap(np.arange(40) * 0.5, RES)                 # 120 BPM
+    rng = np.random.default_rng(0)
+    audio = np.zeros(sr * 18)
+    groove = [0, RES, RES * 3 // 2, RES * 5 // 2, RES * 3, RES * 7 // 2]
+    cands = []
+    for m in range(8):
+        positions = groove if m < 7 else [0]                    # último compasso: um acorde só (de propósito)
+        for p in positions:
+            tick = m * RES * 4 + p
+            t = int(tempo.tick_to_time(tick) * sr)
+            audio[t:t + 2000] += rng.standard_normal(2000) * np.exp(-np.arange(2000) / 300)
+            cands.append(Candidate(tick, 1.0, end_tick=tick + 50, pitch=48, voices=3, chord=0,
+                                   chord_scores=np.ones(48)))
+    rules = load_rules().sanitize
+    result, simplified = sanitize(cands, audio, sr, tempo, RES, rules)
+    assert simplified == [] and result == cands

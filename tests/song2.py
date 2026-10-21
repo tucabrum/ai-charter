@@ -185,9 +185,39 @@ def sing(syllable: str, midi: float, length: float, rng: np.random.Generator) ->
     return out / (np.abs(voice).max() + 1e-9) * 0.5
 
 
+# ----------------------------------------------------------------- sujeira
+OPEN_STRINGS = (40, 45, 50, 55, 59, 64)   # cordas soltas do violão (E A D G B E)
+DIRTY_SECTION = "verso2"
+DIRTY_EVENTS_PER_BAR = 4
+
+
+def add_dirt(track: np.ndarray, start: float, bars: int, rng: np.random.Generator) -> None:
+    """Suja um trecho do violão, como numa gravação real ruim: chiado constante,
+    cordas soltas soando sem querer, raspadas e rangidos fora do tempo."""
+    a, b = int(start * SR), int((start + bars * BAR) * SR)
+    hiss = sosfilt(butter(4, 2500, btype="highpass", fs=SR, output="sos"), rng.standard_normal(b - a))
+    track[a:b] += 0.06 * hiss
+    for _ in range(bars * DIRTY_EVENTS_PER_BAR):
+        at = start + rng.uniform(0, bars * BAR)       # fora do grid, em qualquer lugar
+        kind = rng.integers(3)
+        if kind == 0:   # corda solta soando
+            add(track, pluck(float(rng.choice(OPEN_STRINGS)), 1.0, rng), at, 0.45)
+        elif kind == 1:  # raspada (palhetada abafada)
+            n = int(0.04 * SR)
+            burst = sosfilt(butter(4, [800, 5000], btype="bandpass", fs=SR, output="sos"), rng.standard_normal(n))
+            add(track, burst * np.exp(-np.arange(n) / SR * 60), at, 0.6)
+        else:            # rangido do dedo deslizando na corda
+            t = np.arange(int(0.12 * SR)) / SR
+            freq = 1500 + 2500 * t / t[-1]
+            add(track, 0.3 * np.sin(2 * np.pi * np.cumsum(freq) / SR) * np.hanning(len(t)), at)
+
+
 # ----------------------------------------------------------------- renderização
-def render(folder: Path) -> dict[str, Path]:
-    """Cria mix.flac, os stems (violao, guitarra, bass, drums, vocals) e letra.txt."""
+def render(folder: Path, dirty: bool = False) -> dict[str, Path]:
+    """Cria mix.flac, os stems (violao, guitarra, bass, drums, vocals) e letra.txt.
+
+    dirty=True suja o violão do verso 2 (chiado, cordas soltas, raspadas, rangidos).
+    """
     rng = np.random.default_rng(7)
     total = START + total_bars() * BAR + 3.0
     tracks = {name: np.zeros(int(total * SR)) for name in ("violao", "guitarra", "bass", "drums", "vocals")}
@@ -229,6 +259,10 @@ def render(folder: Path) -> dict[str, Path]:
                     t += dur
                 verse += 1
         bar += bars
+
+    if dirty:
+        add_dirt(tracks["violao"], section_start(DIRTY_SECTION),
+                 next(s[1] for s in SECTIONS if s[0] == DIRTY_SECTION), np.random.default_rng(11))
 
     # A mesma escala para mix e stems: assim os stems somados dão a mix, sem cortes.
     mix = sum(tracks.values())

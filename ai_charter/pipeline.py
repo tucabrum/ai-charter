@@ -25,6 +25,7 @@ from ai_charter.charting.drums import build_drum_track
 from ai_charter.charting.frets import build_fret_track
 from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
 from ai_charter.charting.lyrics import read_lyrics
+from ai_charter.charting.sanitize import sanitize
 from ai_charter.charting.vocals import VocalTrack, build_vocal_track
 from ai_charter.config import Rules, load_rules
 from ai_charter.export import audio
@@ -118,7 +119,7 @@ def _to_candidates(detected, tempo: TempoMap, rules: Rules) -> list[Candidate]:
 
 
 def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Rules,
-                  sp_windows) -> tuple[TrackChart, list[str]]:
+                  sp_windows, log=print) -> tuple[TrackChart, list[str]]:
     """Chart de guitarra/baixo/teclado. Com várias guitarras, escolhe uma por compasso."""
     cfg = rules.detection[instrument]
     sources = []
@@ -127,6 +128,10 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
         cands = _to_candidates(detect_pitched_notes(y, sr, cfg), tempo, rules)
         if cfg.recognize_chords:
             label_chords(cands, rules.general.resolution, cfg)
+        cands, simplified = sanitize(cands, y, sr, tempo, rules.general.resolution, rules.sanitize)
+        if simplified:
+            log(f"    {instrument} ({stem.stem}): {len(simplified)} compasso(s) confuso(s) simplificado(s): "
+                + ", ".join(str(m + 1) for m in simplified))
         sources.append(GuitarSource(stem.stem, cands, y, sr))
     cands, chosen = merge_guitars(sources, tempo, rules.general.resolution, rules.guitar_selection)
     track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)
@@ -204,7 +209,7 @@ def run(opts: Options, log=print) -> Result:
             if instrument == "drums":
                 track = chart_drums(stem[0], tempo, rules, sp_windows)
             else:
-                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows)
+                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log)
                 if len(stem) > 1:
                     guitar_sources = chosen
                     log(f"    {instrument}: faixas usadas: {_describe_runs(chosen)}")

@@ -88,6 +88,18 @@ inactive_cost = 2.0         # custo de ficar numa guitarra que parou de tocar
 min_hold_measures = 2       # depois de trocar, fica pelo menos esse nº de compassos
 
 # ---------------------------------------------------------------------------
+# Sanitização: compassos "confusos" (ruído alto + ritmo bagunçado) viram um
+# caminho regular (ritmo típico da faixa com um acorde só). Compassos limpos
+# nunca são mexidos.
+# ---------------------------------------------------------------------------
+[sanitize]
+enabled = true
+noise_ratio = 3.0            # ruído de fundo a partir de quantas vezes o normal da faixa
+min_found = 0.75             # menos que isso do ritmo típico encontrado = bagunçado
+max_extra = 0.25             # mais que isso de notas fora do ritmo típico = bagunçado
+min_groove_measures = 3      # o ritmo típico precisa aparecer em pelo menos N compassos
+
+# ---------------------------------------------------------------------------
 # Vocais (precisam de um arquivo de letra: --lyrics letra.txt)
 # ---------------------------------------------------------------------------
 [vocals]
