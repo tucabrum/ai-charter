@@ -7,6 +7,9 @@ Uso:
 Sobe um servidor local (só nesta máquina) que entrega a página do visualizador
 (viewer/index.html) e os arquivos da pasta da música, e abre o navegador. A
 página também funciona sozinha: abra o index.html e use o botão "Abrir pasta".
+
+O editor da página salva o notes.mid de volta na pasta da música; na primeira vez,
+a original é guardada como notes.backup.mid.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import shutil
 import webbrowser
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +26,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 VIEWER = Path(__file__).parent / "viewer" / "index.html"
+CHART_NAME = "notes.mid"
+BACKUP_NAME = "notes.backup.mid"
+MAX_CHART_BYTES = 20 * 1024 * 1024
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -54,6 +62,26 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/compare/") and self.compare and path[len("/compare/"):] == self.compare.name:
             return self._file(self.compare.parent, self.compare.name)
         self._send(b"not found", "text/plain", 404)
+
+    def do_POST(self) -> None:
+        # Só a própria página grava: o cabeçalho X-AI-Charter obriga o navegador a pedir
+        # permissão (preflight) a outros sites, e este servidor não a dá.
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+        if (urlparse(self.path).path != "/song/save" or not self.song_dir
+                or self.headers.get("X-AI-Charter") != "save" or host not in ("127.0.0.1", "localhost")):
+            return self._send(b"forbidden", "text/plain", 403)
+        size = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(size) if 0 < size <= MAX_CHART_BYTES else b""
+        if not body.startswith(b"MThd"):
+            return self._send("não é um arquivo MIDI".encode(), "text/plain; charset=utf-8", 400)
+        target, backup = self.song_dir / CHART_NAME, self.song_dir / BACKUP_NAME
+        if target.is_file() and not backup.exists():
+            shutil.copy2(target, backup)
+        tmp = target.with_name(CHART_NAME + ".tmp")
+        tmp.write_bytes(body)
+        os.replace(tmp, target)
+        info = {"saved": CHART_NAME, "backup": BACKUP_NAME if backup.exists() else None}
+        self._send(json.dumps(info).encode(), "application/json")
 
     def _file(self, folder: Path, name: str) -> None:
         target = (folder / name).resolve()

@@ -58,6 +58,14 @@
   #empty b { color: var(--text); }
   body.dragging #stage { outline: 2px dashed var(--accent); outline-offset: -6px; }
   .help { color: var(--muted); font-size: 12px; }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  #editbar { display: none; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 16px; background: #131821; border-bottom: 1px solid var(--line); }
+  body.editing #editbar { display: flex; }
+  #editbar .fret { width: 26px; height: 22px; padding: 0; border-radius: 11px; border: 2px solid rgba(0, 0, 0, 0.45); }
+  #editbar .fret:hover { border-color: #fff; }
+  #editbar .help { flex-basis: 100%; }
+  #eStatus { margin-left: auto; color: var(--muted); }
+  .lane-panel.roll { flex-grow: 2.5; }
 </style>
 </head>
 <body>
@@ -72,7 +80,26 @@
   <div class="group">Pista <input type="range" id="hyper" min="0.8" max="3" step="0.1" value="1.6" title="Quantos segundos de notas aparecem na pista"></div>
   <button id="mixerBtn">Áudio</button>
   <button id="addLane">+ Pista</button>
+  <button id="editBtn" title="Editar a chart (notes.mid)">✎ Editar</button>
 </header>
+<div id="editbar">
+  <div class="group">Grade <select id="snap" title="Onde as notas encaixam ao pôr ou mover">
+    <option value="4">1/4</option><option value="8">1/8</option><option value="12">1/12</option><option value="16" selected>1/16</option>
+    <option value="24">1/24</option><option value="32">1/32</option><option value="64">1/64</option><option value="0">livre</option></select></div>
+  <div class="group" title="Cor das notas selecionadas (Shift: soma ao acorde)">Cor
+    <button class="fret" data-lane="0" style="background: var(--green)"></button><button class="fret" data-lane="1" style="background: var(--red)"></button><button class="fret" data-lane="2" style="background: var(--yellow)"></button><button class="fret" data-lane="3" style="background: var(--blue)"></button><button class="fret" data-lane="4" style="background: var(--orange)"></button></div>
+  <button id="eHopo" title="H">HOPO / strum</button>
+  <button id="eTap" title="T">Tap</button>
+  <button id="eSp" title="S">Star Power</button>
+  <button id="eDel" title="Delete">Excluir</button>
+  <button id="eUndo" title="Ctrl+Z">↶ Desfazer</button>
+  <button id="eRedo" title="Ctrl+Y">↷ Refazer</button>
+  <button class="primary" id="eSave" title="Ctrl+S">Salvar</button>
+  <span id="eStatus"></span>
+  <span class="help">Clique: põe nota · arraste: move (tempo e cor) · borda direita no piano roll ou Alt+arraste: sustain · botão direito: apaga ·
+    Shift+arraste: seleciona área · Shift+clique: soma à seleção · 1–5: cor (Shift: acorde) · ← →: move na grade · Shift+← →: sustain · ↑ ↓: troca de cor ·
+    H / T / S · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll)</span>
+</div>
 <div id="mixer"></div>
 <canvas id="timeline"></canvas>
 <canvas id="vocals"></canvas>
@@ -99,31 +126,57 @@ function parseMidi(buf) {
     const id = str(4), len = d.getUint32(p + 4); p += 8;
     const end = p + len;
     if (id !== "MTrk") { p = end; continue; }
-    const events = []; let tick = 0, status = 0, name = "";
+    // raw: todos os eventos com os bytes originais, para o editor regravar o arquivo sem perder nada.
+    const events = [], raw = []; let tick = 0, status = 0, name = "";
     while (p < end) {
       tick += vlq();
+      const start = p;
       let b = d.getUint8(p);
       if (b & 0x80) { status = b; p++; }
       if (status === 0xff) {
         const type = d.getUint8(p++); const l = vlq();
         const bytes = new Uint8Array(buf, p, l); p += l;
+        if (type !== 0x2f) raw.push({ tick, bytes: new Uint8Array(buf.slice(start, p)) });   // o fim da trilha é reescrito ao salvar
         if (type === 0x03 && !name) name = latin1(bytes);
         else if (type === 0x51) events.push({ tick, kind: "tempo", us: (bytes[0] << 16) | (bytes[1] << 8) | bytes[2] });
         else if (type === 0x58) events.push({ tick, kind: "ts", num: bytes[0], den: 1 << bytes[1] });
         else if (type >= 0x01 && type <= 0x0f) events.push({ tick, kind: "text", text: latin1(bytes) });
       } else if (status === 0xf0 || status === 0xf7) {
         const l = vlq(); p += l;
+        raw.push({ tick, bytes: new Uint8Array(buf.slice(start, p)) });
       } else {
         const hi = status & 0xf0;
-        const a = d.getUint8(p++); const v = (hi === 0xc0 || hi === 0xd0) ? 0 : d.getUint8(p++);
+        const short = hi === 0xc0 || hi === 0xd0;
+        const a = d.getUint8(p++); const v = short ? 0 : d.getUint8(p++);
         if (hi === 0x90 && v > 0) events.push({ tick, kind: "on", note: a });
         else if (hi === 0x80 || (hi === 0x90 && v === 0)) events.push({ tick, kind: "off", note: a });
+        const ev = { tick, bytes: short ? Uint8Array.of(status, a) : Uint8Array.of(status, a, v) };
+        if (hi === 0x80 || hi === 0x90) ev.note = a;
+        raw.push(ev);
       }
     }
     p = end;
-    tracks.push({ name, events });
+    tracks.push({ name, events, raw });
   }
   return { division, tracks };
+}
+
+// Grava um Standard MIDI File (formato 1). tracks: [[{tick, bytes}]] em ordem de tick.
+function writeMidi(division, tracks) {
+  const out = [];
+  const u32 = (n) => out.push((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255);
+  const u16 = (n) => out.push((n >>> 8) & 255, n & 255);
+  const ascii = (s) => { for (const c of s) out.push(c.charCodeAt(0)); };
+  ascii("MThd"); u32(6); u16(1); u16(tracks.length); u16(division);
+  for (const events of tracks) {
+    const body = [];
+    let now = 0;
+    const vlq = (n) => { const b = [n & 0x7f]; while ((n >>>= 7)) b.unshift((n & 0x7f) | 0x80); for (const x of b) body.push(x); };
+    for (const e of events) { vlq(e.tick - now); now = e.tick; for (const x of e.bytes) body.push(x); }
+    body.push(0, 0xff, 0x2f, 0);
+    ascii("MTrk"); u32(body.length); for (const x of body) out.push(x);
+  }
+  return new Uint8Array(out);
 }
 function latin1(bytes) { let s = ""; for (const b of bytes) s += String.fromCharCode(b); return s; }
 
@@ -160,6 +213,12 @@ class TempoMap {
     const q = this.points[lo];
     return q.sec + (tick - q.tick) / this.res * q.us / 1e6;
   }
+  tick(sec) {
+    let lo = 0, hi = this.points.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (this.points[m].sec <= sec) lo = m; else hi = m - 1; }
+    const q = this.points[lo];
+    return q.tick + (sec - q.sec) * 1e6 / q.us * this.res;
+  }
   // Linhas de batida e compasso até o instante `endTime` (s).
   grid(endTime) {
     const lines = [];
@@ -195,12 +254,12 @@ function fromMidi(buf, ini) {
     if (e.kind === "ts") sigs.push(e);
   }
   const tm = new TempoMap(res, tempos, sigs);
-  const chart = { res, tm, tracks: {}, sections: [], vocals: null, endTime: 0 };
+  const chart = { res, tm, tracks: {}, sections: [], vocals: null, endTime: 0, midi, edit: {} };
   // Limite de HOPO automático (Clone Hero): 170 ticks a 480 por batida.
   let hopoTicks = res * 170 / 480;
   if (ini.eighthnote_hopo === "1" || ini.eighthnote_hopo === "true") hopoTicks = res / 2 + 1;
   if (ini.hopo_frequency) hopoTicks = Number(ini.hopo_frequency) * res / 480;
-  for (const track of midi.tracks) {
+  for (const [index, track] of midi.tracks.entries()) {
     if (track.name === "EVENTS") {
       for (const e of track.events) {
         if (e.kind !== "text") continue;
@@ -213,19 +272,41 @@ function fromMidi(buf, ini) {
     if (!instr) continue;
     if (instr === "vocals") { chart.vocals = midiVocals(track.events, tm); continue; }
     if (chart.tracks[instr]) continue;
-    chart.tracks[instr] = instr === "drums" ? midiDrums(track.events, tm, /^(1|true)$/i.test(ini.pro_drums || "")) : midiFrets(track.events, tm, res, hopoTicks);
+    if (instr === "drums") { chart.tracks[instr] = midiDrums(track.events, tm, /^(1|true)$/i.test(ini.pro_drums || "")); continue; }
+    chart.edit[instr] = midiFrets(track.events, hopoTicks, index);
+    chart.tracks[instr] = renderFrets(chart, instr);
   }
   return chart;
 }
 
 function rangesOf(pairs) { return pairs.map(p => [p.tick, p.tick + Math.max(p.len, 1)]); }
 function inRanges(ranges, tick) { return ranges.some(([a, b]) => tick >= a && tick < b); }
+// Junta trechos que se sobrepõem (trechos só encostados continuam separados: são frases diferentes).
+function normRanges(ranges) {
+  const out = [];
+  for (const [a, b] of ranges.slice().sort((x, y) => x[0] - y[0])) {
+    const last = out[out.length - 1];
+    if (last && a < last[1]) last[1] = Math.max(last[1], b); else out.push([a, b]);
+  }
+  return out;
+}
+function subRange(ranges, a, b) {
+  const out = [];
+  for (const [x, y] of ranges) {
+    if (y <= a || x >= b) { out.push([x, y]); continue; }
+    if (x < a) out.push([x, a]);
+    if (y > b) out.push([b, y]);
+  }
+  return out;
+}
 
-function midiFrets(events, tm, res, hopoTicks) {
+// Guitarra/baixo/teclado em ticks, do jeito que o editor mexe nelas:
+//   diffs[diff] = [{tick, len, lanes, force: null | "hopo" | "strum"}]
+//   sp e tap são trechos [início, fim) em ticks e valem para todas as dificuldades (como no MIDI).
+function midiFrets(events, hopoTicks, trackIndex) {
   const pairs = notePairs(events);
-  const sp = rangesOf(pairs.filter(p => p.note === 116));
-  const tap = rangesOf(pairs.filter(p => p.note === 104));
-  const out = {};
+  const model = { trackIndex, hopoTicks, diffs: {}, dirty: new Set(), sharedDirty: false,
+                  sp: rangesOf(pairs.filter(p => p.note === 116)), tap: rangesOf(pairs.filter(p => p.note === 104)) };
   for (const diff of DIFFS) {
     const base = BASE[diff];
     const forceHopo = rangesOf(pairs.filter(p => p.note === base + 5));
@@ -234,24 +315,81 @@ function midiFrets(events, tm, res, hopoTicks) {
     for (const p of pairs) {
       const lane = p.note - base;
       if (lane < 0 || lane > 4) continue;
-      const n = byTick.get(p.tick) || { tick: p.tick, lanes: [], len: 0 };
-      n.lanes.push(lane); n.len = Math.max(n.len, p.len);
+      const n = byTick.get(p.tick) || { tick: p.tick, len: 0, lanes: [], force: null };
+      if (!n.lanes.includes(lane)) n.lanes.push(lane);
+      n.len = Math.max(n.len, p.len);
       byTick.set(p.tick, n);
     }
-    const notes = [...byTick.values()].sort((a, b) => a.tick - b.tick);
-    let prev = null;
-    out[diff] = notes.map(n => {
+    model.diffs[diff] = [...byTick.values()].sort((a, b) => a.tick - b.tick);
+    for (const n of model.diffs[diff]) {
       n.lanes.sort();
-      let hopo = prev !== null && n.lanes.length === 1 && n.tick - prev.tick <= hopoTicks && !prev.lanes.includes(n.lanes[0]);
-      if (inRanges(forceHopo, n.tick)) hopo = true;
-      if (inRanges(forceStrum, n.tick)) hopo = false;
+      n.force = inRanges(forceStrum, n.tick) ? "strum" : inRanges(forceHopo, n.tick) ? "hopo" : null;
+    }
+  }
+  return model;
+}
+
+// Modelo em ticks -> notas que a pista desenha (src aponta para a nota editável).
+function renderFrets(chart, instr) {
+  const m = chart.edit[instr], tm = chart.tm, out = {};
+  for (const diff of DIFFS) {
+    let prev = null;
+    out[diff] = (m.diffs[diff] || []).map(n => {
+      const natural = prev !== null && n.lanes.length === 1 && n.tick - prev.tick <= m.hopoTicks && !prev.lanes.includes(n.lanes[0]);
       prev = n;
-      const sustain = n.len > res / 3;
-      return { time: tm.time(n.tick), end: sustain ? tm.time(n.tick + n.len) : null, lanes: n.lanes, hopo,
-               tap: inRanges(tap, n.tick), sp: inRanges(sp, n.tick) };
+      const sustain = n.len > chart.res / 3;
+      return { time: tm.time(n.tick), end: sustain ? tm.time(n.tick + n.len) : null, lanes: n.lanes,
+               hopo: n.force ? n.force === "hopo" : natural, natural,
+               tap: inRanges(m.tap, n.tick), sp: inRanges(m.sp, n.tick), src: n };
     });
   }
   return out;
+}
+
+// Regrava o notes.mid: as trilhas editadas trocam só as notas que o editor controla
+// (cores e HOPO/strum forçado das dificuldades mexidas; tap e Star Power); o resto fica como estava.
+function chartToMidi(chart) {
+  const tracks = chart.midi.tracks.map(t => t.raw);
+  const short = Math.max(1, Math.round(chart.res / 16));
+  for (const m of Object.values(chart.edit)) {
+    if (!m.dirty.size && !m.sharedDirty) continue;
+    const raw = chart.midi.tracks[m.trackIndex].raw;
+    const drop = new Set(m.sharedDirty ? [104, 116] : []);
+    const byPitch = new Map();
+    const note = (tick, len, pitch) => {
+      if (!byPitch.has(pitch)) byPitch.set(pitch, []);
+      byPitch.get(pitch).push([tick, tick + Math.max(1, len)]);
+    };
+    for (const diff of m.dirty) {
+      const base = BASE[diff];
+      for (let k = 0; k <= 6; k++) drop.add(base + k);
+      for (const n of m.diffs[diff] || []) {
+        for (const ln of n.lanes) note(n.tick, n.len || short, base + ln);
+        if (n.force) note(n.tick, 1, base + (n.force === "hopo" ? 5 : 6));
+      }
+    }
+    if (m.sharedDirty) {
+      for (const [a, b] of m.sp) note(a, b - a, 116);
+      for (const [a, b] of m.tap) note(a, b - a, 104);
+    }
+    const ch = (raw.find(e => e.note !== undefined)?.bytes[0] ?? 0x90) & 0x0f;
+    const events = raw.filter(e => e.note === undefined || !drop.has(e.note)).map((e, i) => ({ e, rank: 1, i }));
+    let i = events.length;
+    for (const [pitch, list] of byPitch) {
+      list.sort((a, b) => a[0] - b[0]);
+      list.forEach(([a, b], k) => {
+        const next = list[k + 1]?.[0];
+        if (next === a) return;                            // duas notas iguais no mesmo tick
+        const end = next !== undefined ? Math.min(b, next) : b;   // sem sobrepor a próxima da mesma altura
+        events.push({ e: { tick: a, bytes: Uint8Array.of(0x90 | ch, pitch, 100) }, rank: 2, i: i++ });
+        events.push({ e: { tick: end, bytes: Uint8Array.of(0x80 | ch, pitch, 0) }, rank: 0, i: i++ });
+      });
+    }
+    // No mesmo tick: note off antes de note on; os eventos que já existiam mantêm a ordem.
+    events.sort((x, y) => x.e.tick - y.e.tick || x.rank - y.rank || x.i - y.i);
+    tracks[m.trackIndex] = events.map(x => x.e);
+  }
+  return writeMidi(chart.midi.division, tracks);
 }
 
 // Pro drums (song.ini pro_drums, ou marcadores 110-112 presentes): amarelo, azul e
@@ -428,7 +566,10 @@ const timeSource = () => (player.stems.length ? player : clock);
 // ======================================================================
 // Estado da página
 // ======================================================================
-const state = { charts: [], title: "", lanes: [] };   // charts: [{label, chart}]
+const state = { charts: [], title: "", lanes: [],   // charts: [{label, chart}]
+                // editor: só a primeira chart (a da pasta) é editável
+                editMode: false, served: false, dirty: false, pps: 220, sel: { key: "", set: new Set(), lane: null },
+                undo: [], redo: [], drag: null, clip: null };
 const $ = (id) => document.getElementById(id);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const FRET_COLORS = () => [css("--green"), css("--red"), css("--yellow"), css("--blue"), css("--orange")];
@@ -437,14 +578,19 @@ const FRET_COLORS = () => [css("--green"), css("--red"), css("--yellow"), css("-
 const PAD_COLORS = (n) => n === 4 ? [css("--red"), css("--yellow"), css("--blue"), css("--green")]
                                   : [css("--red"), css("--yellow"), css("--blue"), css("--orange"), css("--green")];
 
-async function loadSong(fileMap) {
+async function loadSong(fileMap, served = false) {
   // fileMap: Map(nome em minúsculas -> {name, read: () => Promise<ArrayBuffer>})
+  // served: a pasta veio do ai-charter-view, que sabe gravar o notes.mid de volta nela
+  if (state.dirty && !confirm("Há alterações não salvas na chart. Abrir outra música mesmo assim?")) return;
   const iniFile = fileMap.get("song.ini");
   const ini = iniFile ? parseIni(new TextDecoder("utf-8").decode(await iniFile.read())) : {};
   const chartFile = fileMap.get("notes.mid") || fileMap.get("notes.chart");
   if (!chartFile) { alert("A pasta não tem notes.mid nem notes.chart."); return; }
   const chart = await readChartFile(chartFile, ini);
   state.charts = [{ label: "Esta chart", chart }];
+  Object.assign(state, { served, dirty: false, undo: [], redo: [], drag: null, sel: { key: "", set: new Set(), lane: null } });
+  if (state.editMode && !Object.keys(chart.edit || {}).length) toggleEdit();
+  updateEditStatus();
   state.title = ini.name ? `${ini.name}<small>${ini.artist || ""}${ini.charter ? " · chart: " + ini.charter.replace(/<[^>]*>/g, "") : ""}</small>` : chartFile.name;
   $("title").innerHTML = state.title;
   const stems = [];
@@ -503,12 +649,19 @@ function resetLanes() {
   $("vocals").style.display = state.charts[0].chart.vocals?.notes.length ? "block" : "none";
 }
 
-function addLane(chartIndex = 0, instr, diff) {
+function addLane(chartIndex = 0, instr, diff, view = "highway") {
   const panel = document.createElement("div"); panel.className = "lane-panel";
   panel.innerHTML = `<div class="bar"><select class="src"></select><select class="instr"></select><select class="diff"></select>
+    <select class="view" title="Jeito de mostrar as notas"><option value="highway">Pista (YARG)</option><option value="roll">Piano roll</option></select>
     <span class="stats"></span><button class="close" title="Fechar pista">✕</button></div><canvas></canvas>`;
-  const lane = { panel, canvas: panel.querySelector("canvas"), chartIndex, instr, diff, flash: new Map() };
-  const src = panel.querySelector(".src"), selI = panel.querySelector(".instr"), selD = panel.querySelector(".diff");
+  const lane = { panel, canvas: panel.querySelector("canvas"), chartIndex, instr, diff, view, flash: new Map(), geo: null };
+  const src = panel.querySelector(".src"), selI = panel.querySelector(".instr"), selD = panel.querySelector(".diff"), selV = panel.querySelector(".view");
+  selV.value = view; panel.classList.toggle("roll", view === "roll");
+  selV.onchange = () => { lane.view = selV.value; lane.geo = null; panel.classList.toggle("roll", lane.view === "roll"); };
+  lane.canvas.addEventListener("mousedown", (e) => onLaneMouseDown(lane, e));
+  lane.canvas.addEventListener("contextmenu", (e) => { if (editModel(lane)) e.preventDefault(); });
+  lane.canvas.addEventListener("mousemove", (e) => onLaneHover(lane, e));
+  lane.canvas.addEventListener("wheel", (e) => onLaneWheel(lane, e), { passive: false });
   const fill = () => {
     src.innerHTML = state.charts.map((c, i) => `<option value="${i}">${c.label}</option>`).join("");
     src.value = lane.chartIndex;
@@ -562,6 +715,26 @@ function drawLane(lane, now, lookahead) {
   const cx = W / 2;
   const zOf = (time) => (time - t) / lookahead;
   const laneX = (laneIdx, z) => cx - halfW(z) + (laneIdx + 0.5) * (2 * halfW(z) / nLanes);
+  const gemR = Math.min(2 * halfW(0) / nLanes * 0.34, 26);
+  // Para o editor: de um ponto da tela para (tempo, cor), e se o ponto cai numa nota.
+  lane.geo = {
+    t, t0: t - lookahead * 0.1, t1: t + lookahead, lookahead,
+    locate(x, y) {
+      const sc = 1 - (strikeY - y) / (strikeY - topY) * (1 - scale(1));
+      if (sc <= 0.05) return null;
+      const z = (1 / sc - 1) / K;
+      const idx = Math.floor((x - (cx - halfW(z))) / (2 * halfW(z) / nLanes));
+      return { time: t + z * lookahead, lane: Math.max(0, Math.min(nLanes - 1, idx)) };
+    },
+    hit(n, ln, x, y) {
+      const z = zOf(n.time);
+      if (z < -0.04 || z > 1) return 0;
+      const r = gemR * scale(Math.max(z, 0)) / scale(0);
+      const dx = (x - laneX(ln, z)) / r, dy = (y - yOf(z)) / (r * 0.55 + 4);
+      return dx * dx + dy * dy <= 1.3 ? 1 : 0;
+    },
+  };
+  const sel = selectionFor(lane);
 
   // Fundo da pista
   g.fillStyle = "#0b0d12";
@@ -587,7 +760,6 @@ function drawLane(lane, now, lookahead) {
 
   // Linha de toque
   const colors = drums ? PAD_COLORS(nLanes) : FRET_COLORS();
-  const gemR = Math.min(2 * halfW(0) / nLanes * 0.34, 26);
   const flashUntil = (k) => (lane.flash.get(k) || 0) > now;
   for (let i = 0; i < nLanes; i++) {
     const x = laneX(i, 0);
@@ -660,8 +832,119 @@ function drawLane(lane, now, lookahead) {
         g.fillStyle = "rgba(255,255,255,0.35)";
         g.beginPath(); g.ellipse(x, y - rr * 0.12, rr * 0.55, rr * 0.2, 0, 0, Math.PI * 2); g.fill();
       }
+      if (sel?.has(n.src)) {
+        g.strokeStyle = "#fff"; g.lineWidth = 2.5;
+        g.beginPath(); g.ellipse(x, y, r * 1.22, r * 0.72, 0, 0, Math.PI * 2); g.stroke();
+      }
     }
   }
+}
+
+// Piano roll: o tempo anda da esquerda para a direita e cada cor é uma linha (verde embaixo),
+// como as notas MIDI no FL Studio.
+function drawRoll(lane, now) {
+  const [g, W, H] = fitCanvas(lane.canvas);
+  const chart = state.charts[lane.chartIndex].chart;
+  const notes = chart.tracks[lane.instr]?.[lane.diff] || [];
+  const drums = lane.instr === "drums";
+  // Bateria: linha 0 = bumbo, depois as peças
+  const nRows = drums ? (notes.some(n => n.lanes.includes(5)) ? 6 : 5) : 5;
+  const colors = drums ? [css("--orange"), ...PAD_COLORS(nRows - 1)] : FRET_COLORS();
+  const t = now - chart.audioOffset, pps = state.pps;
+  const nowX = Math.min(160, W * 0.2), top = 22, bottom = H - 6, rowH = (bottom - top) / nRows;
+  const noteH = Math.min(rowH * 0.66, 22), minW = 16;
+  const xOf = (time) => nowX + (time - t) * pps;
+  const yOf = (row) => bottom - (row + 0.5) * rowH;
+  const t0 = t - nowX / pps, t1 = t + (W - nowX) / pps;
+  const endOf = (n) => n.src ? chart.tm.time(n.src.tick + n.src.len) : (n.end ?? n.time);
+  const model = lane.chartIndex === 0 ? chart.edit?.[lane.instr] : null;
+  g.clearRect(0, 0, W, H);
+
+  for (let r = 0; r < nRows; r++) {
+    g.fillStyle = r % 2 ? "#10131a" : "#0d1016";
+    g.fillRect(0, bottom - (r + 1) * rowH, W, rowH);
+    g.fillStyle = colors[r]; g.globalAlpha = 0.6;
+    g.fillRect(0, bottom - (r + 1) * rowH + 2, 4, rowH - 4); g.globalAlpha = 1;
+  }
+  // Grade de encaixe (só editando), batidas e compassos
+  const step = snapStep(chart);
+  if (state.editMode && step > 1) {
+    const first = snapTick(chart, chart.tm.tick(Math.max(0, t0)));
+    if (xOf(chart.tm.time(first + step)) - xOf(chart.tm.time(first)) >= 6) {
+      g.fillStyle = "#171c26";
+      for (let tick = first; ; tick += step) {
+        const x = xOf(chart.tm.time(tick));
+        if (x > W) break;
+        g.fillRect(Math.round(x), top, 1, bottom - top);
+      }
+    }
+  }
+  for (const line of chart.grid) {
+    if (line.time < t0) continue;
+    if (line.time > t1) break;
+    g.fillStyle = line.measure ? "#4a5468" : "#283040";
+    g.fillRect(Math.round(xOf(line.time)), top, line.measure ? 2 : 1, bottom - top);
+  }
+  // Star Power: faixa azul-clara em cima e fundo tingido
+  if (model) for (const [a, b] of model.sp) {
+    const x0 = xOf(chart.tm.time(a)), x1 = xOf(chart.tm.time(b));
+    if (x1 < 0 || x0 > W) continue;
+    g.fillStyle = "rgba(127,232,255,0.08)"; g.fillRect(x0, top, x1 - x0, bottom - top);
+    g.fillStyle = css("--sp"); g.fillRect(x0, top - 6, Math.max(2, x1 - x0), 4);
+  }
+  g.font = "600 11px system-ui"; g.textBaseline = "middle"; g.textAlign = "left";
+  for (const s of chart.sections) {
+    const x = xOf(s.time);
+    if (x < -300 || x > W) continue;
+    g.fillStyle = "#4a5468"; g.fillRect(x, 0, 1, top);
+    g.fillStyle = "#c9d3e6"; g.fillText(s.name, x + 4, 8);
+  }
+
+  const sel = selectionFor(lane);
+  for (const n of notes) {
+    if (n.time > t1) break;
+    const endT = endOf(n);
+    if (endT < t0) continue;
+    const x0 = xOf(n.time), x1 = Math.max(x0 + minW, xOf(endT));
+    if (n.open) {
+      g.fillStyle = css("--purple"); g.globalAlpha = 0.55;
+      g.fillRect(x0, top, x1 - x0, bottom - top); g.globalAlpha = 1;
+      continue;
+    }
+    for (const ln of n.lanes) {
+      const y = yOf(ln);
+      g.fillStyle = colors[ln];
+      g.beginPath(); g.roundRect(x0, y - noteH / 2, x1 - x0, noteH, 4); g.fill();
+      g.strokeStyle = n.sp ? css("--sp") : "rgba(0,0,0,0.5)"; g.lineWidth = n.sp ? 2 : 1; g.stroke();
+      if (sel?.has(n.src)) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.beginPath(); g.roundRect(x0 - 2, y - noteH / 2 - 2, x1 - x0 + 4, noteH + 4, 5); g.stroke(); }
+      // Como na pista: HOPO = miolo branco, tap = miolo escuro, prato = losango
+      if (n.hopo || n.tap) {
+        g.fillStyle = n.tap ? "#111" : "#fff";
+        g.beginPath(); g.arc(x0 + 7, y, noteH * 0.2, 0, Math.PI * 2); g.fill();
+      }
+      if (drums && n.cym?.has(ln)) {
+        const r = noteH * 0.3, cx = x0 + 7;
+        g.fillStyle = "#fff"; g.beginPath(); g.moveTo(cx - r, y); g.lineTo(cx, y - r); g.lineTo(cx + r, y); g.lineTo(cx, y + r); g.closePath(); g.fill();
+      }
+    }
+  }
+  g.fillStyle = css("--accent"); g.fillRect(nowX - 1, top - 6, 2, bottom - top + 6);
+  const d = state.drag;
+  if (d?.kind === "box" && d.lane === lane) {
+    g.strokeStyle = css("--accent"); g.lineWidth = 1; g.setLineDash([4, 3]);
+    g.strokeRect(Math.min(d.x0, d.x), Math.min(d.y0, d.y), Math.abs(d.x - d.x0), Math.abs(d.y - d.y0));
+    g.setLineDash([]);
+  }
+
+  lane.geo = {
+    t, t0, t1,
+    locate: (x, y) => ({ time: t + (x - nowX) / pps, lane: Math.max(0, Math.min(nRows - 1, Math.floor((bottom - y) / rowH))) }),
+    hit(n, ln, x, y) {
+      const x0 = xOf(n.time), x1 = Math.max(x0 + minW, xOf(endOf(n)));
+      if (Math.abs(y - yOf(ln)) > noteH / 2 + 2 || x < x0 - 2 || x > x1 + 3) return 0;
+      return x > x1 - 5 ? 2 : 1;   // 2 = borda direita: muda o sustain
+    },
+  };
 }
 
 // Vocais: faixa horizontal com a afinação (como no Rock Band / YARG)
@@ -744,7 +1027,9 @@ function frame() {
   const total = Math.max(player.duration, state.charts[0]?.chart.endTime || 0);
   if (src.playing && total && now > total + 1) { togglePlay(); src.seek(0); now = 0; }
   const lookahead = 1 / Number($("hyper").value) * 2.6;
-  for (const lane of state.lanes) drawLane(lane, now, lookahead);
+  for (const lane of state.lanes) {
+    if (lane.view === "roll") drawRoll(lane, now); else drawLane(lane, now, lookahead);
+  }
   drawVocals(now);
   drawTimeline(now);
   $("time").textContent = `${fmt(now)} / ${fmt(total)}`;
@@ -756,6 +1041,379 @@ function togglePlay() {
   if (src.playing) src.pause(); else src.play();
   $("play").textContent = src.playing ? "❚❚ Pausar" : "▶ Tocar";
 }
+
+// ======================================================================
+// Editor: guitarra, baixo, guitarra base e teclado de um notes.mid
+// ======================================================================
+function snapStep(chart) { const d = Number($("snap").value); return d ? chart.res * 4 / d : 1; }
+function snapTick(chart, tick) {
+  const step = snapStep(chart);
+  if (step <= 1) return Math.max(0, Math.round(tick));
+  let base = 0;   // a grade recomeça em cada mudança de fórmula de compasso
+  for (const s of chart.tm.sigs) if (s.tick <= tick) base = s.tick;
+  return Math.max(0, Math.round(base + Math.round((tick - base) / step) * step));
+}
+const nowTick = (chart) => chart.tm.tick(Math.max(0, timeSource().position - chart.audioOffset));
+
+function editModel(lane) {
+  return state.editMode && lane.chartIndex === 0 ? state.charts[0]?.chart.edit?.[lane.instr] || null : null;
+}
+function selectionFor(lane) {
+  return lane.chartIndex === 0 && state.sel.key === `${lane.instr}/${lane.diff}` ? state.sel.set : null;
+}
+function setSelection(lane, notes) {
+  state.sel = { key: `${lane.instr}/${lane.diff}`, set: new Set(notes), lane };
+  updateEditStatus();
+}
+function activeLane() {
+  const l = state.sel.lane;
+  if (l && state.lanes.includes(l) && editModel(l)) return l;
+  return state.lanes.find(editModel) || null;
+}
+
+function cloneModel(m) {
+  return { diffs: Object.fromEntries(Object.entries(m.diffs).map(([d, list]) => [d, list.map(n => ({ ...n, lanes: n.lanes.slice() }))])),
+           sp: m.sp.map(r => r.slice()), tap: m.tap.map(r => r.slice()) };
+}
+function pushUndo(lane) {
+  state.undo.push({ instr: lane.instr, diff: lane.diff, data: cloneModel(state.charts[0].chart.edit[lane.instr]) });
+  if (state.undo.length > 300) state.undo.shift();
+  state.redo = [];
+}
+function undoRedo(from, to) {
+  const snap = from.pop();
+  if (!snap) return;
+  const m = state.charts[0].chart.edit[snap.instr];
+  to.push({ instr: snap.instr, diff: snap.diff, data: cloneModel(m) });
+  Object.assign(m, snap.data);
+  m.dirty.add(snap.diff); m.sharedDirty = true;
+  state.sel.set = new Set();
+  changed(snap.instr);
+}
+
+// Mesmo tick = mesma nota (acorde); notas sem cor somem.
+function normalize(m, diff) {
+  const out = [];
+  for (const n of m.diffs[diff].filter(n => n.lanes.length).sort((a, b) => a.tick - b.tick)) {
+    const prev = out[out.length - 1];
+    if (prev && prev.tick === n.tick) {
+      for (const l of n.lanes) if (!prev.lanes.includes(l)) prev.lanes.push(l);
+      prev.lanes.sort(); prev.len = Math.max(prev.len, n.len);
+      if (state.sel.set.delete(n)) state.sel.set.add(prev);
+    } else {
+      n.lanes = [...new Set(n.lanes)].sort();
+      out.push(n);
+    }
+  }
+  m.diffs[diff] = out;
+  for (const n of state.sel.set) if (!n.lanes.length) state.sel.set.delete(n);
+}
+function changed(instr) {
+  const chart = state.charts[0].chart;
+  chart.tracks[instr] = renderFrets(chart, instr);
+  state.dirty = true;
+  for (const l of state.lanes) {
+    if (l.chartIndex === 0 && l.instr === instr) l.panel.querySelector(".stats").textContent = `${chart.tracks[instr][l.diff]?.length || 0} notas`;
+  }
+  updateEditStatus();
+}
+// Toda edição passa por aqui: guarda o desfazer, aplica, arruma e redesenha.
+function edit(lane, fn, shared = false) {
+  const m = state.charts[0].chart.edit[lane.instr];
+  pushUndo(lane);
+  fn(m, (m.diffs[lane.diff] ||= []));
+  normalize(m, lane.diff);
+  m.dirty.add(lane.diff);
+  if (shared) m.sharedDirty = true;
+  changed(lane.instr);
+}
+
+function updateEditStatus() {
+  const n = state.sel.set.size;
+  $("eStatus").textContent = (n ? `${n} selecionada${n > 1 ? "s" : ""} · ` : "") + (state.dirty ? "alterações não salvas" : "sem alterações");
+}
+
+// --- comandos sobre a seleção ---------------------------------------------
+function selected(lane) { return [...(selectionFor(lane) || [])]; }
+
+function setFret(lane, k, toggle) {
+  const notes = selected(lane);
+  if (!notes.length) return;
+  edit(lane, () => {
+    for (const n of notes) {
+      if (!toggle) n.lanes = [k];
+      else if (!n.lanes.includes(k)) n.lanes.push(k);
+      else if (n.lanes.length > 1) n.lanes = n.lanes.filter(l => l !== k);
+    }
+  });
+}
+function toggleHopo(lane) {
+  const notes = selected(lane);
+  if (!notes.length) return;
+  const shown = new Map(state.charts[0].chart.tracks[lane.instr][lane.diff].map(n => [n.src, n]));
+  const target = !notes.every(n => shown.get(n)?.hopo);
+  // Só força quando o natural (pela distância entre as notas) não dá o que se quer.
+  edit(lane, () => { for (const n of notes) n.force = shown.get(n)?.natural === target ? null : (target ? "hopo" : "strum"); });
+}
+function toggleTap(lane) {
+  const notes = selected(lane);
+  if (!notes.length) return;
+  edit(lane, (m) => {
+    const off = notes.every(n => inRanges(m.tap, n.tick));
+    for (const n of notes) m.tap = off ? subRange(m.tap, n.tick, n.tick + 1) : normRanges([...m.tap, [n.tick, n.tick + 1]]);
+  }, true);
+}
+function toggleSp(lane) {
+  const notes = selected(lane);
+  if (!notes.length) return;
+  edit(lane, (m) => {
+    const a = Math.min(...notes.map(n => n.tick)), b = Math.max(...notes.map(n => n.tick + Math.max(1, n.len)));
+    m.sp = notes.every(n => inRanges(m.sp, n.tick)) ? subRange(m.sp, a, b) : normRanges([...m.sp, [a, b]]);
+  }, true);
+}
+function deleteSelected(lane) {
+  const notes = selected(lane);
+  if (notes.length) edit(lane, () => { for (const n of notes) n.lanes = []; });
+}
+// No MIDI o tap é um trecho de tempo, não da nota: quando notas tap mudam de tick, o trecho vai junto.
+//   moves: [[tick antigo, nota já no tick novo]]; tapBase: os trechos de antes da mudança
+function carryTap(m, moves, tapBase = m.tap) {
+  const tapped = moves.filter(([old]) => inRanges(tapBase, old));
+  if (!tapped.length) return;
+  let tap = tapBase;
+  for (const [old] of tapped) tap = subRange(tap, old, old + 1);
+  m.tap = normRanges([...tap, ...tapped.map(([, n]) => [n.tick, n.tick + 1])]);
+  m.sharedDirty = true;
+}
+function moveSelected(lane, dt, dl) {
+  const notes = selected(lane);
+  if (!notes.length) return;
+  const lanes = notes.flatMap(n => n.lanes);
+  if (Math.min(...lanes) + dl < 0 || Math.max(...lanes) + dl > 4) dl = 0;
+  if (Math.min(...notes.map(n => n.tick)) + dt < 0) dt = 0;
+  if (dt || dl) edit(lane, (m) => {
+    const moves = notes.map(n => [n.tick, n]);
+    for (const n of notes) { n.tick += dt; n.lanes = n.lanes.map(l => l + dl); }
+    carryTap(m, moves);
+  });
+}
+function stretchSelected(lane, dlen) {
+  const notes = selected(lane);
+  if (notes.length) edit(lane, () => { for (const n of notes) n.len = Math.max(0, n.len + dlen); });
+}
+function copySelected(lane) {
+  const notes = selected(lane).sort((a, b) => a.tick - b.tick);
+  const tap = state.charts[0].chart.edit[lane.instr].tap;
+  if (notes.length) state.clip = notes.map(n => ({ dt: n.tick - notes[0].tick, len: n.len, lanes: n.lanes.slice(), force: n.force, tap: inRanges(tap, n.tick) }));
+}
+function paste(lane) {
+  if (!state.clip) return;
+  const chart = state.charts[0].chart, base = snapTick(chart, nowTick(chart));
+  let created = [];
+  edit(lane, (m, list) => {
+    created = state.clip.map(c => ({ tick: base + c.dt, len: c.len, lanes: c.lanes.slice(), force: c.force }));
+    list.push(...created);
+    const taps = created.filter((n, i) => state.clip[i].tap).map(n => [n.tick, n.tick + 1]);
+    if (taps.length) m.tap = normRanges([...m.tap, ...taps]);
+  }, true);
+  const list = chart.edit[lane.instr].diffs[lane.diff];
+  setSelection(lane, created.filter(n => list.includes(n)));
+}
+
+async function saveChart() {
+  const chart = state.charts[0]?.chart;
+  if (!chart?.midi) return;
+  const bytes = chartToMidi(chart);
+  try {
+    if (state.served) {
+      const res = await fetch("song/save", { method: "POST", body: bytes,
+                                             headers: { "X-AI-Charter": "save", "Content-Type": "application/octet-stream" } });
+      if (!res.ok) throw new Error(await res.text());
+      const info = await res.json();
+      state.dirty = false; updateEditStatus();
+      $("eStatus").textContent = `salvo em ${info.saved}` + (info.backup ? ` (a original está em ${info.backup})` : "");
+    } else {
+      // Página aberta sem o ai-charter-view: baixa o notes.mid para trocar na pasta.
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([bytes], { type: "audio/midi" })); a.download = "notes.mid"; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      state.dirty = false; updateEditStatus();
+    }
+  } catch (err) { alert("Não consegui salvar: " + err.message); }
+}
+
+function toggleEdit() {
+  const chart = state.charts[0]?.chart;
+  if (!state.editMode && !chart) return;
+  if (!state.editMode && (!chart.edit || !Object.keys(chart.edit).length)) {
+    alert("Por enquanto o editor funciona com notes.mid (guitarra, baixo, guitarra base e teclado).");
+    return;
+  }
+  state.editMode = !state.editMode;
+  document.body.classList.toggle("editing", state.editMode);
+  $("editBtn").classList.toggle("on", state.editMode);
+  updateEditStatus();
+}
+
+// --- mouse nas pistas -----------------------------------------------------
+function canvasXY(canvas, e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function hitNote(lane, x, y) {
+  const notes = state.charts[lane.chartIndex].chart.tracks[lane.instr]?.[lane.diff] || [];
+  let found = null;
+  for (const n of notes) {
+    if (n.time > lane.geo.t1) break;
+    if (!n.src || n.time < lane.geo.t0 - 60) continue;
+    for (const ln of n.lanes) { const part = lane.geo.hit(n, ln, x, y); if (part) found = { n, ln, part }; }
+  }
+  return found;
+}
+
+function onLaneMouseDown(lane, e) {
+  if (!editModel(lane) || !lane.geo) return;
+  const chart = state.charts[0].chart;
+  const { x, y } = canvasXY(lane.canvas, e);
+  const pos = lane.geo.locate(x, y);
+  if (!pos) return;
+  e.preventDefault();
+  const hit = hitNote(lane, x, y);
+  if (e.button === 2) {   // botão direito: tira essa cor da nota (a nota some se era a única)
+    if (hit) edit(lane, () => { hit.n.src.lanes = hit.n.src.lanes.filter(l => l !== hit.ln); });
+    return;
+  }
+  if (e.button !== 0) return;
+  const sel = new Set(selectionFor(lane) || []);
+  if (hit) {
+    const src = hit.n.src;
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      if (!sel.delete(src)) sel.add(src);
+      setSelection(lane, sel);
+      return;
+    }
+    if (!sel.has(src)) setSelection(lane, [src]); else state.sel.lane = lane;
+    startDrag(lane, (hit.part === 2 && lane.view === "roll") || e.altKey ? "resize" : "move", src, pos, false);
+  } else if (e.shiftKey) {
+    state.drag = { kind: "box", lane, x0: x, y0: y, x, y, add: sel };
+  } else {
+    const tick = snapTick(chart, chart.tm.tick(pos.time));
+    let note;
+    edit(lane, (m, list) => {
+      note = list.find(n => n.tick === tick);
+      if (note) { if (!note.lanes.includes(pos.lane)) note.lanes.push(pos.lane); }
+      else list.push(note = { tick, len: 0, lanes: [pos.lane], force: null });
+    });
+    setSelection(lane, [note]);
+    startDrag(lane, "move", note, pos, true);
+  }
+}
+function startDrag(lane, kind, anchor, pos, pushed) {
+  const chart = state.charts[0].chart;
+  state.drag = { kind, lane, anchor, pushed, startTick: chart.tm.tick(pos.time), startLane: pos.lane, tap: chart.edit[lane.instr].tap,
+                 orig: new Map([...state.sel.set].map(n => [n, { tick: n.tick, len: n.len, lanes: n.lanes.slice() }])) };
+}
+window.addEventListener("mousemove", (e) => {
+  const d = state.drag;
+  if (!d) return;
+  const { x, y } = canvasXY(d.lane.canvas, e);
+  if (d.kind === "box") { d.x = x; d.y = y; return; }
+  const pos = d.lane.geo?.locate(x, y);
+  if (!pos) return;
+  const chart = state.charts[0].chart, m = chart.edit[d.lane.instr];
+  const delta = chart.tm.tick(pos.time) - d.startTick;
+  const a = d.orig.get(d.anchor);
+  if (d.kind === "move") {
+    const origs = [...d.orig.values()];
+    const minTick = Math.min(...origs.map(o => o.tick));
+    const lanes = origs.flatMap(o => o.lanes);
+    const dt = Math.max(-minTick, snapTick(chart, a.tick + delta) - a.tick);
+    const dl = Math.max(-Math.min(...lanes), Math.min(4 - Math.max(...lanes), pos.lane - d.startLane));
+    if (dt === (d.dt ?? 0) && dl === (d.dl ?? 0)) return;
+    if (!d.pushed) { pushUndo(d.lane); d.pushed = true; }
+    d.dt = dt; d.dl = dl;
+    for (const [n, o] of d.orig) { n.tick = o.tick + dt; n.lanes = o.lanes.map(l => l + dl); }
+    carryTap(m, [...d.orig].map(([n, o]) => [o.tick, n]), d.tap);
+  } else {
+    const end = snapTick(chart, a.tick + a.len + delta);
+    const dlen = Math.max(0, end - a.tick) - a.len;
+    if (dlen === (d.dlen ?? 0)) return;
+    if (!d.pushed) { pushUndo(d.lane); d.pushed = true; }
+    d.dlen = dlen;
+    for (const [n, o] of d.orig) n.len = Math.max(0, o.len + dlen);
+  }
+  m.diffs[d.lane.diff].sort((p, q) => p.tick - q.tick);
+  m.dirty.add(d.lane.diff);
+  changed(d.lane.instr);
+});
+window.addEventListener("mouseup", () => {
+  const d = state.drag;
+  if (!d) return;
+  state.drag = null;
+  const chart = state.charts[0].chart;
+  if (d.kind === "box") {
+    const p = d.lane.geo?.locate(d.x0, d.y0), q = d.lane.geo?.locate(d.x, d.y);
+    if (!p || !q) return;
+    const [ta, tb] = [Math.min(p.time, q.time), Math.max(p.time, q.time)];
+    const [la, lb] = [Math.min(p.lane, q.lane), Math.max(p.lane, q.lane)];
+    const inside = chart.tracks[d.lane.instr][d.lane.diff].filter(n => n.time >= ta && n.time <= tb && n.lanes.some(l => l >= la && l <= lb)).map(n => n.src);
+    setSelection(d.lane, [...d.add, ...inside]);
+    return;
+  }
+  if (d.pushed) { normalize(chart.edit[d.lane.instr], d.lane.diff); changed(d.lane.instr); }
+});
+function onLaneHover(lane, e) {
+  if (state.drag || !editModel(lane) || !lane.geo) { lane.canvas.style.cursor = ""; return; }
+  const { x, y } = canvasXY(lane.canvas, e);
+  const hit = hitNote(lane, x, y);
+  lane.canvas.style.cursor = hit ? (hit.part === 2 && lane.view === "roll" ? "ew-resize" : "move") : "crosshair";
+}
+// Roda do mouse: anda na música; Ctrl+roda no piano roll: zoom.
+function onLaneWheel(lane, e) {
+  if (!state.charts.length) return;
+  e.preventDefault();
+  const delta = e.deltaY || e.deltaX;
+  if (lane.view === "roll" && (e.ctrlKey || e.metaKey)) { state.pps = Math.max(40, Math.min(2000, state.pps * Math.exp(-delta * 0.0015))); return; }
+  const src = timeSource();
+  src.seek(src.position + (lane.view === "roll" ? delta / state.pps : delta / 400 * (lane.geo?.lookahead || 1)));
+}
+
+function editKey(e) {
+  if (!state.editMode) return false;
+  const lane = activeLane();
+  if (!lane) return false;
+  const ctrl = e.ctrlKey || e.metaKey, k = e.code;
+  if (ctrl && k === "KeyS") { saveChart(); return true; }
+  if (ctrl && k === "KeyZ") { e.shiftKey ? undoRedo(state.redo, state.undo) : undoRedo(state.undo, state.redo); return true; }
+  if (ctrl && k === "KeyY") { undoRedo(state.redo, state.undo); return true; }
+  if (ctrl && k === "KeyA") { setSelection(lane, editModel(lane).diffs[lane.diff] || []); return true; }
+  if (ctrl && k === "KeyC") { copySelected(lane); return true; }
+  if (ctrl && k === "KeyV") { paste(lane); return true; }
+  if (k === "Escape") { setSelection(lane, []); return true; }
+  if (ctrl || !selectionFor(lane)?.size) return false;
+  const digit = k.match(/^(?:Digit|Numpad)([1-5])$/);
+  if (digit) { setFret(lane, Number(digit[1]) - 1, e.shiftKey); return true; }
+  const step = Math.max(1, Math.round(snapStep(state.charts[0].chart)));
+  const actions = {
+    Delete: () => deleteSelected(lane), Backspace: () => deleteSelected(lane),
+    KeyH: () => toggleHopo(lane), KeyT: () => toggleTap(lane), KeyS: () => toggleSp(lane),
+    ArrowLeft: () => e.shiftKey ? stretchSelected(lane, -step) : moveSelected(lane, -step, 0),
+    ArrowRight: () => e.shiftKey ? stretchSelected(lane, step) : moveSelected(lane, step, 0),
+    ArrowUp: () => moveSelected(lane, 0, 1), ArrowDown: () => moveSelected(lane, 0, -1),
+  };
+  if (!actions[k]) return false;
+  actions[k]();
+  return true;
+}
+
+$("editBtn").onclick = toggleEdit;
+for (const b of document.querySelectorAll("#editbar .fret")) b.onclick = (e) => { const l = activeLane(); if (l) setFret(l, Number(b.dataset.lane), e.shiftKey); };
+const onActive = (fn) => () => { const l = activeLane(); if (l) fn(l); };
+$("eHopo").onclick = onActive(toggleHopo);
+$("eTap").onclick = onActive(toggleTap);
+$("eSp").onclick = onActive(toggleSp);
+$("eDel").onclick = onActive(deleteSelected);
+$("eUndo").onclick = () => undoRedo(state.undo, state.redo);
+$("eRedo").onclick = () => undoRedo(state.redo, state.undo);
+$("eSave").onclick = saveChart;
+window.addEventListener("beforeunload", (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ======================================================================
 // Entrada: escolher pasta, arrastar, ou servidor local (ai-charter-view)
@@ -789,7 +1447,7 @@ document.addEventListener("drop", async (e) => {
   if (files.length) loadSong(mapFromFileList(files));
 });
 $("play").onclick = togglePlay;
-$("addLane").onclick = () => { if (state.charts.length) { const l = state.lanes[state.lanes.length - 1]; addLane(l?.chartIndex || 0, l?.instr, l?.diff); } };
+$("addLane").onclick = () => { if (state.charts.length) { const l = state.lanes[state.lanes.length - 1]; addLane(l?.chartIndex || 0, l?.instr, l?.diff, l?.view); } };
 $("mixerBtn").onclick = () => { const m = $("mixer"); m.style.display = m.style.display === "block" ? "none" : "block"; };
 $("speed").onchange = (e) => { player.setRate(+e.target.value); clock.setRate(+e.target.value); if (!timeSource().playing) $("play").textContent = "▶ Tocar"; };
 $("section").onchange = (e) => { if (e.target.value !== "") timeSource().seek(+e.target.value + (state.charts[0]?.chart.audioOffset || 0) - 1); };
@@ -800,6 +1458,7 @@ $("timeline").onclick = (e) => {
 };
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  if (editKey(e)) { e.preventDefault(); return; }
   if (e.code === "Space") { e.preventDefault(); togglePlay(); }
   if (e.code === "ArrowLeft") timeSource().seek(timeSource().position - 5);
   if (e.code === "ArrowRight") timeSource().seek(timeSource().position + 5);
@@ -814,7 +1473,7 @@ document.addEventListener("keydown", (e) => {
     const names = await res.json();
     const map = new Map();
     for (const name of names) map.set(name.toLowerCase(), { name, read: () => fetch("song/" + encodeURIComponent(name)).then(r => r.arrayBuffer()) });
-    await loadSong(map);
+    await loadSong(map, true);
     const cmp = await fetch("compare/__file__");
     if (cmp.ok) {
       const name = await cmp.text();

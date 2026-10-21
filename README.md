@@ -153,8 +153,8 @@ ai_charter/
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
 ├── compare.py          compara uma chart gerada com uma de referência (ai-charter-compare)
 ├── critic.py           aponta defeitos de jogabilidade, sem referência (ai-charter-critic)
-├── view.py             visualizador no navegador (ai-charter-view)
-├── viewer/index.html   a página do visualizador (funciona sozinha, sem instalar nada)
+├── view.py             visualizador e editor no navegador (ai-charter-view)
+├── viewer/index.html   a página do visualizador/editor (funciona sozinha, sem instalar nada)
 ├── analysis/           "ouvir" o áudio
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
@@ -238,6 +238,31 @@ como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), susta
   **Pista** muda quantos segundos de notas aparecem.
 - Lê `notes.mid` e `notes.chart`. Também dá para abrir `ai_charter/viewer/index.html` direto no
   navegador e usar **Abrir pasta** (ou arrastar a pasta da música para a página).
+- Cada pista escolhe a vista: **Pista (YARG)**, com as notas vindo na sua direção, ou **Piano roll**,
+  com o tempo da esquerda para a direita e uma linha por cor (verde embaixo), como as notas MIDI no
+  FL Studio. Roda do mouse anda na música; Ctrl+roda dá zoom no piano roll.
+
+### Editor
+
+**✎ Editar** liga a edição de guitarra, baixo, guitarra base e teclado de um `notes.mid`, nas duas vistas:
+
+| O quê | Como |
+|---|---|
+| pôr nota | clique num lugar vazio (no mesmo tick de outra nota, vira acorde) |
+| mover no tempo / trocar de cor | arraste a nota (encaixa na **Grade**: 1/4 … 1/64 ou livre); ← → e ↑ ↓ |
+| mudar a cor | 1–5 ou os botões coloridos; Shift soma a cor ao acorde |
+| sustain | arraste a borda direita no piano roll, Alt+arraste, ou Shift+← → |
+| HOPO / strum, tap, Star Power | H, T, S (ou os botões) na seleção |
+| apagar | botão direito tira aquela cor; Delete apaga as notas selecionadas |
+| selecionar | clique; Shift+clique soma; Shift+arraste seleciona uma área; Ctrl+A tudo |
+| copiar / colar | Ctrl+C; Ctrl+V cola no ponto em que a música está |
+| desfazer / refazer / salvar | Ctrl+Z, Ctrl+Y, Ctrl+S |
+
+Aberto pelo `ai-charter-view`, **Salvar** grava o `notes.mid` na pasta da música; na primeira vez a
+original é guardada como `notes.backup.mid`. Aberta direto do arquivo, a página baixa o `notes.mid`
+editado. Só as notas que o editor controla são reescritas (as cores e o HOPO/strum forçado das
+dificuldades mexidas, tap e Star Power); bateria, vocais, seções e mapa de tempo ficam como estavam.
+No MIDI, tap e Star Power valem para todas as dificuldades do instrumento ao mesmo tempo.
 
 ## Testes
 
