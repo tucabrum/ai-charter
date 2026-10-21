@@ -240,6 +240,8 @@ class VocalScore:
     matched: int
     pitch_exact: float
     pitch_class: float
+    pitch_shift: int             # deslocamento constante mais comum (gerada - referência, semitons)
+    pitch_after_shift: float     # afinação exata depois de descontar esse deslocamento
     lyric_agree: float
     ref_phrases: int
     gen_phrases: int
@@ -251,6 +253,11 @@ def score_vocals(ref: Chart, gen: Chart, offset: float, tolerance: float) -> Voc
     gen_notes = [VocalNote(v.time + offset, v.length, v.pitch, v.lyric) for v in gen.vocals]
     pairs = match([v.time for v in ref.vocals], [v.time for v in gen_notes], tolerance)
     exact = [ref.vocals[i].pitch == gen_notes[j].pitch for i, j in pairs]
+    # Gravações fora do padrão A=440 deixam a voz "entre" dois semitons: as duas charts
+    # podem arredondar para lados diferentes. Desconta o deslocamento mais comum.
+    diffs = [gen_notes[j].pitch - ref.vocals[i].pitch for i, j in pairs]
+    shift = max(set(diffs), key=diffs.count) if diffs else 0
+    after_shift = [d == shift for d in diffs]
     pclass = [ref.vocals[i].pitch % 12 == gen_notes[j].pitch % 12 for i, j in pairs]
     lyric = [_clean_lyric(ref.vocals[i].lyric) == _clean_lyric(gen_notes[j].lyric) for i, j in pairs]
     gen_starts = [a + offset for a, _ in gen.phrases]
@@ -259,7 +266,8 @@ def score_vocals(ref: Chart, gen: Chart, offset: float, tolerance: float) -> Voc
     unsung = [(a, b) for a, b in ref.phrases if (a, b) not in sung]
     in_unsung = sum(any(a <= v.time < b for a, b in unsung) for v in gen_notes)
     pct = lambda v: 100.0 * float(np.mean(v)) if v else 0.0  # noqa: E731
-    return VocalScore(len(ref.vocals), len(gen_notes), len(pairs), pct(exact), pct(pclass), pct(lyric),
+    return VocalScore(len(ref.vocals), len(gen_notes), len(pairs), pct(exact), pct(pclass),
+                      shift, pct(after_shift), pct(lyric),
                       len(ref.phrases), len(gen.phrases), starts, in_unsung)
 
 
@@ -311,7 +319,8 @@ def compare(reference: Path, generated: Path, tolerance: float = 0.05) -> str:
             "## Vocais",
             f"- Notas cantadas: referência {v.reference}, gerada {v.generated}, em comum {v.matched} "
             f"(recall {v.matched / max(v.reference, 1):.0%}, precisão {v.matched / max(v.generated, 1):.0%})",
-            f"- Afinação nas notas em comum: exata {v.pitch_exact:.0f}%, mesma nota ignorando a oitava {v.pitch_class:.0f}%",
+            f"- Afinação nas notas em comum: exata {v.pitch_exact:.0f}%, mesma nota ignorando a oitava {v.pitch_class:.0f}%; "
+            f"deslocamento constante mais comum {v.pitch_shift:+d} semitom(ns) -> descontando-o, {v.pitch_after_shift:.0f}% iguais",
             f"- Sílaba certa nas notas em comum: {v.lyric_agree:.0f}%",
             f"- Frases: referência {v.ref_phrases}, gerada {v.gen_phrases}, "
             f"inícios de frase coincidentes {v.phrase_starts_matched}",
