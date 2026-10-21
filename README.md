@@ -105,6 +105,17 @@ uma pausa curta no meio do solo não devolve a chart para o violão. Tudo isso �
 > Com a separação por IA (Demucs) só existe um stem de guitarra, então essa escolha vale
 > quando você fornece as guitarras separadas (modo `folder`).
 
+## Partes "sujas" (sanitização)
+
+Gravações reais têm chiado, cordas soltas soando sem querer, raspadas... Nesses trechos a
+transcrição fica confusa (palhetadas faltando, notas fora do ritmo, acordes trocados). O
+programa mede, em cada compasso, o **ruído de fundo** e o quanto o ritmo foge do **ritmo típico**
+da faixa (aprendido nos compassos limpos). Quando os dois indicam problema, o compasso vira um
+**caminho regular**: o ritmo típico com um acorde só (o mais provável entre os acordes que já
+apareceram limpos). Em solos (notas simples), só remove as notas fora do grid — nunca inventa notas.
+Compassos limpos nunca são mexidos. O programa avisa quais compassos simplificou; os limites ficam
+em `[sanitize]` nas regras (`enabled = false` desliga).
+
 ## Personalizando as regras
 
 Todas as decisões de charting ficam em [`ai_charter/default_rules.toml`](ai_charter/default_rules.toml),
@@ -144,12 +155,15 @@ ai_charter/
 │   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
 │   ├── pitched.py      notas de guitarra/baixo/teclado: ataque, altura, acorde, duração
+│   ├── chords.py       reconhecimento de acordes (C, Am, G5...) pelo chroma
 │   ├── drums.py        bumbo, caixa, chimbal e crash por faixas de frequência
 │   ├── vocals.py       notas cantadas (afinação com pYIN, cortes por consoante/afinação)
 │   └── sections.py     seções da música (modo prática) e trecho de preview
 ├── charting/           transformar notas detectadas em chart jogável
 │   ├── common.py       grid rítmico, escolha das notas, trechos repetidos, Star Power
 │   ├── frets.py        lanes pelo contorno melódico, acordes, sustains, HOPO/strum
+│   ├── chords.py       acorde de cada nota (com correção nas trocas) e formato fixo por acorde
+│   ├── sanitize.py     compassos confusos (ruído + ritmo bagunçado) viram um caminho regular
 │   ├── guitar_select.py qual guitarra vira a chart em cada compasso
 │   ├── drums.py        bateria por dificuldade (limite de mãos, pratos Pro Drums)
 │   ├── lyrics.py       letra -> sílabas (português e inglês)
@@ -166,6 +180,10 @@ Ideias principais:
 - **Ticks**: o `.chart` mede o tempo em *ticks* (192 por batida). Detectamos a batida da música e
   convertemos o tempo de cada nota (em segundos) para ticks, encaixando no grid
   (semicolcheias, ou tercinas quando fizer mais sentido).
+- **Acordes**: em cada ataque, o programa compara as notas que soam com modelos de acordes
+  (maiores, menores, power chords e notas simples, já contando os harmônicos dos instrumentos).
+  O mesmo acorde recebe sempre o mesmo formato na chart, e a troca de acorde é corrigida
+  quando o acorde anterior ainda está soando.
 - **Lanes pelo contorno**: o jogo não tem como mostrar a nota exata, então a chart segue o
   *desenho* da melodia — nota mais aguda vai mais para a direita, mais grave para a esquerda,
   nota repetida fica na mesma lane.
@@ -186,8 +204,9 @@ Os testes geram duas músicas sintéticas com notas conhecidas e conferem se a c
   acordes, peças da bateria;
 - **música 2** (`tests/song2.py`, "Estrada"): violão, guitarra (riff e solo por cima do
   violão), baixo, bateria e uma voz sintetizada cantando uma letra original — qual guitarra
-  é escolhida em cada trecho, o solo nota a nota, e o vocal sílaba por sílaba (tempo,
-  afinação, frases).
+  é escolhida em cada trecho, o solo nota a nota, os acordes do violão, os power chords do riff
+  e o vocal sílaba por sílaba (tempo, afinação, frases). Uma versão "suja" da mesma música
+  (chiado, cordas soltas, raspadas no verso 2) testa a sanitização.
 
 ## Limitações atuais e próximos passos
 

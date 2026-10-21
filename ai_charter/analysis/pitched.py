@@ -13,7 +13,9 @@ from dataclasses import dataclass
 
 import librosa
 import numpy as np
+from scipy.ndimage import percentile_filter
 
+from ai_charter.analysis.chords import chord_scores
 from ai_charter.config import PitchedDetection
 
 HOP = 256
@@ -32,6 +34,10 @@ class DetectedNote:
     pitch: float       # nota MIDI mais grave detectada (60 = Dó central)
     voices: int        # quantas notas soam juntas (1 = nota simples, 2+ = acorde)
     strength: float    # força do ataque, normalizada (~0 a 1)
+    # Só com recognize_chords: semelhança com cada acorde de analysis.chords.CHORDS,
+    # e a nota (MIDI) mais grave que soa forte em cada uma das 12 classes (Dó, Dó#...).
+    chord_scores: np.ndarray | None = None
+    lowest_by_class: np.ndarray | None = None
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -71,13 +77,40 @@ def estimate_pitches(spectrum: np.ndarray, chord_ratio: float, max_voices: int =
     return found
 
 
+def onset_envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Envelope de ataques (quanto a energia "subiu" a cada frame), resistente a chiado.
+
+    1. Subtração espectral: em cada faixa de frequência, estima o ruído de fundo
+       (o nível que está sempre presente nos últimos ~2 s) e o remove. Chiado
+       constante some; palhetadas, que são rápidas, continuam.
+    2. SuperFlux (lag=2, max_size=3): pega ataques fracos (palhetada para cima)
+       sem confundir vibrato de nota longa com ataque novo.
+    """
+    mel = librosa.feature.melspectrogram(y=y, sr=sr, hop_length=HOP, n_mels=128)
+    window = max(3, int(2.0 * sr / HOP))
+    floor = percentile_filter(mel, percentile=10, size=(1, window), mode="nearest")
+    clean = np.maximum(mel - floor, 0) + 1e-10 * mel.max()
+    return librosa.onset.onset_strength(S=librosa.power_to_db(clean, ref=np.max), sr=sr,
+                                        hop_length=HOP, lag=2, max_size=3)
+
+
+def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 0.25) -> np.ndarray:
+    """Para cada classe de nota (Dó, Dó#...), a nota MIDI mais grave que soa forte (NaN se nenhuma)."""
+    result = np.full(12, np.nan)
+    for i in np.nonzero(spectrum >= threshold * spectrum.max())[0]:
+        midi = lowest_midi + int(i)
+        if np.isnan(result[midi % 12]):
+            result[midi % 12] = midi
+    return result
+
+
 def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[DetectedNote]:
     """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`."""
     if not np.any(y):
         return []
 
     # --- 1. Ataques ---------------------------------------------------------
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    onset_env = onset_envelope(y, sr)
     # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
     # palhetado, em que as cordas soam uma logo após a outra).
     onset_frames = librosa.onset.onset_detect(
@@ -124,6 +157,13 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
         if not bins:
             continue
 
+        scores = lowest = None
+        if cfg.recognize_chords:
+            # Acordes: janela mais longa (até ~230 ms), para "ouvir" todas as cordas.
+            chord_spectrum = cqt[:, a:max(b, min(frame + 20, next_frame))].mean(axis=1)
+            scores = chord_scores(chord_spectrum, int(fmin_midi))
+            lowest = _lowest_by_class(chord_spectrum, int(fmin_midi))
+
         # A nota termina quando o volume cai abaixo de release_ratio × pico.
         peak = rms[peak_frame]
         end_frame = next_frame
@@ -137,5 +177,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection) -> list[
             pitch=float(fmin_midi + min(bins)),
             voices=len(bins),
             strength=float(min(onset_env[frame] / env_scale, 1.5)),
+            chord_scores=scores,
+            lowest_by_class=lowest,
         ))
     return notes

@@ -108,3 +108,83 @@ def test_vocal_phrases_match_lyric_lines(song):
         start = bars_of(section)[0] * MEASURE
         for line in range(4):
             assert phrases[first + line][0] == start + line * 2 * MEASURE
+
+
+def test_violao_strums_are_all_charted_as_consistent_chords(song):
+    """Toda palhetada do violão vira um acorde, e cada acorde tem (quase) sempre o mesmo formato."""
+    from collections import Counter, defaultdict
+
+    _, midi = song
+    expert = midi_notes(midi["PART GUITAR"], 96, 100)
+    shapes: dict[str, Counter] = defaultdict(Counter)
+    total = 0
+    for section in ("intro", "verso1", "verso2"):
+        for i, bar in enumerate(bars_of(section)):
+            for beat in (0, 1, 1.5, 2.5, 3, 3.5):           # ritmo do violão (baixo e cima)
+                tick = int(bar * MEASURE + beat * RES)
+                assert tick in expert, (section, i, beat)    # nenhuma palhetada some
+                lanes = tuple(sorted(expert[tick]))
+                assert len(lanes) >= 2, (section, i, beat)    # sempre acorde, nunca nota simples
+                shapes[song2.PROGRESSION[i % 4]][lanes] += 1
+                total += 1
+    # Cada acorde usa o mesmo formato em pelo menos 90% das palhetadas.
+    for chord, counts in shapes.items():
+        assert counts.most_common(1)[0][1] >= 0.9 * sum(counts.values()), (chord, counts)
+    # Os 4 acordes (C G Am F) têm 4 formatos diferentes, na ordem do grave para o agudo.
+    main = {chord: counts.most_common(1)[0][0] for chord, counts in shapes.items()}
+    assert len(set(main.values())) == 4, main
+    order = sorted(main, key=lambda ch: {"F": 0, "G": 1, "Am": 2, "C": 3}[ch])
+    centers = [sum(main[ch]) / len(main[ch]) for ch in order]
+    assert centers == sorted(centers), main
+
+
+def test_riff_power_chords_are_two_note_chords(song):
+    """O riff (E5 E5 G5 G5 A5 A5 G5 E5) vira acordes de 2 notas, cada power chord sempre igual."""
+    _, midi = song
+    expert = midi_notes(midi["PART GUITAR"], 96, 100)
+    seen: dict[int, set] = {}
+    for bar in bars_of("riff"):
+        for beat, root in song2.RIFF:
+            lanes = tuple(sorted(expert[int(bar * MEASURE + beat * RES)]))
+            assert len(lanes) == 2, (bar, beat, lanes)
+            seen.setdefault(root, set()).add(lanes)
+    assert all(len(shapes) == 1 for shapes in seen.values()), seen
+    e5, g5, a5 = (next(iter(seen[r])) for r in (40, 43, 45))
+    assert sum(e5) < sum(g5) < sum(a5)        # sobe junto com o riff
+
+
+@pytest.fixture(scope="module")
+def dirty_song(tmp_path_factory):
+    """A mesma música, com o violão do verso 2 sujo (chiado, cordas soltas, raspadas, rangidos)."""
+    folder = tmp_path_factory.mktemp("song2_dirty")
+    paths = song2.render(folder, dirty=True)
+    stems = folder / "stems"
+    stems.mkdir()
+    for name in ("violao", "guitarra", "bass", "drums", "vocals"):
+        shutil.move(paths[name], stems / f"{name}.wav")
+    messages = []
+    result = run(Options(input=paths["mix"], output_dir=folder / "out", separator="folder",
+                         stems_dir=stems, lyrics=paths["lyrics"], title="Estrada", artist="Suja"),
+                 log=messages.append)
+    return parse_midi(result.song_dir / "notes.mid"), messages
+
+
+def test_dirty_violao_part_is_charted_as_a_regular_pattern(song, dirty_song):
+    """O trecho sujo vira o ritmo típico do violão, com os mesmos acordes do trecho limpo."""
+    _, clean_midi = song
+    dirty_midi, messages = dirty_song
+    clean = midi_notes(clean_midi["PART GUITAR"], 96, 100)
+    dirty = midi_notes(dirty_midi["PART GUITAR"], 96, 100)
+    bars = bars_of(song2.DIRTY_SECTION)
+    for bar in bars:
+        in_bar = lambda notes: {t: sorted(v) for t, v in notes.items() if bar * MEASURE <= t < (bar + 1) * MEASURE}
+        assert in_bar(dirty) == in_bar(clean), bar
+    assert any("confuso" in m for m in messages)
+
+
+def test_clean_parts_are_never_sanitized(dirty_song):
+    _, messages = dirty_song
+    simplified = [m for m in messages if "confuso" in m]
+    assert len(simplified) == 1
+    numbers = {int(n) - 1 for n in simplified[0].split(":")[-1].split(",")}
+    assert numbers <= set(bars_of(song2.DIRTY_SECTION))

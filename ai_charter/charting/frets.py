@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from ai_charter.charting.common import (
     Candidate, ChartNote, Repeats, TrackChart, copy_repeats, enforce_reduction, find_repeats,
@@ -63,13 +63,15 @@ def _transition_cost(diff: float, a: int, b: int, on_beat: bool) -> float:
 
 
 def assign_lanes(pitches: list[float], n_lanes: int, window: int,
-                 ticks: list[int] | None = None, resolution: int = 192) -> list[int]:
+                 ticks: list[int] | None = None, resolution: int = 192,
+                 max_lanes: list[int] | None = None) -> list[int]:
     """Converte alturas (MIDI) em lanes 0..n_lanes-1 seguindo o contorno melódico.
 
     Usa programação dinâmica (algoritmo de Viterbi): para cada nota, guarda o
     menor custo para chegar a cada par (lane da nota anterior, lane da nota atual);
     no fim, volta pelo caminho mais barato. Assim a decisão considera a frase
     inteira, e cada nota é comparada com a anterior e com a retrasada.
+    `max_lanes[i]`: lane mais alta permitida para a nota i (acordes ocupam mais lanes).
     """
     p = np.asarray(pitches, dtype=float)
     n = len(p)
@@ -77,6 +79,10 @@ def assign_lanes(pitches: list[float], n_lanes: int, window: int,
         return []
     ideal = _ideal_lanes(p, n_lanes, window)
     unary = COST_PER_LANE_FROM_IDEAL * np.abs(np.arange(n_lanes)[None, :] - ideal[:, None])
+    if max_lanes is not None:
+        # Acordes ocupam várias lanes: a lane mais grave de um acorde não pode passar
+        # de max_lanes[i] (ex.: um acorde de 3 notas em 5 lanes começa no máximo no amarelo).
+        unary[np.arange(n_lanes)[None, :] > np.asarray(max_lanes)[:, None]] = np.inf
     if n == 1:
         return [int(np.argmin(unary[0]))]
 
@@ -155,6 +161,102 @@ def _copy_repeated_lanes(chosen: list[Candidate], lanes: list[int], repeats: Rep
     return lanes
 
 
+def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
+    """Cada acorde (mesma altura e mesmo nº de notas) usa a lane que recebe na maioria das vezes.
+
+    Assim o mesmo acorde tem sempre o mesmo formato na chart. Só não muda uma nota
+    se ela ficaria na mesma lane de uma vizinha que é outro acorde/nota (aí o
+    jogador veria "o mesmo acorde" onde a música muda).
+    """
+    def identity(c: Candidate) -> tuple[int, int]:
+        return round(c.pitch), c.voices
+
+    votes: dict[tuple[int, int], Counter] = defaultdict(Counter)
+    for c, lane in zip(chosen, lanes):
+        if c.voices >= 2:
+            votes[identity(c)][lane] += 1
+    favorite = {key: v.most_common(1)[0][0] for key, v in votes.items()}
+
+    lanes = list(lanes)
+    for i, c in enumerate(chosen):
+        want = favorite.get(identity(c)) if c.voices >= 2 else None
+        if want is None or want == lanes[i]:
+            continue
+        clash = any(0 <= j < len(chosen) and identity(chosen[j]) != identity(c) and lanes[j] == want
+                    for j in (i - 1, i + 1))
+        if not clash:
+            lanes[i] = want
+    return lanes
+
+
+# Um acorde precisa aparecer pelo menos tantas vezes para ganhar um formato próprio na tabela.
+MIN_CHORD_OCCURRENCES = 3
+COST_SMALLER_SHAPE = 1.0      # usar um formato com menos notas que o acorde
+COST_SHARED_SHAPE = 3.0       # dois acordes diferentes com o mesmo formato
+COST_PER_LANE_FROM_SPREAD = 0.3
+
+
+def _shape_palette(n_lanes: int, max_chord: int) -> list[tuple[int, ...]]:
+    """Todos os formatos de acorde possíveis, do mais grave para o mais agudo.
+
+    Ex. com 5 lanes e até 3 notas: GR, GY, GRY, RY, RB, RYB, YB, YO, YBO, BO.
+    """
+    shapes = set()
+    for size in range(2, max_chord + 1):
+        for base in range(n_lanes):
+            shape = tuple(range(base, base + size))           # vizinhas (GRY, RY...)
+            if shape[-1] < n_lanes:
+                shapes.add(shape)
+        if size == 2:
+            shapes.update((b, b + 2) for b in range(n_lanes - 2))  # pulando uma (GY, RB...)
+    return sorted(shapes, key=lambda s: (np.mean(s), -len(s)))
+
+
+def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
+                       max_chord: int) -> dict[tuple[int, int], tuple[int, ...]]:
+    """Formato fixo para cada acorde da música (identificado por altura e nº de notas).
+
+    Os acordes são ordenados do mais grave para o mais agudo e distribuídos pelos
+    formatos disponíveis na mesma ordem (o contorno continua certo), preferindo
+    formatos com o nº de notas do acorde e evitando dois acordes no mesmo formato.
+    """
+    counts = Counter((round(c.pitch), size) for c, size in zip(chosen, sizes) if size >= 2)
+    chords = sorted(key for key, n in counts.items() if n >= MIN_CHORD_OCCURRENCES)
+    palette = _shape_palette(n_lanes, max_chord)
+    if not chords or not palette:
+        return {}
+    centers = np.array([np.mean(s) for s in palette])
+    targets = np.linspace(centers[0], centers[-1], len(chords)) if len(chords) > 1 else [np.mean(centers)]
+
+    def fit(i: int, j: int) -> float:
+        want, size = chords[i][1], len(palette[j])
+        if size > want:
+            return np.inf
+        return (COST_SMALLER_SHAPE if size < want else 0.0) + COST_PER_LANE_FROM_SPREAD * abs(centers[j] - targets[i])
+
+    # cost[i][j]: melhor custo dos acordes 0..i, com o acorde i no formato j (ordem crescente).
+    n, m = len(chords), len(palette)
+    cost = np.full((n, m), np.inf)
+    back = np.zeros((n, m), dtype=int)
+    cost[0] = [fit(0, j) for j in range(m)]
+    for i in range(1, n):
+        for j in range(m):
+            here = fit(i, j)
+            if here == np.inf:
+                continue
+            options = [cost[i - 1][p] + (COST_SHARED_SHAPE if p == j else 0.0) for p in range(j + 1)]
+            back[i][j] = int(np.argmin(options))
+            cost[i][j] = min(options) + here
+    j = int(np.argmin(cost[-1]))
+    if cost[-1][j] == np.inf:
+        return {}
+    table = {}
+    for i in range(n - 1, -1, -1):
+        table[chords[i]] = palette[j]
+        j = back[i][j]
+    return table
+
+
 def chord_shape(base: int, size: int, n_lanes: int) -> tuple[int, ...]:
     """Formato do acorde a partir da lane mais grave."""
     if size <= 1:
@@ -208,13 +310,16 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
         chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution,
                                    group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
         previous_count = len(chosen)
+        sizes = [min(c.voices, r.max_chord) for c in chosen]
         lanes = assign_lanes([c.pitch for c in chosen], r.lanes, lane_window,
-                             [c.tick for c in chosen], resolution)
+                             [c.tick for c in chosen], resolution,
+                             max_lanes=[min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes])
+        lanes = _unify_chord_lanes(chosen, lanes)
         lanes = _copy_repeated_lanes(chosen, lanes, repeats, resolution)
-        notes = [
-            ChartNote(c.tick, chord_shape(lane, min(c.voices, r.max_chord), r.lanes))
-            for c, lane in zip(chosen, lanes)
-        ]
+        # Acordes que se repetem usam a tabela de formatos; o resto segue as lanes.
+        table = _chord_shape_table(chosen, sizes, r.lanes, r.max_chord)
+        notes = [ChartNote(c.tick, table.get((round(c.pitch), size)) or chord_shape(lane, size, r.lanes))
+                 for c, lane, size in zip(chosen, lanes, sizes)]
         _apply_sustains(notes, chosen, r, resolution)
         _apply_forcing(notes, resolution, r.allow_hopos)
         track.notes[difficulty] = notes

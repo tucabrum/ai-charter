@@ -26,29 +26,41 @@ section_seconds = 25.0         # tamanho médio desejado de cada seção
 [detection.guitar]
 fmin = "E2"            # nota mais grave procurada
 octaves = 5            # quantas oitavas acima de fmin analisar
-onset_delta = 0.07     # sensibilidade dos ataques (menor = detecta mais notas)
+onset_delta = 0.04     # sensibilidade dos ataques (menor = detecta mais notas)
 min_rms_db = -35.0     # ignora ataques mais baixos que isso (ruído / vazamento)
 chord_ratio = 0.65     # quão forte a 2ª nota precisa ser para virar acorde (0-1)
 release_ratio = 0.35   # a nota "acaba" quando o volume cai abaixo disso × pico
 lane_window = 8        # nº de notas vizinhas usadas para decidir a lane pelo contorno
+recognize_chords = true      # reconhece acordes (C, Am, G5...) pelo conjunto de notas que soam
+chord_change_margin = 0.08   # tolerância para a troca de acorde cair no tempo (som anterior ainda soando)
+power_chord_third_margin = 0.008  # se "maior" e "menor" empatam até aqui, não há terça: é power chord
+power_chord_notes = 2        # notas de um power chord na chart (1 = nota simples)
 
 [detection.bass]
 fmin = "E1"
 octaves = 4
-onset_delta = 0.07
+onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.9
 release_ratio = 0.35
 lane_window = 8
+recognize_chords = false
+chord_change_margin = 0.08
+power_chord_third_margin = 0.008
+power_chord_notes = 2
 
 [detection.keys]
 fmin = "A1"
 octaves = 6
-onset_delta = 0.07
+onset_delta = 0.04
 min_rms_db = -35.0
 chord_ratio = 0.6
 release_ratio = 0.3
 lane_window = 8
+recognize_chords = true
+chord_change_margin = 0.08
+power_chord_third_margin = 0.008
+power_chord_notes = 2
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
@@ -74,6 +86,18 @@ weight_pitch = 0.5          # peso de tocar mais agudo
 switch_cost = 1.5           # custo de trocar de guitarra (maior = troca menos)
 inactive_cost = 2.0         # custo de ficar numa guitarra que parou de tocar
 min_hold_measures = 2       # depois de trocar, fica pelo menos esse nº de compassos
+
+# ---------------------------------------------------------------------------
+# Sanitização: compassos "confusos" (ruído alto + ritmo bagunçado) viram um
+# caminho regular (ritmo típico da faixa com um acorde só). Compassos limpos
+# nunca são mexidos.
+# ---------------------------------------------------------------------------
+[sanitize]
+enabled = true
+noise_ratio = 3.0            # ruído de fundo a partir de quantas vezes o normal da faixa
+min_found = 0.75             # menos que isso do ritmo típico encontrado = bagunçado
+max_extra = 0.25             # mais que isso de notas fora do ritmo típico = bagunçado
+min_groove_measures = 3      # o ritmo típico precisa aparecer em pelo menos N compassos
 
 # ---------------------------------------------------------------------------
 # Vocais (precisam de um arquivo de letra: --lyrics letra.txt)

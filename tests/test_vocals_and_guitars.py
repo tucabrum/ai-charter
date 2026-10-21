@@ -120,3 +120,43 @@ def test_auto_lyrics_explains_how_to_install(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "faster_whisper", None)   # simula pacote não instalado
     with pytest.raises(RuntimeError, match=r"ai-charter\[lyrics\]"):
         transcribe_lyrics(tmp_path / "vocals.wav", "pt", "small", 0.45)
+
+
+def test_chord_recognition_from_spectrum():
+    from ai_charter.analysis.chords import chord_name, chord_scores, is_single_note
+
+    def spectrum(midis, lowest=40, n=60):
+        s = np.zeros(n)
+        for m in midis:
+            for h, w in ((0, 1.0), (12, 0.5), (19, 0.33), (24, 0.25)):   # nota + harmônicos
+                if m + h - lowest < n:
+                    s[m + h - lowest] += w
+        return s
+
+    assert chord_name(int(np.argmax(chord_scores(spectrum([48, 52, 55, 60, 64]), 40)))) == "C"
+    assert chord_name(int(np.argmax(chord_scores(spectrum([45, 52, 57, 60, 64]), 40)))) == "Am"
+    single = int(np.argmax(chord_scores(spectrum([64]), 40)))
+    assert chord_name(single) == "E" and is_single_note(single)    # nota simples, não acorde de Mi
+
+
+def test_sanitize_leaves_clean_sparse_measures_alone():
+    from ai_charter.charting.common import Candidate
+    from ai_charter.charting.sanitize import sanitize
+
+    sr = 22050
+    tempo = TempoMap(np.arange(40) * 0.5, RES)                 # 120 BPM
+    rng = np.random.default_rng(0)
+    audio = np.zeros(sr * 18)
+    groove = [0, RES, RES * 3 // 2, RES * 5 // 2, RES * 3, RES * 7 // 2]
+    cands = []
+    for m in range(8):
+        positions = groove if m < 7 else [0]                    # último compasso: um acorde só (de propósito)
+        for p in positions:
+            tick = m * RES * 4 + p
+            t = int(tempo.tick_to_time(tick) * sr)
+            audio[t:t + 2000] += rng.standard_normal(2000) * np.exp(-np.arange(2000) / 300)
+            cands.append(Candidate(tick, 1.0, end_tick=tick + 50, pitch=48, voices=3, chord=0,
+                                   chord_scores=np.ones(48)))
+    rules = load_rules().sanitize
+    result, simplified = sanitize(cands, audio, sr, tempo, RES, rules)
+    assert simplified == [] and result == cands
