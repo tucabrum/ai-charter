@@ -53,6 +53,30 @@ class DrumDetection:
 
 
 @dataclass
+class GuitarSelectionRules:
+    active_db: float
+    weight_loudness: float
+    weight_single_notes: float
+    weight_pitch: float
+    switch_cost: float
+    inactive_cost: float
+    min_hold_measures: int
+
+
+@dataclass
+class VocalRules:
+    fmin: str
+    fmax: str
+    min_rms_db: float
+    onset_delta: float
+    pitch_split_semitones: float
+    min_note_seconds: float
+    phrase_gap_beats: float
+    language: str
+    whisper_model: str
+
+
+@dataclass
 class FretDifficultyRules:
     lanes: int
     max_chord: int
@@ -81,6 +105,8 @@ class Rules:
     general: GeneralRules
     detection: dict[str, PitchedDetection]
     drum_detection: DrumDetection
+    guitar_selection: GuitarSelectionRules
+    vocals: VocalRules
     frets: dict[str, FretDifficultyRules]
     drums: dict[str, DrumDifficultyRules]
 
@@ -123,6 +149,8 @@ def load_rules(path: str | Path | None = None) -> Rules:
             for name in PITCHED_INSTRUMENTS
         },
         drum_detection=_build(DrumDetection, data["drum_detection"], "drum_detection"),
+        guitar_selection=_build(GuitarSelectionRules, data["guitar_selection"], "guitar_selection"),
+        vocals=_build(VocalRules, data["vocals"], "vocals"),
         frets={d: _build(FretDifficultyRules, data["frets"][d], f"frets.{d}") for d in DIFFICULTIES},
         drums={d: _build(DrumDifficultyRules, data["drums"][d], f"drums.{d}") for d in DIFFICULTIES},
     )

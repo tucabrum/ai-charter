@@ -31,6 +31,19 @@ def to_ogg(src: Path, dst: Path, quality: int = 8) -> None:
           "-q:a", str(quality), str(dst)])
 
 
+def mix_to_ogg(sources: list[Path], dst: Path, quality: int = 8) -> None:
+    """Soma vários áudios (ex.: violão + guitarra) num único .ogg, sem alterar o volume."""
+    if len(sources) == 1:
+        to_ogg(sources[0], dst, quality)
+        return
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    for src in sources:
+        cmd += ["-i", str(src)]
+    cmd += ["-filter_complex", f"amix=inputs={len(sources)}:normalize=0:duration=longest",
+            "-c:a", "libvorbis", "-q:a", str(quality), str(dst)]
+    _run(cmd)
+
+
 def read_tags(src: Path) -> dict[str, str]:
     """Lê as tags do arquivo (título, artista, álbum...) em minúsculas."""
     result = subprocess.run(

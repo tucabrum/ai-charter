@@ -43,6 +43,22 @@ def test_lanes_follow_melodic_contour():
     assert all(0 <= lane <= 4 for lane in lanes)
 
 
+def test_six_note_run_is_repositioned_instead_of_repeating_a_lane():
+    # Escala de 6 notas subindo e voltando: não cabe em 5 lanes.
+    run = [52, 55, 57, 59, 62, 64, 62, 59]
+    ticks = [i * RES // 2 for i in range(len(run))]
+    lanes = assign_lanes(run, n_lanes=5, window=8, ticks=ticks, resolution=RES)
+    for i in range(1, len(run)):
+        assert lanes[i] != lanes[i - 1], f"nota diferente na mesma lane: {lanes}"
+    resets = [i for i in range(1, len(run))
+              if (run[i] > run[i - 1]) != (lanes[i] > lanes[i - 1])]
+    assert len(resets) == 1 and ticks[resets[0]] % RES == 0   # um reposicionamento, no início da batida
+    after = range(resets[0], len(run))
+    for i in after:   # depois do reposicionamento, cada nota fica sempre na mesma lane
+        for j in after:
+            assert (run[i] == run[j]) == (lanes[i] == lanes[j])
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)
@@ -68,6 +84,25 @@ def test_difficulties_get_simpler():
     assert counts == sorted(counts, reverse=True) and counts[0] > counts[-1]
     assert max(lane for n in track.notes["medium"] for lane in n.lanes) <= 3
     assert max(lane for n in track.notes["easy"] for lane in n.lanes) <= 2
+
+
+def test_repeated_riffs_are_charted_the_same_in_every_difficulty():
+    rng = np.random.default_rng(1)
+    riff = [52, 55, 57, 59, 62, 64, 62, 59]          # 8 colcheias = 4 batidas
+    offset = RES * 2                                 # começa no 3º tempo do compasso
+    cands = [
+        Candidate(tick=offset + i * RES // 2, pitch=riff[i % 8], end_tick=offset + i * RES // 2 + 40,
+                  strength=float(rng.uniform(0.5, 1.0)))   # volume varia a cada repetição
+        for i in range(8 * 6)
+    ]
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    for difficulty, notes in track.notes.items():
+        blocks: dict[int, list] = {}
+        for n in notes:
+            k, pos = divmod(n.tick - offset, RES * 4)
+            blocks.setdefault(k, []).append((pos, n.lanes))
+        first = blocks[0]
+        assert all(b == first for b in blocks.values()), difficulty
 
 
 def test_easy_forces_natural_hopos_to_strum():

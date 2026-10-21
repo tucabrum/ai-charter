@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ai_charter.charting.common import TrackChart
+from ai_charter.charting.vocals import VocalTrack
 from ai_charter.export.chart_writer import SongInfo
 
 # Nome do campo de dificuldade no song.ini para cada instrumento.
@@ -23,7 +24,19 @@ def estimate_difficulty(track: TrackChart, song_seconds: float) -> int:
     return 6
 
 
-def write_song_ini(path: Path, info: SongInfo, tracks: dict[str, TrackChart]) -> None:
+def estimate_vocal_difficulty(vocals: VocalTrack | None, song_seconds: float) -> int:
+    """Nota de 0 a 6 pela quantidade de sílabas por segundo."""
+    if vocals is None or not vocals.notes or song_seconds <= 0:
+        return -1
+    per_second = len(vocals.notes) / song_seconds
+    for level, limit in enumerate((0.5, 1.0, 1.5, 2.0, 2.5, 3.0)):
+        if per_second < limit:
+            return level
+    return 6
+
+
+def write_song_ini(path: Path, info: SongInfo, tracks: dict[str, TrackChart],
+                   vocals: VocalTrack | None = None) -> None:
     values = {
         "name": info.name,
         "artist": info.artist,
@@ -39,6 +52,7 @@ def write_song_ini(path: Path, info: SongInfo, tracks: dict[str, TrackChart]) ->
     for instrument, key in DIFF_KEYS.items():
         track = tracks.get(instrument)
         values[key] = estimate_difficulty(track, info.song_length) if track else -1
+    values["diff_vocals"] = estimate_vocal_difficulty(vocals, info.song_length)
     if "drums" in tracks:
         values["pro_drums"] = "True"
 

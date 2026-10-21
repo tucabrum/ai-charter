@@ -24,7 +24,8 @@ def song(tmp_path_factory):
         shutil.move(paths[name], stems / f"{name}.wav")
     out = folder / "out"
     result = run(Options(input=paths["mix"], output_dir=out, separator="folder", stems_dir=stems,
-                         title="Synth", artist="Test", make_zip=True), log=lambda *_: None)
+                         title="Synth", artist="Test", make_zip=True, output_format="chart"),
+                 log=lambda *_: None)
     return result
 
 
@@ -43,16 +44,19 @@ def test_guitar_expert_matches_melody(song):
     ticks = sorted(expert)
     # A melodia tem uma nota por colcheia, começando 1 s (= 2 batidas) depois do início.
     assert ticks == [2 * RES + i * EIGHTH for i in range(len(synth.MELODY))]
-    # As lanes sobem e descem junto com a melodia.
+    # Mesma nota -> mesma lane; nota diferente -> lane diferente.
     lanes = [expert[t][0] for t in ticks]
     for i in range(1, len(lanes)):
-        step = synth.MELODY[i] - synth.MELODY[i - 1]
-        if step > 0:
-            assert lanes[i] >= lanes[i - 1]
-        elif step < 0:
-            assert lanes[i] <= lanes[i - 1]
-        else:
-            assert lanes[i] == lanes[i - 1]
+        same_pitch = synth.MELODY[i] == synth.MELODY[i - 1]
+        assert (lanes[i] == lanes[i - 1]) == same_pitch, (i, lanes)
+    # As lanes acompanham a direção da melodia, exceto nos reposicionamentos
+    # (escala de 6 notas em 5 lanes): no máximo um por frase de 8 notas.
+    against = sum(
+        1 for i in range(1, len(lanes))
+        if synth.MELODY[i] != synth.MELODY[i - 1]
+        and (synth.MELODY[i] > synth.MELODY[i - 1]) != (lanes[i] > lanes[i - 1])
+    )
+    assert against <= len(lanes) // 8
 
 
 def test_all_difficulties_exist_and_get_easier(song):

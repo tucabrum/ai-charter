@@ -64,6 +64,32 @@ crash_sustain_ratio = 0.3    # prato que mantém essa fração do volume após ~
 crash_min_strength = 0.6
 
 # ---------------------------------------------------------------------------
+# Várias guitarras (ex.: violão + guitarra solo): qual vira a chart, compasso a compasso
+# ---------------------------------------------------------------------------
+[guitar_selection]
+active_db = -20.0           # guitarra mais de 20 dB abaixo da mais alta conta como "parada"
+weight_loudness = 1.0       # peso de ser a mais alta
+weight_single_notes = 1.0   # peso de tocar notas simples (solo) em vez de acordes (base)
+weight_pitch = 0.5          # peso de tocar mais agudo
+switch_cost = 1.5           # custo de trocar de guitarra (maior = troca menos)
+inactive_cost = 2.0         # custo de ficar numa guitarra que parou de tocar
+min_hold_measures = 2       # depois de trocar, fica pelo menos esse nº de compassos
+
+# ---------------------------------------------------------------------------
+# Vocais (precisam de um arquivo de letra: --lyrics letra.txt)
+# ---------------------------------------------------------------------------
+[vocals]
+fmin = "C2"                  # nota mais grave procurada na voz
+fmax = "C6"                  # nota mais aguda
+min_rms_db = -35.0           # ignora trechos mais baixos que isso (vazamento)
+onset_delta = 0.1            # sensibilidade para novos ataques dentro de um trecho cantado
+pitch_split_semitones = 0.7  # mudança de afinação que separa duas notas ligadas
+min_note_seconds = 0.08      # notas mais curtas que isso são descartadas
+phrase_gap_beats = 0.75      # pausa (em batidas) que separa duas frases
+language = "pt"              # idioma da letra (sílabas e transcrição): "pt" ou "en"
+whisper_model = "small"      # --auto-lyrics: tiny, base, small, medium, large-v3 (maior = melhor e mais lento)
+
+# ---------------------------------------------------------------------------
 # Regras por dificuldade - guitarra, baixo e teclado (5 lanes)
 #   lanes:          quantas cores usar (5 = G R Y B O, 4 = sem laranja, 3 = G R Y)
 #   max_chord:      máximo de notas num acorde

@@ -7,14 +7,17 @@ Você entrega um arquivo de música (MP3 de alta qualidade ou FLAC) e o programa
 
 1. **separa os instrumentos** (stems) com IA: guitarra, baixo, bateria, teclado, voz e o resto;
 2. **detecta o andamento** (BPM) e monta o mapa de tempo;
-3. **transcreve as notas** de cada instrumento tocável (ataques, altura, acordes, duração);
+3. **transcreve as notas** de cada instrumento tocável (ataques, altura, acordes, duração)
+   e da **voz** (afinação de cada sílaba);
 4. **gera as charts** em **Expert, Hard, Medium e Easy**, seguindo regras configuráveis;
-5. **exporta uma pasta** pronta para o jogo: `notes.chart`, `song.ini`, `album.png` e
+5. **exporta uma pasta** pronta para o jogo: `notes.mid`, `song.ini`, `album.png` e
    os áudios separados (`song.ogg`, `guitar.ogg`, `bass.ogg`, `drums.ogg`, `keys.ogg`, `vocals.ogg`).
 
-Instrumentos gerados: **guitarra** (5 lanes), **baixo** (5 lanes), **teclado** (5 lanes) e
-**bateria** (Pro Drums: bumbo + 4 lanes, com pratos marcados). Cada chart vem com frases de
+Instrumentos gerados: **guitarra** (5 lanes), **baixo** (5 lanes), **teclado** (5 lanes),
+**bateria** (Pro Drums: bumbo + 4 lanes, com pratos marcados) e **vocal** (com afinação e a
+letra dividida em sílabas, como no YARG/Rock Band). Cada chart vem com frases de
 **Star Power**, viradas de ativação na bateria e **seções** para o modo prática.
+Trechos repetidos da música (riffs, refrões) recebem exatamente a mesma chart.
 
 ---
 
@@ -52,9 +55,55 @@ Opções úteis:
 | `--separator demucs` | separa os stems com IA (padrão) |
 | `--separator folder --stems PASTA` | usa stems que você já tem (`guitar.wav`, `bass.wav`, `drums.wav`, `piano.wav`, `vocals.wav`, `other.wav`...) |
 | `--separator none` | sem IA, só filtros simples (qualidade bem menor; bom para testes) |
+| `--lyrics letra.txt` | letra para a faixa de vocal (padrão: um `.txt` com o mesmo nome da música) |
+| `--auto-lyrics` | sem letra, transcreve a voz com o Whisper e salva um rascunho para revisar |
+| `--format chart` | gera `notes.chart` em vez de `notes.mid` (o `.chart` não tem vocal) |
 | `--tempo constant` / `variable` | força BPM fixo ou variável (padrão: decide sozinho) |
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
 | `--zip` | também cria um `.zip` da pasta |
+
+## Vocais
+
+A faixa de vocal precisa da **letra** num arquivo de texto, **uma linha por frase cantada**:
+
+```text
+No caminho da manhã
+o sol desperta devagar
+```
+
+O programa divide as palavras em sílabas (português por padrão; `language = "en"` nas regras
+para inglês), detecta as notas cantadas e coloca cada sílaba na sua nota. No jogo, cada
+sílaba no meio de uma palavra aparece com hífen (`ca-` `mi-` `nho`). Se alguma palavra for
+dividida errado, escreva-a já com hífens na letra (ex.: `sa-u-da-de`).
+
+### Letra automática (`--auto-lyrics`)
+
+Sem arquivo de letra, o programa pode **transcrever a voz** com o Whisper (modelo de
+reconhecimento de fala de código aberto, que roda no seu computador):
+
+```bash
+pip install -e ".[lyrics]"
+ai-charter musica.flac --auto-lyrics
+```
+
+Ele salva o resultado em `letra_automatica.txt` (dentro da pasta da música) e já gera o vocal
+com ela. O Whisper foi treinado principalmente com fala, então **erra mais em canto**: revise o
+arquivo e rode de novo com `--lyrics letra_automatica.txt`. Na primeira vez o modelo é baixado
+da internet (depois funciona offline). O tamanho do modelo fica em `whisper_model` nas regras
+(`tiny` é rápido e erra mais; `large-v3` é o mais preciso e o mais pesado).
+
+## Várias guitarras (violão + guitarra solo)
+
+O jogo só tem uma faixa de guitarra. Se a música tem mais de uma (por exemplo, `violao.wav`
+e `guitarra.wav` com `--separator folder`), o programa escolhe **compasso a compasso** qual
+vira a chart: a que está "na frente" (mais alta, tocando notas simples, mais aguda) vence,
+então um solo prevalece sobre o violão de base. Para não ficar pulando de uma para outra,
+trocar tem um custo e, depois de uma troca, a faixa escolhida fica pelo menos 2 compassos —
+uma pausa curta no meio do solo não devolve a chart para o violão. Tudo isso é ajustável em
+`[guitar_selection]` nas regras.
+
+> Com a separação por IA (Demucs) só existe um stem de guitarra, então essa escolha vale
+> quando você fornece as guitarras separadas (modo `folder`).
 
 ## Personalizando as regras
 
@@ -92,15 +141,21 @@ ai_charter/
 ├── default_rules.toml  regras padrão de charting
 ├── separation.py       separação de stems (Demucs, pasta ou filtros simples)
 ├── analysis/           "ouvir" o áudio
+│   ├── transcribe.py   letra automática com o Whisper (--auto-lyrics)
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
 │   ├── pitched.py      notas de guitarra/baixo/teclado: ataque, altura, acorde, duração
 │   ├── drums.py        bumbo, caixa, chimbal e crash por faixas de frequência
+│   ├── vocals.py       notas cantadas (afinação com pYIN, cortes por consoante/afinação)
 │   └── sections.py     seções da música (modo prática) e trecho de preview
 ├── charting/           transformar notas detectadas em chart jogável
-│   ├── common.py       grid rítmico, escolha das notas por dificuldade, Star Power
+│   ├── common.py       grid rítmico, escolha das notas, trechos repetidos, Star Power
 │   ├── frets.py        lanes pelo contorno melódico, acordes, sustains, HOPO/strum
-│   └── drums.py        bateria por dificuldade (limite de mãos, pratos Pro Drums)
+│   ├── guitar_select.py qual guitarra vira a chart em cada compasso
+│   ├── drums.py        bateria por dificuldade (limite de mãos, pratos Pro Drums)
+│   ├── lyrics.py       letra -> sílabas (português e inglês)
+│   └── vocals.py       notas da voz no grid, frases e alinhamento da letra
 └── export/             escrever os arquivos do jogo
+    ├── midi_writer.py  notes.mid (padrão Rock Band, com vocal)
     ├── chart_writer.py notes.chart
     ├── song_ini.py     song.ini (inclui a "nota" de dificuldade 0-6 de cada instrumento)
     └── audio.py        conversão para .ogg, tags e capa (via ffmpeg)
@@ -125,12 +180,21 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Os testes geram uma música sintética (melodia, baixo e bateria com notas conhecidas) e conferem
-se a chart gerada acerta o ritmo, o contorno das lanes, os acordes e as peças da bateria.
+Os testes geram duas músicas sintéticas com notas conhecidas e conferem se a chart acerta:
+
+- **música 1** (`tests/synth.py`): melodia, baixo e bateria — ritmo, contorno das lanes,
+  acordes, peças da bateria;
+- **música 2** (`tests/song2.py`, "Estrada"): violão, guitarra (riff e solo por cima do
+  violão), baixo, bateria e uma voz sintetizada cantando uma letra original — qual guitarra
+  é escolhida em cada trecho, o solo nota a nota, e o vocal sílaba por sílaba (tempo,
+  afinação, frases).
 
 ## Limitações atuais e próximos passos
 
-- **Vocais** ainda não viram chart (precisaria de letra sincronizada); a voz é exportada só como áudio.
+- **Letra automática** (`--auto-lyrics`) não foi testada com o modelo de verdade (o ambiente de
+  desenvolvimento não consegue baixá-lo); erros de transcrição em canto são esperados.
+- **Várias guitarras** só são separadas quando você fornece os stems; o Demucs junta todas
+  as guitarras num stem só.
 - **Bateria**: tons (azul/verde sem prato) e prato de condução ainda não são detectados separadamente.
 - **Fórmula de compasso** assumida como 4/4.
 - O arquivo é uma pasta (ou `.zip`); o formato `.sng` ainda não é gerado.
