@@ -66,6 +66,9 @@
   th { color: var(--muted); font-weight: 500; font-size: 12px; }
   td.parts span { display: inline-block; font-size: 11px; padding: 0 6px; margin: 1px 2px 1px 0; border-radius: 8px; background: var(--panel-2); color: var(--muted); }
   td.act { text-align: right; white-space: nowrap; }
+  .chips span { display: inline-block; font-size: 12px; padding: 1px 8px; margin: 2px 4px 2px 0; border-radius: 10px; background: var(--panel-2); color: var(--muted); }
+  label.check.off { color: var(--muted); }
+  #addForm { max-width: 640px; }
   .lib-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .lib-tools input { flex: 1; min-width: 200px; }
 </style>
@@ -75,6 +78,7 @@
   <h1>ai-charter</h1>
   <nav>
     <button data-tab="create" class="on">Nova chart</button>
+    <button data-tab="add">Acrescentar</button>
     <button data-tab="library">Biblioteca</button>
   </nav>
   <div id="warn"></div>
@@ -157,6 +161,50 @@
     </div>
   </section>
 
+  <section class="tab" id="tab-add">
+    <form class="card" id="addForm" autocomplete="off">
+      <h2>Acrescentar instrumentos a uma chart</h2>
+      <p class="help" style="margin: -4px 0 12px">Gera só as partes escolhidas, com o mapa de tempo do notes.mid e os stems (.ogg) da pasta. As pistas que já existem não mudam. Não precisa da música original nem do Demucs.</p>
+      <div class="field">
+        <span>Pasta da música (com notes.mid)</span>
+        <div class="row"><input type="text" name="folder" placeholder="D:\Clone Hero\Songs\Artista - Música"><button type="button" data-pick="folder" data-for="folder" data-form="addForm">Procurar…</button></div>
+      </div>
+      <div id="addInfo" class="field" hidden>
+        <span id="addTitle"></span>
+        <div class="chips" id="addParts"></div>
+      </div>
+      <div class="field">
+        <span>Instrumentos a gerar</span>
+        <div id="addInstruments"><p class="help">Escolha a pasta para ver o que dá para acrescentar.</p></div>
+        <label class="check" style="margin-top: 6px"><input type="checkbox" name="replace"> Refazer também as partes que já existem (os compassos travados no editor ficam como estão)</label>
+      </div>
+      <div class="field" id="addVocals" hidden>
+        <span>Letra dos vocais</span>
+        <div>
+          <label class="check" id="addFolderLyrics" hidden><input type="radio" name="addLyricsMode" value="folder"> <span></span> da pasta</label>
+          <label class="check"><input type="radio" name="addLyricsMode" value="paste" checked> Colar a letra</label>
+          <label class="check"><input type="radio" name="addLyricsMode" value="file"> Arquivo .txt</label>
+          <label class="check"><input type="radio" name="addLyricsMode" value="auto"> Transcrever (Whisper)</label>
+        </div>
+        <div id="add-lyrics-paste"><textarea name="lyrics_text" placeholder="Uma linha por frase cantada.&#10;Fica salva como letra.txt na pasta da música."></textarea></div>
+        <div id="add-lyrics-file" class="row" hidden><input type="text" name="lyrics" placeholder="letra.txt"><button type="button" data-pick="lyrics" data-for="lyrics" data-form="addForm">Procurar…</button></div>
+      </div>
+      <details>
+        <summary>Opções avançadas</summary>
+        <div class="field">
+          <span>Regras personalizadas (.toml, opcional)</span>
+          <div class="row"><input type="text" name="rules"><button type="button" data-pick="rules" data-for="rules" data-form="addForm">Procurar…</button></div>
+        </div>
+      </details>
+      <div class="row" style="margin-bottom: 10px">
+        <label class="check"><input type="checkbox" name="open_editor" checked> Abrir no editor ao terminar</label>
+      </div>
+      <button class="primary" type="submit">Acrescentar</button>
+      <p class="help">O andamento aparece na aba Nova chart, em Gerações.</p>
+      <div id="addError" style="color: var(--red); margin-top: 8px; min-height: 1em"></div>
+    </form>
+  </section>
+
   <section class="tab" id="tab-library">
     <div class="card">
       <h2>Biblioteca</h2>
@@ -196,18 +244,18 @@ function esc(text) {
 }
 
 // ---- abas ----
-for (const btn of document.querySelectorAll("nav button")) {
-  btn.onclick = () => {
-    for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b === btn);
-    for (const s of document.querySelectorAll("section.tab")) s.classList.toggle("on", s.id === "tab-" + btn.dataset.tab);
-    if (btn.dataset.tab === "library" && !library.length) loadLibrary();
-  };
+function showTab(name) {
+  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.dataset.tab === name);
+  for (const s of document.querySelectorAll("section.tab")) s.classList.toggle("on", s.id === "tab-" + name);
+  if (name === "library" && !library.length) loadLibrary();
 }
+for (const btn of document.querySelectorAll("nav button")) btn.onclick = () => showTab(btn.dataset.tab);
 
 // ---- janelas de escolher arquivo ----
 for (const btn of document.querySelectorAll("[data-pick]")) {
   btn.onclick = async () => {
-    const input = form.elements[btn.dataset.for] || document.getElementById(btn.dataset.for);
+    const owner = btn.dataset.form ? document.getElementById(btn.dataset.form) : form;
+    const input = owner.elements[btn.dataset.for] || document.getElementById(btn.dataset.for);
     btn.disabled = true;
     try {
       const { path } = await api("api/pick", { kind: btn.dataset.pick, start: input.value });
@@ -316,6 +364,87 @@ async function openEditor(songDir) {
   }
 }
 
+// ---- acrescentar ----
+const addForm = $("#addForm");
+let song = null;
+
+async function loadSong() {
+  const dir = addForm.elements.folder.value.trim();
+  song = null;
+  $("#addInfo").hidden = true;
+  $("#addError").textContent = "";
+  $("#addInstruments").innerHTML = '<p class="help">Escolha a pasta para ver o que dá para acrescentar.</p>';
+  if (dir) {
+    try {
+      song = await api("api/song?dir=" + encodeURIComponent(dir));
+      $("#addTitle").textContent = (song.artist ? song.artist + " - " : "") + song.name + ": a chart já tem";
+      $("#addParts").innerHTML = song.parts.length ? song.parts.map(p => `<span>${esc(NAMES[p] || p)}</span>`).join("")
+        : "<span>nenhuma parte</span>";
+      $("#addInfo").hidden = false;
+      const folderLyrics = $("#addFolderLyrics");
+      folderLyrics.hidden = !song.lyrics;
+      if (song.lyrics) {
+        $("span", folderLyrics).textContent = song.lyrics;
+        addForm.elements.addLyricsMode.value = "folder";
+      } else if (addForm.elements.addLyricsMode.value === "folder") {
+        addForm.elements.addLyricsMode.value = "paste";
+      }
+    } catch (e) { $("#addError").textContent = e.message; }
+  }
+  renderAdd(true);
+}
+
+function renderAdd(fresh = false) {
+  const replace = addForm.elements.replace.checked;
+  const checked = new Set([...addForm.querySelectorAll("[name=addInstrument]:checked")].map(i => i.value));
+  if (song) {
+    $("#addInstruments").innerHTML = Object.keys(NAMES).map(i => {
+      const exists = song.parts.includes(i), stem = song.stems.includes(i);
+      const off = !stem || (exists && !replace);
+      const note = !stem ? " (sem stem na pasta)" : exists ? " (já existe)" : "";
+      const on = !off && (fresh ? !exists : checked.has(i));
+      return `<label class="check${off ? " off" : ""}"><input type="checkbox" name="addInstrument" value="${i}"${off ? " disabled" : ""}${on ? " checked" : ""}> ${NAMES[i]}${note}</label>`;
+    }).join("");
+  }
+  $("#addVocals").hidden = !addForm.querySelector("[name=addInstrument][value=vocals]:checked");
+  const mode = addForm.elements.addLyricsMode.value;
+  $("#add-lyrics-paste").hidden = mode !== "paste";
+  $("#add-lyrics-file").hidden = mode !== "file";
+}
+
+function startAdd(path) {
+  addForm.elements.folder.value = path;
+  showTab("add");
+  loadSong();
+}
+
+addForm.elements.folder.addEventListener("picked", loadSong);
+addForm.elements.folder.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); loadSong(); } });
+addForm.addEventListener("change", e => { if (e.target.name === "folder") loadSong(); else renderAdd(); });
+
+addForm.onsubmit = async ev => {
+  ev.preventDefault();
+  const f = addForm.elements, mode = f.addLyricsMode.value;
+  const instruments = [...addForm.querySelectorAll("[name=addInstrument]:checked")].map(i => i.value);
+  const vocals = instruments.includes("vocals");
+  const body = {
+    folder: f.folder.value, instruments, replace: f.replace.checked, rules: f.rules.value,
+    open_editor: f.open_editor.checked,
+    lyrics_text: vocals && mode === "paste" ? f.lyrics_text.value : "",
+    lyrics: vocals && mode === "file" ? f.lyrics.value : "",
+    auto_lyrics: vocals && mode === "auto",
+  };
+  if (vocals && mode === "paste" && !body.lyrics_text.trim()) {
+    $("#addError").textContent = "cole a letra ou escolha outra opção";
+    return;
+  }
+  $("#addError").textContent = "";
+  try {
+    addJob(await api("api/add", body));
+    showTab("create");
+  } catch (e) { $("#addError").textContent = e.message; }
+};
+
 // ---- biblioteca ----
 async function loadLibrary() {
   const dir = $("#libDir").value.trim();
@@ -340,9 +469,12 @@ function renderLibrary() {
   $("#libTable tbody").innerHTML = rows.slice(0, 500).map((s, i) => `
     <tr><td>${esc(s.artist)}</td><td>${esc(s.name)}${s.ai ? ' <span class="badge">ai-charter</span>' : ""}</td>
     <td class="parts">${s.parts.map(p => `<span>${esc(NAMES[p] || p)}</span>`).join("")}</td>
-    <td class="act"><button data-song="${i}">Abrir no editor</button></td></tr>`).join("");
+    <td class="act">${s.chart === "notes.mid" ? `<button data-add="${i}">Acrescentar…</button> ` : ""}<button data-song="${i}">Abrir no editor</button></td></tr>`).join("");
   for (const btn of document.querySelectorAll("#libTable [data-song]")) {
     btn.onclick = () => openEditor(rows[+btn.dataset.song].path);
+  }
+  for (const btn of document.querySelectorAll("#libTable [data-add]")) {
+    btn.onclick = () => startAdd(rows[+btn.dataset.add].path);
   }
 }
 $("#libLoad").onclick = loadLibrary;

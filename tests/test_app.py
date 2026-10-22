@@ -4,8 +4,10 @@ import json
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
+import mido
 import pytest
 
 from ai_charter import app as app_mod
@@ -175,6 +177,32 @@ def test_run_request_protects_existing_chart_and_keeps_lyrics(tmp_path, music, m
     assert (song / "letra.txt").read_text("utf-8") == "olá mundo\n"
     assert (song / "notes.backup.mid").read_bytes() == b"MThd-antigo"
     assert (song / "notes.mid").read_bytes() == b"MThd-novo"
+
+
+def test_add_to_existing_chart(server, tmp_path):
+    base, app = server
+    song = tmp_path / "Banda - Música"
+    song.mkdir()
+    midi = mido.MidiFile()
+    midi.tracks.append(mido.MidiTrack([mido.MetaMessage("track_name", name="PART GUITAR")]))
+    midi.save(song / "notes.mid")
+    for name in ("song.ogg", "guitar.ogg", "vocals.ogg"):
+        (song / name).write_bytes(b"OggS")
+    (song / "letra.txt").write_text("la la", encoding="utf-8")
+    info = get(base + "api/song?dir=" + urllib.parse.quote(str(song)))
+    assert info["parts"] == ["guitar"] and info["stems"] == ["guitar", "other", "vocals"]
+    assert info["lyrics"] == "letra.txt"
+
+    seen = []
+    app.add_runner = lambda req, log: seen.append(req) or req.folder
+    job = post(base + "api/add", {"folder": str(song), "instruments": ["vocals"], "lyrics_text": "oi"})
+    assert wait_job(base, job["id"])["status"] == "done"
+    assert seen[0].instruments == ("vocals",) and seen[0].lyrics_text == "oi"
+    for data, message in (({"folder": str(tmp_path), "instruments": ["bass"]}, "não tem notes.mid"),
+                          ({"folder": str(song), "instruments": []}, "ao menos um instrumento")):
+        with pytest.raises(urllib.error.HTTPError) as err:
+            post(base + "api/add", data)
+        assert message in json.loads(err.value.read())["error"]
 
 
 def test_bad_pick_kind():

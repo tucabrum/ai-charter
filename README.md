@@ -78,7 +78,30 @@ ai-charter-app --library "D:\Clone Hero\Songs"   # e já aponta a sua biblioteca
 - A letra usada fica guardada como `letra.txt` na pasta da música. Se já existir uma chart com o
   mesmo nome na pasta de saída, nada é gerado, a menos que "Substituir a chart existente" esteja
   marcada. Nesse caso a anterior fica em `notes.backup.mid`.
-- **Biblioteca** lista as músicas da pasta do Clone Hero/YARG, com as partes de cada uma, para abrir no editor.
+- **Acrescentar** gera só algumas partes numa chart que já existe (veja abaixo).
+- **Biblioteca** lista as músicas da pasta do Clone Hero/YARG, com as partes de cada uma, para abrir no
+  editor ou acrescentar partes.
+
+### Acrescentar instrumentos a uma chart que já existe
+
+```bash
+ai-charter-add "D:\Clone Hero\Songs\Banda - Música" --instruments vocals --lyrics letra.txt
+ai-charter-add "D:\Clone Hero\Songs\Banda - Música" --instruments keys,drums --replace
+```
+
+Gera só as partes pedidas e grava no `notes.mid` da pasta. Não precisa da música original nem do
+Demucs, porque usa o que já está lá:
+
+- o mapa de tempo do `notes.mid`, para as notas novas caírem nas mesmas batidas das outras pistas
+  (vale também para charts oficiais, com outra resolução);
+- as frases de Star Power das partes que já existem;
+- os stems da pasta (`guitar.ogg`, `bass.ogg`, `drums.ogg`, `keys.ogg`, `vocals.ogg`);
+- para os vocais, a letra de `--lyrics`, ou a `letra.txt` da pasta, ou `--auto-lyrics`.
+
+As outras pistas não mudam. Uma parte que já existe só é refeita com `--replace`, e os compassos
+travados no editor continuam como estavam. A chart anterior fica em `notes.before-add.mid`, e o
+`song.ini` ganha a dificuldade das partes novas. Por enquanto só funciona com `notes.mid` (não com
+`notes.chart`) e precisa do stem de cada instrumento na pasta.
 - A pasta de saída e a biblioteca ficam salvas em `~/.ai-charter/app.json`.
 
 ## Vocais

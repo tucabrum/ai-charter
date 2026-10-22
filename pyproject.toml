@@ -26,6 +26,7 @@ dev = ["pytest>=7"]
 [project.scripts]
 ai-charter = "ai_charter.cli:main"
 ai-charter-app = "ai_charter.app:main"
+ai-charter-add = "ai_charter.augment:main"
 ai-charter-compare = "ai_charter.compare:main"
 ai-charter-critic = "ai_charter.critic:main"
 ai-charter-view = "ai_charter.view:main"

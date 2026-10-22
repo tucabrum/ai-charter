@@ -10,7 +10,9 @@ Sobe um servidor local (só nesta máquina) que entrega a página da interface
   GET  /api/state        configurações, instrumentos e as gerações desta sessão
   GET  /api/jobs/<id>    andamento de uma geração (?since=N: só as linhas novas do log)
   GET  /api/library      músicas da biblioteca (pastas com notes.mid ou notes.chart)
+  GET  /api/song?dir=    o que a pasta de uma música já tem (partes, stems e letra)
   POST /api/jobs         põe uma geração na fila (uma de cada vez: o Demucs é pesado)
+  POST /api/add          põe na fila o acréscimo de instrumentos a uma chart (augment.py)
   POST /api/editor       abre uma pasta de música no editor (o mesmo do ai-charter-view)
   POST /api/pick         janela do Windows para escolher arquivo ou pasta
   POST /api/settings     grava a biblioteca e a pasta de saída (~/.ai-charter/app.json)
@@ -172,7 +174,8 @@ def run_request(req: Request, log) -> Path:
     song_dir = req.output_dir / _safe_name(f"{artist} - {title}")
     if not req.overwrite and any((song_dir / n).exists() for n in ("notes.mid", "notes.chart")):
         raise RuntimeError(f"já existe uma chart em {song_dir}. Marque \"substituir a chart existente\" "
-                           "para gerar de novo por cima dela.")
+                           "para gerar de novo por cima dela, ou use Acrescentar para gerar só "
+                           "as partes que faltam.")
     old, backup = song_dir / view.CHART_NAME, song_dir / view.BACKUP_NAME
     if old.is_file() and not backup.exists():   # a chart substituída fica guardada, como no editor
         shutil.copy2(old, backup)
@@ -197,23 +200,94 @@ def run_request(req: Request, log) -> Path:
     return result.song_dir
 
 
+@dataclass
+class AddRequest:
+    """Instrumentos a acrescentar numa chart que já existe (ver augment.py)."""
+    folder: Path
+    instruments: tuple[str, ...]
+    rules_path: Path | None = None
+    lyrics: Path | None = None
+    lyrics_text: str = ""
+    auto_lyrics: bool = False
+    replace: bool = False
+    open_editor: bool = False
+
+
+def parse_add_request(data: dict) -> AddRequest:
+    from ai_charter.augment import INSTRUMENTS as ADD_INSTRUMENTS
+
+    folder = _path(data, "folder", "dir", required=True)
+    if not (folder / "notes.mid").is_file():
+        raise BadRequest(f"a pasta não tem notes.mid: {folder}")
+    instruments = tuple(data.get("instruments") or ())
+    invalid = set(instruments) - set(ADD_INSTRUMENTS)
+    if invalid:
+        raise BadRequest(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
+    if not instruments:
+        raise BadRequest("escolha ao menos um instrumento para acrescentar")
+    return AddRequest(
+        folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"),
+        lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
+        auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
+        open_editor=bool(data.get("open_editor")),
+    )
+
+
+def run_add_request(req: AddRequest, log) -> Path:
+    from ai_charter.augment import augment
+
+    lyrics = req.lyrics
+    if req.lyrics_text and "vocals" in req.instruments:
+        lyrics = req.folder / LYRICS_NAME   # fica guardada na pasta, como numa chart nova
+        lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
+    result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
+                     rules_path=req.rules_path, replace_existing=req.replace, log=log)
+    if not result.added:
+        raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
+    return req.folder
+
+
+def song_info(folder: Path) -> dict:
+    """O que a pasta de uma música já tem: partes da chart, stems e letra."""
+    from ai_charter.augment import LYRICS_NAMES, existing_parts
+    from ai_charter.separation import stems_from_folder
+
+    if not (folder / "notes.mid").is_file():
+        raise BadRequest(f"a pasta não tem notes.mid: {folder}"
+                         + (" (charts .chart ainda não são suportadas)" if (folder / "notes.chart").is_file() else ""))
+    try:
+        stems = sorted(stems_from_folder(folder))
+    except RuntimeError:
+        stems = []
+    ini = read_song_ini(folder / "song.ini")
+    return {
+        "folder": str(folder), "name": ini.get("name") or folder.name, "artist": ini.get("artist", ""),
+        "parts": existing_parts(folder), "stems": stems,
+        "lyrics": next((n for n in LYRICS_NAMES if (folder / n).is_file()), None),
+    }
+
+
 class Jobs:
     def __init__(self, runner=run_request, editors: Editors | None = None):
-        self.runner = runner
+        self.runner = runner   # roda um Request (nova chart)
         self.editors = editors
         self.items: dict[str, Job] = {}
         self._queue: queue.Queue = queue.Queue()
         threading.Thread(target=self._work, daemon=True).start()
 
     def submit(self, req: Request) -> Job:
-        job = Job(id=uuid.uuid4().hex[:8], title=req.title or req.input.stem)
+        return self.submit_task(req.title or req.input.stem, partial(self.runner, req), req.open_editor)
+
+    def submit_task(self, title: str, task, open_editor: bool = False) -> Job:
+        """Põe na fila uma tarefa task(log) que devolve a pasta da música."""
+        job = Job(id=uuid.uuid4().hex[:8], title=title)
         self.items[job.id] = job
-        self._queue.put((job, req))
+        self._queue.put((job, task, open_editor))
         return job
 
     def _work(self) -> None:
         while True:
-            job, req = self._queue.get()
+            job, task, open_editor = self._queue.get()
             job.status = "running"
 
             def log(line, job=job):
@@ -221,10 +295,10 @@ class Jobs:
                 job.lines.append(str(line))
 
             try:
-                song_dir = self.runner(req, log)
+                song_dir = task(log)
                 job.song_dir = str(song_dir)
-                log(f"Pronto! Música criada em: {song_dir}")
-                if req.open_editor and self.editors is not None:
+                log(f"Pronto! Música em: {song_dir}")
+                if open_editor and self.editors is not None:
                     job.editor_url = self.editors.open(song_dir, browser=True)
                 job.status = "done"
             except (RuntimeError, ValueError, OSError) as exc:
@@ -365,6 +439,7 @@ class App:
     editors: Editors = field(default_factory=Editors)
     dialogs: Dialogs = field(default_factory=Dialogs)
     jobs: Jobs | None = None
+    add_runner: object = run_add_request   # roda um AddRequest (os testes trocam)
 
     def __post_init__(self):
         if self.jobs is None:
@@ -411,6 +486,12 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "geração não encontrada"}, 404)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._json({**job.summary(), "lines": job.lines[since:], "next": len(job.lines)})
+        if path == "/api/song":
+            try:
+                folder = _path({"dir": (query.get("dir") or [""])[0]}, "dir", "dir", required=True)
+                return self._json(song_info(folder))
+            except BadRequest as exc:
+                return self._json({"error": str(exc)}, 400)
         if path == "/api/library":
             root = (query.get("dir") or [self.app.settings.get("library", "")])[0]
             if not root or not Path(root).is_dir():
@@ -431,6 +512,11 @@ class _Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/api/jobs":
                 job = self.app.jobs.submit(parse_request(data, self.app.settings))
+                return self._json(job.summary())
+            if path == "/api/add":
+                req = parse_add_request(data)
+                job = self.app.jobs.submit_task(f"{req.folder.name} (+ {', '.join(req.instruments)})",
+                                                partial(self.app.add_runner, req), req.open_editor)
                 return self._json(job.summary())
             if path == "/api/editor":
                 return self._json({"url": self.app.editors.open(_path(data, "song_dir", "dir", required=True))})
