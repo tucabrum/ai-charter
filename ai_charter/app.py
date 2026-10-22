@@ -57,7 +57,7 @@ PICK_TYPES = {
     "audio": [("Música", "*.mp3 *.flac *.wav *.ogg *.opus *.m4a"), ("Todos", "*.*")],
     "lyrics": [("Letra", "*.txt"), ("Todos", "*.*")],
     "rules": [("Regras", "*.toml"), ("Todos", "*.*")],
-    "score": [("Partitura", "*.mid *.midi *.kar *.gp3 *.gp4 *.gp5"), ("Todos", "*.*")],
+    "score": [("Partitura", "*.mid *.midi *.kar *.gp3 *.gp4 *.gp5 *.gpx *.gp"), ("Todos", "*.*")],
 }
 
 

@@ -101,10 +101,16 @@ def test_reads_guitar_pro_with_repeats_and_ties(tmp_path):
     assert score.length_beats == 20.0
 
 
-def test_new_guitar_pro_formats_explain_what_to_do(tmp_path):
-    (tmp_path / "x.gpx").write_bytes(b"BCFS")
-    with pytest.raises(ValueError, match="exporte"):
-        read_score(tmp_path / "x.gpx")
+def test_broken_guitar_pro_files_are_explained(tmp_path):
+    (tmp_path / "vazio.gpx").write_bytes(b"BCFS")
+    with pytest.raises(ValueError, match="score.gpif"):
+        read_score(tmp_path / "vazio.gpx")
+    (tmp_path / "outro.gp").write_bytes(b"isso nao e guitar pro")
+    with pytest.raises(ValueError, match="não parece"):
+        read_score(tmp_path / "outro.gp")
+    (tmp_path / "x.pdf").write_bytes(b"%PDF")
+    with pytest.raises(ValueError, match="não reconhecido"):
+        read_score(tmp_path / "x.pdf")
 
 
 def test_parse_mapping():
@@ -157,17 +163,229 @@ def test_pipeline_guided_by_score(tmp_path):
     paths = synth.render(tmp_path)
     stems = tmp_path / "stems"
     stems.mkdir()
-    for name in ("guitar", "bass"):
+    for name in ("guitar", "bass", "drums"):
         shutil.move(paths[name], stems / f"{name}.wav")
     melody = [m + 1 for m in synth.MELODY]
     melody[8:12] = [m + 5 for m in melody[8:12]]
-    bass = [b + 1 for b in synth.BASS[:len(synth.MELODY) // 2]]
-    ref = write_midi(tmp_path / "ref.mid", [("Guitarra", 29, 0, [(n, 0.5) for n in melody]),
-                                            ("Baixo", 33, 1, [(n, 1.0) for n in bass])])
+    beats = len(synth.MELODY) // 2
+    bass = [b + 1 for b in synth.BASS[:beats]]
+    ref = write_midi(tmp_path / "ref.mid", [
+        ("Guitarra", 29, 0, [(n, 0.5) for n in melody]),
+        ("Baixo", 33, 1, [(n, 1.0) for n in bass]),
+        # o áudio tem bumbo e caixa alternados; nos golpes da caixa a partitura pede tom de chão
+        ("Bateria", 0, 9, [(36 if b % 2 == 0 else 41, 1.0) for b in range(beats)]),
+        ("Chimbal", 0, 9, [(42, 0.5)] * (2 * beats)),
+    ])
     lines = []
-    run(Options(input=paths["mix"], output_dir=tmp_path / "out", separator="folder", stems_dir=stems,
-                instruments=("guitar", "bass"), reference=ref), log=lines.append)
+    result = run(Options(input=paths["mix"], output_dir=tmp_path / "out", separator="folder", stems_dir=stems,
+                         instruments=("guitar", "bass", "drums"), reference=ref), log=lines.append)
     text = "\n".join(lines)
     assert "transposta -1 semitons" in text
     assert "guitar: referência confere com 100% das notas detectadas; 4 corrigidas" in text
     assert "bass: referência confere com 100% das notas detectadas; 0 corrigidas" in text
+    drum_line = next(line for line in lines if line.startswith("    drums: referência confere com"))
+    assert int(drum_line.split("com ")[1].split("%")[0]) >= 80
+    # onde a pista tinha caixa (vermelho) nos golpes da partitura com tom de chão, agora é o verde sem prato
+    expert = result.tracks["drums"].notes["expert"]
+    assert not any(1 in n.lanes for n in expert)
+    assert any(4 in n.lanes and 68 not in n.flags for n in expert)
+
+
+# ---------------------------------------------------------------------------
+# Guitar Pro 6+ (.gp / .gpx)
+# ---------------------------------------------------------------------------
+GPIF = """<?xml version="1.0" encoding="utf-8"?>
+<GPIF>
+  <Tracks>
+    <Track id="0"><Name>Guitarra Solo</Name>
+      <Staves><Staff><Properties><Property name="Tuning"><Pitches>40 45 50 55 59 64</Pitches></Property>
+      </Properties></Staff></Staves></Track>
+    <Track id="1"><Name>Drums</Name><InstrumentSet><Type>drumKit</Type><Elements>
+      <Element><Articulations><Articulation><OutputMidiNumber>36</OutputMidiNumber></Articulation></Articulations></Element>
+      <Element><Articulations><Articulation><OutputMidiNumber>38</OutputMidiNumber></Articulation>
+        <Articulation><OutputMidiNumber>42</OutputMidiNumber></Articulation></Articulations></Element>
+    </Elements></InstrumentSet></Track>
+  </Tracks>
+  <MasterBars>
+    <MasterBar><Time>4/4</Time><Repeat start="true" end="true" count="2"/><Bars>0 1</Bars></MasterBar>
+    <MasterBar><Time>2/4</Time><Bars>2 3</Bars></MasterBar>
+  </MasterBars>
+  <Bars>
+    <Bar id="0"><Voices>0 -1 -1 -1</Voices></Bar>
+    <Bar id="1"><Voices>1 -1 -1 -1</Voices></Bar>
+    <Bar id="2"><Voices>2 -1 -1 -1</Voices></Bar>
+    <Bar id="3"><Voices>3 -1 -1 -1</Voices></Bar>
+  </Bars>
+  <Voices>
+    <Voice id="0"><Beats>0 1 2 3</Beats></Voice>
+    <Voice id="1"><Beats>4 5</Beats></Voice>
+    <Voice id="2"><Beats>6 7</Beats></Voice>
+    <Voice id="3"><Beats>8</Beats></Voice>
+  </Voices>
+  <Beats>
+    <Beat id="0"><Rhythm ref="1"/><Notes>0 1</Notes></Beat>
+    <Beat id="1"><Rhythm ref="0"/><Notes>2</Notes></Beat>
+    <Beat id="2"><GraceNotes>BeforeBeat</GraceNotes><Rhythm ref="0"/><Notes>3</Notes></Beat>
+    <Beat id="3"><Rhythm ref="2"/><Notes>4</Notes></Beat>
+    <Beat id="4"><Rhythm ref="3"/><Notes>10 11</Notes></Beat>
+    <Beat id="5"><Rhythm ref="3"/><Notes>12</Notes></Beat>
+    <Beat id="6"><Rhythm ref="0"/><Notes>5</Notes></Beat>
+    <Beat id="7"><Rhythm ref="0"/><Notes>6</Notes></Beat>
+    <Beat id="8"><Rhythm ref="3"/></Beat>
+  </Beats>
+  <Notes>
+    <Note id="0"><Properties><Property name="String"><String>0</String></Property><Property name="Fret"><Fret>3</Fret></Property></Properties></Note>
+    <Note id="1"><Properties><Property name="String"><String>1</String></Property><Property name="Fret"><Fret>5</Fret></Property></Properties></Note>
+    <Note id="2"><Properties><Property name="String"><String>5</String></Property><Property name="Fret"><Fret>0</Fret></Property><Property name="Muted"><Enable/></Property></Properties></Note>
+    <Note id="3"><Properties><Property name="String"><String>2</String></Property><Property name="Fret"><Fret>9</Fret></Property></Properties></Note>
+    <Note id="4"><Properties><Property name="String"><String>2</String></Property><Property name="Fret"><Fret>2</Fret></Property></Properties></Note>
+    <Note id="5"><Properties><Property name="String"><String>3</String></Property><Property name="Fret"><Fret>4</Fret></Property></Properties></Note>
+    <Note id="6"><Tie origin="false" destination="true"/><Properties><Property name="String"><String>3</String></Property><Property name="Fret"><Fret>4</Fret></Property></Properties></Note>
+    <Note id="10"><InstrumentArticulation>0</InstrumentArticulation></Note>
+    <Note id="11"><InstrumentArticulation>2</InstrumentArticulation></Note>
+    <Note id="12"><InstrumentArticulation>1</InstrumentArticulation></Note>
+  </Notes>
+  <Rhythms>
+    <Rhythm id="0"><NoteValue>Quarter</NoteValue></Rhythm>
+    <Rhythm id="1"><NoteValue>Quarter</NoteValue><AugmentationDot count="1"/></Rhythm>
+    <Rhythm id="2"><NoteValue>Quarter</NoteValue><PrimaryTuplet num="3" den="2"/></Rhythm>
+    <Rhythm id="3"><NoteValue>Half</NoteValue></Rhythm>
+  </Rhythms>
+</GPIF>
+"""
+
+
+def check_gpif_tracks(score):
+    guitar, drums = score.tracks
+    assert (guitar.name, guitar.guess, drums.guess, drums.drums) == ("Guitarra Solo", "guitar", "drums", True)
+    # compasso 1 (4/4) tocado duas vezes, depois o 2 (2/4) com uma nota ligada; a nota abafada e a de
+    # enfeite ficam de fora; a semínima pontuada vale 1,5 e a tercina, 2/3
+    notes = [(n.beat, round(n.length, 3), n.pitch) for n in guitar.notes]
+    assert notes == [(0, 1.5, 43), (0, 1.5, 50), (2.5, 0.667, 52),
+                     (4, 1.5, 43), (4, 1.5, 50), (6.5, 0.667, 52), (8, 2.0, 59)]
+    assert [(n.beat, n.pitch) for n in drums.notes] == [(0, 36), (0, 42), (2, 38), (4, 36), (4, 42), (6, 38)]
+    assert score.length_beats == 10
+
+
+def test_reads_guitar_pro_7_gp_file(tmp_path):
+    import zipfile
+
+    path = tmp_path / "musica.gp"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("VERSION", "7.0")
+        archive.writestr("Content/score.gpif", GPIF)
+    check_gpif_tracks(read_score(path))
+
+
+class BitWriter:
+    def __init__(self):
+        self.bits = []
+
+    def write(self, value, count, reversed_=False):
+        order = range(count) if reversed_ else range(count - 1, -1, -1)
+        self.bits += [(value >> i) & 1 for i in order]
+
+    def bytes(self):
+        bits = self.bits + [0] * (-len(self.bits) % 8)
+        return bytes(int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+
+
+def bcfz(data: bytes) -> bytes:
+    """Compacta como o Guitar Pro 6 (só com trechos literais, que o formato também aceita)."""
+    w = BitWriter()
+    for i in range(0, len(data), 3):
+        chunk = data[i:i + 3]
+        w.write(0, 1)
+        w.write(len(chunk), 2, reversed_=True)
+        for byte in chunk:
+            w.write(byte, 8)
+    return b"BCFZ" + len(data).to_bytes(4, "little") + w.bytes()
+
+
+def bcfs(files: dict) -> bytes:
+    """Sistema de arquivos do .gpx: setor 0 vazio, uma entrada por arquivo e os dados em setores de 4 KB."""
+    sector = 0x1000
+    entries = list(files.items())
+    sectors = [bytes(sector)] + [b""] * len(entries)   # setor 0 + uma entrada por arquivo
+    for k, (name, content) in enumerate(entries):
+        chunks = [content[i:i + sector].ljust(sector, b"\0") for i in range(0, len(content), sector)]
+        pointers = list(range(len(sectors), len(sectors) + len(chunks)))
+        entry = bytearray(sector)
+        entry[0:4] = (2).to_bytes(4, "little")
+        entry[4:4 + len(name)] = name.encode()
+        entry[0x8C:0x90] = len(content).to_bytes(4, "little")
+        for j, p in enumerate(pointers):
+            entry[0x94 + 4 * j:0x98 + 4 * j] = p.to_bytes(4, "little")
+        sectors[1 + k] = bytes(entry)
+        sectors += chunks
+    return b"BCFS" + b"".join(sectors)
+
+
+def test_reads_guitar_pro_6_gpx_file(tmp_path):
+    container = bcfs({"misc.xml": b"<x/>", "score.gpif": GPIF.encode()})
+    (tmp_path / "plain.gpx").write_bytes(container)
+    check_gpif_tracks(read_score(tmp_path / "plain.gpx"))
+    (tmp_path / "packed.gpx").write_bytes(bcfz(container))
+    check_gpif_tracks(read_score(tmp_path / "packed.gpx"))
+
+
+def test_bcfz_back_references():
+    from ai_charter.reference import _bcfz_decompress
+
+    w = BitWriter()
+    w.write(0, 1)
+    w.write(3, 2, True)
+    for byte in b"abc":
+        w.write(byte, 8)
+    w.write(1, 1)   # cópia de 5 bytes a partir de 3 atrás: só os 3 que existem ("abc")
+    w.write(3, 4)
+    w.write(3, 3, True)
+    w.write(5, 3, True)
+    w.write(1, 1)   # repete o último byte
+    w.write(3, 4)
+    w.write(1, 3, True)
+    w.write(1, 3, True)
+    data = (7).to_bytes(4, "little") + w.bytes()
+    assert _bcfz_decompress(data) == b"abcabcc"
+
+
+def test_new_guitar_pro_without_score_is_explained(tmp_path):
+    import zipfile
+
+    with zipfile.ZipFile(tmp_path / "x.gp", "w") as archive:
+        archive.writestr("VERSION", "7.0")
+    with pytest.raises(ValueError, match="score.gpif"):
+        read_score(tmp_path / "x.gp")
+
+
+# ---------------------------------------------------------------------------
+# Bateria
+# ---------------------------------------------------------------------------
+def test_drum_guide_fixes_pieces_but_keeps_rhythm_kick_and_hands():
+    from ai_charter.charting.common import ChartNote, TrackChart
+    from ai_charter.reference import DrumEvent, DrumGuide
+
+    notes = [ChartNote(0, (0, 1)),               # bumbo + caixa; a partitura diz bumbo + tom agudo
+             ChartNote(96, (2,), flags=(66,)),   # chimbal; a partitura diz condução
+             ChartNote(192, (0, 1)),             # confere: nada muda
+             ChartNote(288, (1,)),               # uma mão; a partitura tem ataque + caixa: fica o ataque
+             ChartNote(400, (4,), flags=(68,))]  # nenhum golpe da partitura perto: nada muda
+    track = TrackChart(notes={"expert": notes, "easy": [ChartNote(0, (1,))]})
+    events = [DrumEvent(0, frozenset({"kick", "tom_high"})), DrumEvent(96, frozenset({"ride"})),
+              DrumEvent(192, frozenset({"kick", "snare"})), DrumEvent(290, frozenset({"crash", "snare"}))]
+    lines = []
+    DrumGuide(events, 192)(track, log=lines.append)
+    assert [(n.lanes, n.flags) for n in track.notes["expert"]] == [
+        ((0, 2), ()), ((3,), (67,)), ((0, 1), ()), ((4,), (68,)), ((4,), (68,))]
+    assert (track.notes["easy"][0].lanes, track.notes["easy"][0].flags) == ((2,), ())
+    assert "80% das batidas; 3 corrigidas no Expert" in lines[0]
+
+
+def test_drum_guide_ignored_when_it_does_not_match():
+    from ai_charter.charting.common import ChartNote, TrackChart
+    from ai_charter.reference import DrumEvent, DrumGuide
+
+    track = TrackChart(notes={"expert": [ChartNote(t, (1,)) for t in range(0, 1920, 192)]})
+    lines = []
+    DrumGuide([DrumEvent(5000, frozenset({"tom_low"}))], 192)(track, log=lines.append)
+    assert all(n.lanes == (1,) for n in track.notes["expert"]) and "ignorada" in lines[0]

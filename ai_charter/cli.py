@@ -30,8 +30,9 @@ def parse_args(argv: list[str] | None = None) -> Options:
                         help="cifra copiada do Cifra Club (.txt): a letra vira a faixa de vocal (se não houver "
                              "--lyrics) e os acordes limitam o reconhecimento de acordes")
     parser.add_argument("--reference", type=Path,
-                        help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição: corrige altura e acordes "
-                             "das notas detectadas (veja as pistas com: ai-charter-ref arquivo)")
+                        help="partitura (.mid ou Guitar Pro .gp3/.gp4/.gp5/.gpx/.gp) que guia a transcrição: corrige "
+                             "altura e acordes das notas detectadas e as peças da bateria "
+                             "(veja as pistas com: ai-charter-ref arquivo)")
     parser.add_argument("--reference-tracks",
                         help="pistas da partitura para cada instrumento, ex.: 2=guitar,4=bass "
                              "(padrão: palpite pelo nome e instrumento da pista)")

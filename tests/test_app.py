@@ -243,7 +243,7 @@ def test_reference_tracks_and_mapping(server, music, tmp_path):
     (tmp_path / "x.gpx").write_bytes(b"BCFS")
     with pytest.raises(urllib.error.HTTPError) as err:
         get(base + "api/reference?file=" + urllib.parse.quote(str(tmp_path / "x.gpx")))
-    assert "exporte" in json.loads(err.value.read())["error"]
+    assert "score.gpif" in json.loads(err.value.read())["error"]
 
 
 CIFRA = "Banda - Música\n\n[Intro] G D\n\nG        D\nLa la la\n"

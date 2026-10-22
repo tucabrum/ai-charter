@@ -225,7 +225,7 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
         cifra_lyrics = lyrics_text(parsed) if parsed.lyrics else None
 
     guides = {}
-    if reference is not None and any(i in ("guitar", "bass", "keys") for i in todo):
+    if reference is not None and any(i in ("guitar", "bass", "keys", "drums") for i in todo):
         from ai_charter.reference import load_guides
         guides = load_guides(reference, reference_tracks, mix, ANALYSIS_SR, tempo, rules, log)
 
@@ -273,6 +273,8 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
         if instrument == "drums":
             with tempfile.TemporaryDirectory(prefix="ai-charter-add-") as work:
                 track = chart_drums(_drums_stem(audio_files, Path(work)), tempo, rules, sp_windows)
+            if "drums" in guides:   # a partitura corrige as peças da pista pronta (reference.py)
+                track = guides["drums"](track, log)
         else:
             track, _ = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning,
                                      guide=guides.get(instrument))
@@ -324,7 +326,7 @@ def main(argv: list[str] | None = None) -> None:
                         help="regras ajustadas para um gênero: " + ", ".join(g.id for g in list_genres()))
     parser.add_argument("--cifra", type=Path,
                         help="cifra (texto do Cifra Club): letra e acordes da música (padrão: cifra.txt da pasta)")
-    parser.add_argument("--reference", type=Path, help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição")
+    parser.add_argument("--reference", type=Path, help="partitura (.mid ou Guitar Pro) que guia a transcrição")
     parser.add_argument("--reference-tracks", help="pistas da partitura por instrumento, ex.: 2=guitar,4=bass")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
     args = parser.parse_args(argv)

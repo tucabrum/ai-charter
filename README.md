@@ -62,7 +62,7 @@ Opções úteis:
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
 | `--genre metal` | regras ajustadas para um gênero (veja "Regras por gênero musical") |
 | `--cifra cifra.txt` | cifra copiada do Cifra Club: letra para os vocais e acordes permitidos (veja "Cifra") |
-| `--reference musica.gp5` | partitura (MIDI ou Guitar Pro) que corrige altura e acordes da transcrição (veja "Partitura de referência") |
+| `--reference musica.gp5` | partitura (MIDI ou Guitar Pro) que corrige altura, acordes e peças da bateria (veja "Partitura de referência") |
 | `--zip` | também cria um `.zip` da pasta |
 
 ### Pela interface no navegador
@@ -237,11 +237,12 @@ ai-charter-add "pasta da música" --instruments guitar --replace --cifra cifra.t
 
 ## Partitura de referência (MIDI ou Guitar Pro)
 
-Uma partitura da música (MIDI, ou Guitar Pro `.gp3`/`.gp4`/`.gp5`, de sites como Songsterr ou Ultimate
-Guitar) ajuda a IA a acertar as notas:
+Uma partitura da música ajuda a IA a acertar as notas. Pode ser MIDI ou Guitar Pro, de sites como
+Songsterr ou Ultimate Guitar, em qualquer versão: `.gp3`/`.gp4`/`.gp5`, `.gpx` (Guitar Pro 6) ou `.gp`
+(Guitar Pro 7 ou mais novo).
 
 ```bash
-pip install -e ".[refs]"                                    # só para ler Guitar Pro (pyguitarpro)
+pip install -e ".[refs]"                                    # só para ler .gp3/.gp4/.gp5 (pyguitarpro)
 ai-charter-ref musica.gp5                                   # lista as pistas e o palpite de cada uma
 ai-charter musica.flac --reference musica.gp5               # usa as pistas pelo palpite
 ai-charter musica.flac --reference musica.mid --reference-tracks 2=guitar,4=bass
@@ -259,9 +260,12 @@ gravação batida a batida (DTW sobre o chroma). Isso aguenta uma introdução d
 a menos, a partitura em outro tom (afinação meio tom abaixo, capotraste) e o dobro ou a metade das
 batidas. O log mostra quanto a referência confere com cada instrumento. Abaixo de 30%, ela é ignorada.
 
-Por enquanto a referência guia guitarra, baixo e teclado. Bateria e vocais ainda não. Guitar Pro 6 ou
-mais novo (`.gpx`, `.gp`) ainda não é lido: exporte como `.gp5` ou MIDI no Guitar Pro, TuxGuitar ou
-MuseScore.
+Na **bateria**, a partitura corrige a pista já pronta, sem mudar a transcrição. Cada nota que cai num
+golpe da partitura (até uma fusa) fica com as **peças** que a partitura toca ali, pelo mapa General MIDI:
+caixa ou tom, chimbal, condução ou ataque, qual tom. O ritmo, o bumbo e o número de mãos de cada
+dificuldade continuam como a transcrição decidiu.
+
+A referência guia guitarra, baixo, teclado e bateria. Os vocais ainda não.
 
 ## Como funciona (por dentro)
 

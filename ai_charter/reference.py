@@ -7,8 +7,12 @@ Uso:
 
 As notas da chart continuam vindo do áudio (o que a gravação realmente toca). A
 partitura só corrige cada nota detectada que cai perto de uma nota dela: a ALTURA
-(e, com ela, a cor) e o ACORDE (quantas notas, power chord ou não). Notas que a
-partitura tem e o áudio não, ou vice-versa, ficam como a transcrição decidiu.
+(e, com ela, a cor) e o ACORDE (quantas notas, power chord ou não). Na bateria, corrige
+a PEÇA de cada golpe já charteado (caixa ou tom, chimbal, condução ou ataque, qual tom).
+Notas que a partitura tem e o áudio não, ou vice-versa, ficam como a transcrição decidiu.
+
+Formatos: MIDI (.mid, .kar), Guitar Pro 3-5 (.gp3/.gp4/.gp5, com o pyguitarpro) e Guitar Pro 6
+ou mais novo (.gpx e .gp, lidos aqui mesmo: são um pacote com a partitura em XML, o score.gpif).
 
 Passos:
   1. Leitura: as pistas do arquivo, cada nota em batidas (semínimas) desde o início
@@ -21,24 +25,32 @@ Passos:
      capotraste) e com o dobro ou a metade das batidas do detector.
   3. Guia: cada nota detectada recebe a altura e o formato de acorde da nota da
      partitura mais próxima (até uma semicolcheia de distância). Se pouca coisa
-     confere, a referência é ignorada e o log avisa.
+     confere, a referência é ignorada e o log avisa. A bateria é corrigida depois de
+     pronta (a transcrição dela não muda): cada nota da pista fica com as peças que a
+     partitura toca ali (mapa General MIDI), mantendo o bumbo e o número de mãos.
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
+from xml.etree import ElementTree
 
 import numpy as np
 
 MIDI_EXTENSIONS = (".mid", ".midi", ".kar")
 GP_EXTENSIONS = (".gp3", ".gp4", ".gp5")
-NEW_GP_EXTENSIONS = (".gpx", ".gp", ".gp6", ".gp7")
+NEW_GP_EXTENSIONS = (".gpx", ".gp", ".gp6", ".gp7", ".gp8")
 INSTRUMENTS = ("guitar", "bass", "keys", "drums", "vocals")
-GUIDED = ("guitar", "bass", "keys")       # instrumentos que a referência guia (por enquanto)
+PITCHED = ("guitar", "bass", "keys")
+GUIDED = (*PITCHED, "drums")              # instrumentos que a referência guia (por enquanto)
+DRUM_MATCH_BEATS = 0.125                  # bateria: golpes mais densos, tolerância menor (fusa)
 MATCH_BEATS = 0.25                        # distância máxima entre a nota detectada e a da partitura
 MIN_MATCHED = 0.3                         # abaixo disso a referência não confere: é ignorada
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
@@ -116,9 +128,8 @@ def read_score(path: Path) -> Score:
     if suffix in GP_EXTENSIONS:
         return Score(path, _read_guitar_pro(path))
     if suffix in NEW_GP_EXTENSIONS:
-        raise ValueError(f"o formato {suffix} (Guitar Pro 6 ou mais novo) ainda não é lido: exporte a partitura "
-                         "como .gp5 ou MIDI (no Guitar Pro, TuxGuitar ou MuseScore)")
-    raise ValueError(f"formato de partitura não reconhecido: {path.name} (use .mid, .gp3, .gp4 ou .gp5)")
+        return Score(path, _read_new_guitar_pro(path))
+    raise ValueError(f"formato de partitura não reconhecido: {path.name} (use .mid, .gp3, .gp4, .gp5, .gpx ou .gp)")
 
 
 def _read_midi(path: Path) -> list[RefTrack]:
@@ -216,6 +227,220 @@ def _read_guitar_pro(path: Path) -> list[RefTrack]:
         program = t.channel.instrument if t.channel else None
         tracks.append(RefTrack(len(tracks) + 1, t.name.strip() or f"Pista {len(tracks) + 1}",
                                guess_instrument(t.name, program, drums, None if drums else strings),
+                               sorted(notes, key=lambda n: (n.beat, n.pitch)), program, drums))
+    return tracks
+
+
+# ---------------------------------------------------------------------------
+# Guitar Pro 6 ou mais novo: .gp (zip) e .gpx (pacote BCFZ/BCFS) com o score.gpif (XML)
+# ---------------------------------------------------------------------------
+class _Bits:
+    """Leitor bit a bit (do bit mais alto para o mais baixo de cada byte)."""
+
+    def __init__(self, data: bytes, start: int = 0):
+        self.data, self.pos = data, start * 8
+
+    def bit(self) -> int:
+        byte = self.data[self.pos >> 3]   # IndexError no fim dos dados
+        value = (byte >> (7 - (self.pos & 7))) & 1
+        self.pos += 1
+        return value
+
+    def bits(self, count: int) -> int:
+        value = 0
+        for i in range(count - 1, -1, -1):
+            value |= self.bit() << i
+        return value
+
+    def bits_reversed(self, count: int) -> int:
+        value = 0
+        for i in range(count):
+            value |= self.bit() << i
+        return value
+
+
+def _bcfz_decompress(data: bytes) -> bytes:
+    """Descompacta um BCFZ (o conteúdo depois da assinatura): trechos literais e cópias de trás."""
+    expected = int.from_bytes(data[:4], "little")
+    bits, out = _Bits(data, 4), bytearray()
+    try:
+        while len(out) < expected:
+            if bits.bit():   # cópia de um trecho já descompactado
+                word = bits.bits(4)
+                offset, size = bits.bits_reversed(word), bits.bits_reversed(word)
+                start = len(out) - offset
+                for i in range(min(offset, size)):
+                    out.append(out[start + i])
+            else:            # até 3 bytes literais
+                for _ in range(bits.bits_reversed(2)):
+                    out.append(bits.bits(8))
+    except IndexError:
+        pass
+    return bytes(out)
+
+
+def gpx_files(data: bytes) -> dict[str, bytes]:
+    """Os arquivos de um pacote .gpx (Guitar Pro 6): um sistema de arquivos em setores de 4 KB."""
+    if data[:4] == b"BCFZ":
+        data = _bcfz_decompress(data[4:])
+    if data[:4] != b"BCFS":
+        raise ValueError("arquivo .gpx inválido (pacote BCFS não encontrado)")
+    data = data[4:]
+    sector, files, used = 0x1000, {}, set()
+
+    def int32(at: int) -> int:
+        return int.from_bytes(data[at:at + 4], "little") if at + 4 <= len(data) else 0
+
+    for offset in range(sector, len(data) - 3, sector):   # o setor 0 é o cabeçalho
+        if offset // sector in used or int32(offset) != 2:   # só entradas de arquivo (tipo 2)
+            continue
+        name = data[offset + 4:offset + 4 + 127].split(b"\0")[0].decode("latin-1")
+        size, pointers, chunks, k = int32(offset + 0x8C), offset + 0x94, [], 0
+        while (block := int32(pointers + 4 * k)) != 0 and k < 1000:
+            k += 1
+            used.add(block)   # setor de dados: não é lido como entrada
+            chunks.append(data[block * sector:(block + 1) * sector])
+        files[name] = b"".join(chunks)[:size]
+    return files
+
+
+def _read_new_guitar_pro(path: Path) -> list[RefTrack]:
+    data = Path(path).read_bytes()
+    if data[:2] == b"PK":   # .gp (Guitar Pro 7+): zip com Content/score.gpif
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            name = next((n for n in archive.namelist() if n.lower().endswith("score.gpif")), None)
+            if name is None:
+                raise ValueError(f"{Path(path).name}: o arquivo não tem a partitura (score.gpif)")
+            return parse_gpif(archive.read(name))
+    if data[:4] in (b"BCFZ", b"BCFS"):   # .gpx (Guitar Pro 6)
+        files = gpx_files(data)
+        name = next((n for n in files if n.lower().endswith("score.gpif")), None)
+        if name is None:
+            raise ValueError(f"{Path(path).name}: o pacote não tem a partitura (score.gpif)")
+        return parse_gpif(files[name])
+    raise ValueError(f"{Path(path).name}: não parece um arquivo do Guitar Pro 6 ou mais novo")
+
+
+NOTE_VALUES = {"Whole": 4.0, "Half": 2.0, "Quarter": 1.0, "Eighth": 0.5, "16th": 0.25, "32nd": 0.125,
+               "64th": 0.0625, "128th": 0.03125, "256th": 0.015625}
+STEPS = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+ACCIDENTALS = {"": 0, "#": 1, "b": -1, "##": 2, "bb": -2, "x": 2}
+
+
+def _ids(text: str | None) -> list[int]:
+    return [int(x) for x in (text or "").split()]
+
+
+def _rhythm_beats(rhythm) -> float:
+    beats = NOTE_VALUES.get((rhythm.findtext("NoteValue") or "Quarter").strip(), 1.0)
+    dot = rhythm.find("AugmentationDot")
+    if dot is not None:
+        beats *= 2 - 0.5 ** int(dot.get("count", "1"))
+    tuplet = rhythm.find("PrimaryTuplet")
+    if tuplet is not None and int(tuplet.get("num", "1")) > 0:
+        beats *= int(tuplet.get("den", "1")) / int(tuplet.get("num", "1"))
+    return beats
+
+
+def _property(note, name: str, child: str) -> str | None:
+    return note.findtext(f"Properties/Property[@name='{name}']/{child}")
+
+
+def _note_pitch(note, tuning: list[int], drums: bool, articulations: list[int]) -> int | None:
+    """Nota MIDI de uma nota do GPIF (na bateria, a peça no mapa General MIDI)."""
+    if drums:
+        articulation = note.findtext("InstrumentArticulation")
+        if articulation is not None and articulation.strip().isdigit() and int(articulation) < len(articulations):
+            return articulations[int(articulation)]
+    midi = _property(note, "Midi", "Number")
+    if midi is not None and midi.strip().lstrip("-").isdigit():
+        return int(midi)
+    string, fret = _property(note, "String", "String"), _property(note, "Fret", "Fret")
+    if string is not None and fret is not None and tuning and int(string) < len(tuning):
+        return tuning[int(string)] + int(fret)   # cordas da mais grave (0) para a mais aguda
+    for kind in ("ConcertPitch", "TransposedPitch"):
+        step = _property(note, kind, "Pitch/Step")
+        if step:
+            accidental = (_property(note, kind, "Pitch/Accidental") or "").strip()
+            octave = int(_property(note, kind, "Pitch/Octave") or 4)
+            return 12 * octave + STEPS.get(step.strip().upper(), 0) + ACCIDENTALS.get(accidental, 0)
+    return None
+
+
+def parse_gpif(xml: bytes) -> list[RefTrack]:
+    """As pistas de um score.gpif (Guitar Pro 6+), com repetições e casas de 1ª/2ª vez desdobradas."""
+    root = ElementTree.fromstring(xml)
+    by_id = {kind: {int(el.get("id")): el for el in root.findall(f"./{kind}s/{kind}")}
+             for kind in ("Bar", "Voice", "Beat", "Note", "Rhythm")}
+    master_bars = root.findall("./MasterBars/MasterBar")
+    headers = []
+    for mb in master_bars:
+        num, den = (mb.findtext("Time") or "4/4").split("/")
+        repeat = mb.find("Repeat")
+        endings = _ids(mb.findtext("AlternateEndings"))
+        headers.append(SimpleNamespace(
+            isRepeatOpen=repeat is not None and repeat.get("start") == "true",
+            repeatClose=int(repeat.get("count", "2")) - 1 if repeat is not None and repeat.get("end") == "true" else -1,
+            repeatAlternative=sum(1 << (e - 1) for e in endings if e > 0),
+            length=int(num) * 4 / int(den)))
+    order = play_order(headers)
+    offsets, now = [], 0.0
+    for i in order:
+        offsets.append(now)
+        now += headers[i].length
+
+    tracks = []
+    for ti, track in enumerate(root.findall("./Tracks/Track")):
+        name = (track.findtext("Name") or "").strip() or f"Pista {ti + 1}"
+        tuning = _ids(track.findtext(".//Property[@name='Tuning']/Pitches"))
+        program_text = track.findtext("GeneralMidi/Program") or track.findtext(".//Sounds/Sound/MIDI/Program")
+        program = int(program_text) if program_text and program_text.strip().isdigit() else None
+        channel = track.findtext("GeneralMidi/PrimaryChannel") or track.findtext(".//MidiConnection/PrimaryChannel")
+        kit = (track.findtext("InstrumentSet/Type") or "").strip().lower()
+        instrument = track.find("Instrument")
+        drums = (kit == "drumkit" or (channel or "").strip() == "9"
+                 or (instrument is not None and "drum" in (instrument.get("ref") or "").lower()))
+        articulations = [int(a.findtext("OutputMidiNumber") or 0)
+                         for a in track.findall("InstrumentSet/Elements/Element/Articulations/Articulation")]
+        notes: list[RefNote] = []
+        last_on_string: dict[str, RefNote] = {}
+        for start, index in zip(offsets, order):
+            bar_ids = _ids(master_bars[index].findtext("Bars"))
+            bar = by_id["Bar"].get(bar_ids[ti]) if ti < len(bar_ids) else None
+            if bar is None:
+                continue
+            for voice_id in _ids(bar.findtext("Voices")):
+                voice = by_id["Voice"].get(voice_id)
+                if voice is None:
+                    continue
+                at = start
+                for beat_id in _ids(voice.findtext("Beats")):
+                    beat = by_id["Beat"].get(beat_id)
+                    if beat is None or beat.find("GraceNotes") is not None:   # nota de enfeite não ocupa tempo
+                        continue
+                    rhythm = beat.find("Rhythm")
+                    length = _rhythm_beats(by_id["Rhythm"][int(rhythm.get("ref"))]) if rhythm is not None else 1.0
+                    for note_id in _ids(beat.findtext("Notes")):
+                        note = by_id["Note"].get(note_id)
+                        if note is None:
+                            continue
+                        key = _property(note, "String", "String") or str(note_id)
+                        tie = note.find("Tie")
+                        if tie is not None and tie.get("destination") == "true" and key in last_on_string:
+                            last = last_on_string[key]   # ligadura: a nota anterior continua
+                            last.length = at + length - last.beat
+                            continue
+                        if note.find("Properties/Property[@name='Muted']") is not None:
+                            continue   # nota abafada (x): não tem altura
+                        pitch = _note_pitch(note, tuning, drums, articulations)
+                        if pitch is None:
+                            continue
+                        ref = RefNote(at, length, pitch)
+                        notes.append(ref)
+                        last_on_string[key] = ref
+                    at += length
+        tracks.append(RefTrack(len(tracks) + 1, name,
+                               guess_instrument(name, program, drums, None if drums or not tuning else tuning),
                                sorted(notes, key=lambda n: (n.beat, n.pitch)), program, drums))
     return tracks
 
@@ -415,9 +640,105 @@ class Guide:
         return cands
 
 
+# Bateria: peça de cada nota do mapa General MIDI (canal 10).
+GM_DRUMS = {35: "kick", 36: "kick", 37: "snare", 38: "snare", 39: "snare", 40: "snare",
+            42: "hihat", 44: "hihat", 46: "hihat", 49: "crash", 52: "crash", 55: "crash", 57: "crash",
+            51: "ride", 53: "ride", 59: "ride", 41: "tom_low", 43: "tom_low", 45: "tom_mid", 47: "tom_mid",
+            48: "tom_high", 50: "tom_high"}
+
+
+@dataclass
+class DrumEvent:
+    tick: int
+    pieces: frozenset   # peças que a partitura toca juntas ali (nomes de analysis.drums)
+
+
+def drum_events_in_ticks(tracks: list[RefTrack], alignment: Alignment, resolution: int) -> list[DrumEvent]:
+    groups: list[tuple[float, set]] = []
+    for n in sorted((n for t in tracks for n in t.notes), key=lambda n: n.beat):
+        piece = GM_DRUMS.get(n.pitch)
+        if piece is None:
+            continue
+        if groups and n.beat - groups[-1][0] <= CHORD_ONSET_BEATS:
+            groups[-1][1].add(piece)
+        else:
+            groups.append((n.beat, {piece}))
+    events = []
+    for beat, pieces in groups:
+        at = alignment.to_audio_beat(beat)
+        if at is not None:
+            events.append(DrumEvent(int(round(at * resolution)), frozenset(pieces)))
+    return events
+
+
+@dataclass
+class DrumGuide:
+    """Corrige as PEÇAS da pista de bateria pronta com as da partitura.
+
+    Não muda a transcrição (nem o ritmo): cada nota da pista que cai num golpe da partitura
+    fica com as peças das mãos que a partitura toca ali, com o mesmo número de mãos (o limite
+    de cada dificuldade) e o mesmo bumbo da pista."""
+    events: list[DrumEvent]
+    resolution: int
+    stats: dict = field(default_factory=dict)
+
+    def _nearest(self, tick: int, ticks: np.ndarray) -> DrumEvent | None:
+        if not len(ticks):
+            return None
+        i = int(np.searchsorted(ticks, tick))
+        best = min((j for j in (i - 1, i) if 0 <= j < len(ticks)), key=lambda j: abs(ticks[j] - tick))
+        return self.events[best] if abs(ticks[best] - tick) <= DRUM_MATCH_BEATS * self.resolution else None
+
+    def __call__(self, track, log=print):
+        from ai_charter.charting.drums import CYMBAL_FLAGS, HAND_PRIORITY, LANES
+
+        ticks = np.array([e.tick for e in self.events])
+        expert = track.notes.get("expert", [])
+        matched = sum(self._nearest(n.tick, ticks) is not None for n in expert)
+        share = matched / len(expert) if expert else 0.0
+        if share < MIN_MATCHED:
+            log(f"    drums: a referência confere com só {share:.0%} das batidas, ignorada")
+            self.stats = {"matched": matched, "notes": len(expert), "changed": 0, "applied": False}
+            return track
+        cymbal_of = {flag: piece for piece, flag in CYMBAL_FLAGS.items()}
+        tom_of = {2: "tom_high", 3: "tom_mid", 4: "tom_low"}
+        changed = 0
+        for difficulty, notes in track.notes.items():
+            for note in notes:
+                event = self._nearest(note.tick, ticks)
+                if event is None:
+                    continue
+                hands_wanted = [lane for lane in note.lanes if lane != 0]
+                reference = [p for p in HAND_PRIORITY if p in event.pieces]
+                if not hands_wanted or not reference:
+                    continue
+                chosen, lanes = [], set()
+                for piece in reference:   # uma peça por lane, até o número de mãos da nota
+                    if LANES[piece] not in lanes and len(chosen) < len(hands_wanted):
+                        chosen.append(piece)
+                        lanes.add(LANES[piece])
+                # A partitura tem menos mãos ali: as outras ficam como a transcrição decidiu.
+                for lane in hands_wanted:
+                    if len(chosen) >= len(hands_wanted):
+                        break
+                    if lane not in lanes:
+                        flag = next((f for f in note.flags if f in cymbal_of and LANES[cymbal_of[f]] == lane), None)
+                        chosen.append(cymbal_of[flag] if flag else ("snare" if lane == 1 else tom_of[lane]))
+                        lanes.add(lane)
+                new_lanes = tuple(sorted(([0] if 0 in note.lanes else []) + [LANES[p] for p in chosen]))
+                new_flags = tuple(sorted(CYMBAL_FLAGS[p] for p in chosen if p in CYMBAL_FLAGS))
+                if (new_lanes, new_flags) != (tuple(sorted(note.lanes)), tuple(sorted(note.flags))):
+                    if difficulty == "expert":
+                        changed += 1
+                    note.lanes, note.flags = new_lanes, new_flags
+        log(f"    drums: referência confere com {share:.0%} das batidas; {changed} corrigidas no Expert")
+        self.stats = {"matched": matched, "notes": len(expert), "changed": changed, "applied": True}
+        return track
+
+
 def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: int, tempo, rules,
-                log=print) -> dict[str, Guide]:
-    """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys)."""
+                log=print) -> dict[str, "Guide | DrumGuide"]:
+    """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums)."""
     score = read_score(path)
     mapping = default_mapping(score) if mapping is None else mapping
     by_index = {t.index: t for t in score.tracks}
@@ -427,18 +748,22 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
                          f"(tem {len(score.tracks)})")
     log(f"Referência {score.path.name}: " + "; ".join(
         f"{t.index} {t.name} -> {mapping.get(t.index, '(não usada)')}" for t in score.tracks if t.notes))
-    used = [by_index[i] for i in mapping]
-    alignment = align(score, used or score.tracks, y, sr, tempo.beat_times)
+    # Todas as pistas com altura ajudam a alinhar, mesmo as que não guiam nenhum instrumento.
+    alignment = align(score, score.tracks, y, sr, tempo.beat_times)
     log(f"    alinhada com a gravação (distância {alignment.cost:.2f}"
         + (f", transposta {alignment.transpose:+d} semitons" if alignment.transpose else "")
         + (f", {alignment.factor:g} batida(s) da gravação por batida da partitura" if alignment.factor != 1 else "")
         + ")")
     guides = {}
-    for instrument in GUIDED:
+    for instrument in PITCHED:
         tracks = [by_index[i] for i, inst in mapping.items() if inst == instrument]
         if tracks:
             guides[instrument] = Guide(instrument, events_in_ticks(tracks, alignment, tempo.resolution),
                                        tempo.resolution, rules.detection[instrument])
+    drum_tracks = [by_index[i] for i, inst in mapping.items() if inst == "drums"]
+    if drum_tracks:
+        guides["drums"] = DrumGuide(drum_events_in_ticks(drum_tracks, alignment, tempo.resolution),
+                                    tempo.resolution)
     others = sorted({inst for inst in mapping.values() if inst not in GUIDED})
     if others:
         log(f"    {', '.join(others)}: a referência ainda não guia esse(s) instrumento(s)")
@@ -448,7 +773,7 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ai-charter-ref",
                                      description="Lista as pistas de uma partitura (MIDI ou Guitar Pro).")
-    parser.add_argument("score", type=Path, help="arquivo .mid, .gp3, .gp4 ou .gp5")
+    parser.add_argument("score", type=Path, help="arquivo .mid, .gp3, .gp4, .gp5, .gpx ou .gp")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")

@@ -330,6 +330,8 @@ def run(opts: Options, log=print) -> Result:
                 continue
             if instrument == "drums":
                 track = chart_drums(stem[0], tempo, rules, sp_windows)
+                if "drums" in guides:   # a partitura corrige as peças da pista pronta (reference.py)
+                    track = guides["drums"](track, log)
             else:
                 track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning,
                                               guide=guides.get(instrument))
