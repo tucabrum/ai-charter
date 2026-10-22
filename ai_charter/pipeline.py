@@ -162,18 +162,40 @@ def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_win
     return vocals
 
 
+def continues_pattern(tick: int, ticks: set[int], resolution: int) -> bool:
+    """Se o golpe continua o ritmo que a peça está tocando ali: há golpes firmes dela no intervalo
+    mais comum entre os seus golpes vizinhos, antes e depois (ou dois antes, ou dois depois).
+
+    Ex.: um surdo de 6 em 6 semicolcheias que some debaixo do bumbo volta; já um tom no meio de
+    toms de 4 em 4 semicolcheias não entra (seria outro ritmo)."""
+    near = sorted(t for t in ticks if abs(t - tick) <= 8 * resolution)
+    gaps = [b - a for a, b in zip(near, near[1:]) if b - a <= 2 * resolution]
+    if not gaps:
+        return False
+    step = max(set(gaps), key=gaps.count)
+    before, after = tick - step in ticks, tick + step in ticks
+    return (before and after) or (before and tick - 2 * step in ticks) or (after and tick + 2 * step in ticks)
+
+
 def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackChart:
     y, sr = librosa.load(stem, sr=DRUMS_SR, mono=True)
     hits = detect_drum_hits(y, sr, rules.drum_detection)
     res, triplets = rules.general.resolution, rules.general.allow_triplets
-    cands: list[Candidate] = []
-    seen: dict[tuple[int, str], Candidate] = {}
+    strong: dict[tuple[int, str], Candidate] = {}
+    weak: dict[tuple[int, str], Candidate] = {}
     for h in hits:
         tick = quantize_tick(tempo.time_to_tick(h.time), res, triplets)
-        key = (tick, h.piece)
+        seen, key = (weak if h.weak else strong), (tick, h.piece)
         if key not in seen or h.strength > seen[key].strength:
             seen[key] = Candidate(tick, h.strength, piece=h.piece)
-    cands = sorted(seen.values(), key=lambda c: c.tick)
+    # Golpe fraco (ex.: surdo mascarado pelo bumbo) entra só se continuar um padrão da mesma peça
+    by_piece: dict[str, set[int]] = {}
+    for tick, piece in strong:
+        by_piece.setdefault(piece, set()).add(tick)
+    for (tick, piece), c in weak.items():
+        if (tick, piece) not in strong and continues_pattern(tick, by_piece.get(piece, set()), res):
+            strong[(tick, piece)] = c
+    cands = sorted(strong.values(), key=lambda c: c.tick)
     return build_drum_track(cands, rules.drums, res, sp_windows,
                             rules.general.drum_fill_every_measures)
 

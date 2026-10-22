@@ -64,7 +64,12 @@ class DrumDetection:
     kick_max_hz: float
     floor_tom_max_hz: float
     tom_min_ring: float
-    snare_min_wires: float
+    snare_min_rattle: float
+    tom_share_in_snare: float
+    drum_cymbal_air: float
+    weak_share: float
+    hat_over_snare_air: float
+    cymbal_over_snare: float
     ride_sustain_ratio: float
     crash_sustain_ratio: float
 

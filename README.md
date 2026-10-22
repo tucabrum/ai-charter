@@ -194,8 +194,14 @@ Ideias principais:
 - **Bateria**: como os conversores de bateria para MIDI, primeiro descobre **quais sons o kit
   da gravação tem** (grupos de golpes com o mesmo espectro: o bumbo, a caixa, cada tom, os pratos)
   e só depois marca quando cada um toca. Cada som recebe nome pelo que ele é: a altura nos graves
-  (bumbo abaixo de ~95 Hz; um surdo de ~105 Hz que ressoa é tom, não bumbo), o ruído das esteiras
-  (caixa x tom) e quanto os agudos ainda soam 150-300 ms depois (chimbal x condução x ataque).
+  (bumbo abaixo de ~95 Hz; um surdo de ~105 Hz que ressoa é tom, não bumbo), o chiado das esteiras
+  que continua ~80 ms depois do golpe (caixa; num tom, o estalo da baqueta some) e quanto os agudos
+  ainda soam 150-300 ms depois (chimbal x condução x ataque). Caixa e tom de corpo parecido são
+  separados golpe a golpe pelo chiado, e um chimbal fraco no golpe de uma caixa é tratado como o
+  chiado das esteiras chegando aos agudos.
+  Uma peça mascarada por outra (o surdo debaixo do bumbo, o chimbal debaixo da caixa) entra
+  como golpe fraco, e só fica na chart se continuar o ritmo que aquela peça está tocando ali
+  (golpes firmes dela no mesmo intervalo antes e depois), como um charter faria de ouvido.
   Sons que sempre tocam juntos (bumbo + chimbal) viram as duas peças.
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
@@ -250,7 +256,7 @@ como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), susta
 
 ### Editor
 
-**✎ Editar** liga a edição de guitarra, baixo, guitarra base e teclado de um `notes.mid`, nas duas vistas:
+**✎ Editar** liga a edição de guitarra, baixo, guitarra base, teclado e bateria de um `notes.mid`, nas duas vistas:
 
 | O quê | Como |
 |---|---|
@@ -259,6 +265,7 @@ como no YARG: notas palhetadas, HOPOs (miolo branco), taps (miolo escuro), susta
 | mudar a cor | 1–5 ou os botões coloridos; Shift põe ou tira a cor no acorde |
 | sustain | arraste a borda direita no piano roll, Alt+arraste, ou Shift+← → (cada cor tem o seu) |
 | HOPO / strum, tap, Star Power | H, T, S (ou os botões) na seleção |
+| bateria | 1 bumbo, 2 vermelho (caixa), 3 amarelo, 4 azul, 5 verde; **C** alterna prato e tom; o bumbo é a linha de baixo do piano roll (na pista 3D, a barra) |
 | apagar | botão direito apaga aquela cor; Delete apaga as notas selecionadas |
 | selecionar | clique pega só a cor clicada (dá para tirar uma nota de um acorde); duplo clique pega o acorde inteiro; Shift+clique soma; Shift+arraste seleciona uma área; Ctrl+A tudo |
 | copiar / colar | Ctrl+C; Ctrl+V cola no ponto em que a música está |
@@ -268,7 +275,8 @@ Aberto pelo `ai-charter-view`, **Salvar** grava o `notes.mid` na pasta da músic
 original é guardada como `notes.backup.mid`. Aberta direto do arquivo, a página baixa o `notes.mid`
 editado. Só as notas que o editor controla são reescritas (as cores e o HOPO/strum forçado das
 dificuldades mexidas, tap e Star Power); bateria, vocais, seções e mapa de tempo ficam como estavam.
-No MIDI, tap e Star Power valem para todas as dificuldades do instrumento ao mesmo tempo.
+No MIDI, tap, Star Power e prato x tom da bateria (marcadores 110-112) valem para todas as
+dificuldades do instrumento ao mesmo tempo.
 
 ### Pedir à IA para revisar o resto da chart
 

@@ -39,12 +39,14 @@ DONE_NAME = "ai_request.done.json"
 BEFORE_AI_NAME = "notes.before-ai.mid"
 
 FRET_TRACKS = {"PART GUITAR": "guitar", "T1 GEMS": "guitar", "PART BASS": "bass", "PART RHYTHM": "rhythm", "PART KEYS": "keys"}
+LOCKABLE_TRACKS = {**FRET_TRACKS, "PART DRUMS": "drums"}   # trilhas que o editor pode travar
 BASE = {"expert": 96, "hard": 84, "medium": 72, "easy": 60}
 # Notas de cada dificuldade: 5 cores (base..base+4), HOPO forçado (+5) e strum forçado (+6)
 DIFF_SPAN = 7
 TAP, STAR_POWER = 104, 116
 DRUM_LANES = ["bumbo", "vermelho", "amarelo", "azul", "verde"]
-SHARED = (TAP, STAR_POWER)      # valem para todas as dificuldades: travadas como "shared"
+TOM_MARKERS = (110, 111, 112)  # bateria: amarelo, azul e verde são tom (e não prato)
+SHARED = (TAP, STAR_POWER, *TOM_MARKERS)   # valem para todas as dificuldades: travadas como "shared"
 LANES = "GRYBO"
 
 
@@ -124,7 +126,7 @@ def protect(original: mido.MidiFile, revised: mido.MidiFile,
     originals = {t.name: t for t in original.tracks}
     undone = 0
     for track in revised.tracks:
-        ranges = locks.get(FRET_TRACKS.get(track.name, ""), {})
+        ranges = locks.get(LOCKABLE_TRACKS.get(track.name, ""), {})
         if not ranges or track.name not in originals:
             out.tracks.append(track)
             continue

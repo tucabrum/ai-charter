@@ -95,6 +95,7 @@
   <div class="group" title="Cor das notas selecionadas (Shift: soma ao acorde)">Cor
     <button class="fret" data-lane="0" style="background: var(--green)"></button><button class="fret" data-lane="1" style="background: var(--red)"></button><button class="fret" data-lane="2" style="background: var(--yellow)"></button><button class="fret" data-lane="3" style="background: var(--blue)"></button><button class="fret" data-lane="4" style="background: var(--orange)"></button></div>
   <button id="eHopo" title="H">HOPO / strum</button>
+  <button id="eCym" title="C" hidden>Prato / tom</button>
   <button id="eTap" title="T">Tap</button>
   <button id="eSp" title="S">Star Power</button>
   <button id="eDel" title="Delete">Excluir</button>
@@ -113,7 +114,7 @@ Ex.: faça os outros refrões como eu fiz no primeiro; menos acordes de 3 notas 
   <span class="help">Clique: põe nota · arraste: move (tempo e cor) — só a cor clicada; duplo clique pega o acorde inteiro ·
     borda direita no piano roll ou Alt+arraste: sustain · botão direito: apaga a cor ·
     Shift+arraste: seleciona área · Shift+clique: soma à seleção · 1–5: cor (Shift: põe/tira no acorde) · ← →: move na grade · Shift+← →: sustain · ↑ ↓: troca de cor ·
-    H / T / S · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll)</span>
+    H / T / S · bateria: 1 bumbo, 2-5 vermelho a verde, C prato/tom · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll)</span>
 </div>
 <div id="mixer"></div>
 <canvas id="timeline"></canvas>
@@ -287,9 +288,10 @@ function fromMidi(buf, ini) {
     if (!instr) continue;
     if (instr === "vocals") { chart.vocals = midiVocals(track.events, tm); continue; }
     if (chart.tracks[instr]) continue;
-    if (instr === "drums") { chart.tracks[instr] = midiDrums(track.events, tm, /^(1|true)$/i.test(ini.pro_drums || "")); continue; }
-    chart.edit[instr] = midiFrets(track.events, hopoTicks, index);
-    chart.tracks[instr] = renderFrets(chart, instr);
+    chart.edit[instr] = instr === "drums"
+      ? midiDrums(track.events, /^(1|true)$/i.test(ini.pro_drums || ""), index)
+      : midiFrets(track.events, hopoTicks, index);
+    chart.tracks[instr] = renderTrack(chart, instr);
   }
   return chart;
 }
@@ -350,6 +352,8 @@ function chordsOf(gems) {
   return out;
 }
 
+const renderTrack = (chart, instr) => (chart.edit[instr].kind === "drums" ? renderDrums : renderFrets)(chart, instr);
+
 // Modelo em ticks -> notas que a pista desenha (gems[cor] aponta para a nota editável).
 function renderFrets(chart, instr) {
   const m = chart.edit[instr], tm = chart.tm, out = {};
@@ -378,7 +382,10 @@ function chartToMidi(chart) {
   for (const m of Object.values(chart.edit)) {
     if (!m.dirty.size && !m.sharedDirty) continue;
     const raw = chart.midi.tracks[m.trackIndex].raw;
-    const drop = new Set(m.sharedDirty ? [104, 116] : []);
+    const drums = m.kind === "drums";
+    // Notas que valem para todas as dificuldades: Star Power e tap (cordas) ou marcadores de tom (bateria)
+    const shared = drums ? [116, ...TOM_MARKERS] : [104, 116];
+    const drop = new Set(m.sharedDirty ? shared : []);
     const byPitch = new Map();
     const note = (tick, len, pitch) => {
       if (!byPitch.has(pitch)) byPitch.set(pitch, []);
@@ -386,7 +393,7 @@ function chartToMidi(chart) {
     };
     for (const diff of m.dirty) {
       const base = BASE[diff];
-      for (let k = 0; k <= 6; k++) drop.add(base + k);
+      for (let k = 0; k <= (drums ? 5 : 6); k++) drop.add(base + k);   // bateria: bumbo + 5 peças
       for (const c of chordsOf(m.diffs[diff] || [])) {
         for (const g of c.gems) note(g.tick, g.len || short, base + g.lane);
         const force = c.gems.find(g => g.force)?.force;
@@ -396,6 +403,7 @@ function chartToMidi(chart) {
     if (m.sharedDirty) {
       for (const [a, b] of m.sp) note(a, b - a, 116);
       for (const [a, b] of m.tap) note(a, b - a, 104);
+      if (drums) for (const lane of [2, 3, 4]) for (const [a, b] of m.toms[lane]) note(a, b - a, TOM_MARKERS[lane - 2]);
     }
     const ch = (raw.find(e => e.note !== undefined)?.bytes[0] ?? 0x90) & 0x0f;
     const events = raw.filter(e => e.note === undefined || !drop.has(e.note)).map((e, i) => ({ e, rank: 1, i }));
@@ -417,30 +425,48 @@ function chartToMidi(chart) {
   return writeMidi(chart.midi.division, tracks);
 }
 
-// Pro drums (song.ini pro_drums, ou marcadores 110-112 presentes): amarelo, azul e
-// verde são PRATOS, a não ser dentro de um marcador de tom. Sem pro drums, tudo é tom.
-function midiDrums(events, tm, proFlag) {
+// Bateria em ticks, como as cordas: diffs[diff] = [{tick, len, lane}], lane 0 = bumbo, 1-4 =
+// vermelho, amarelo, azul, verde (5 = laranja da bateria de 5 peças).
+// Pro Drums (song.ini pro_drums, ou marcadores 110-112 presentes): amarelo, azul e verde são
+// PRATOS, a não ser dentro de um marcador de tom (toms[lane]: trechos que valem para todas as
+// dificuldades, como o Star Power). Sem Pro Drums, tudo é tom.
+const TOM_MARKERS = [110, 111, 112];   // amarelo, azul, verde
+function midiDrums(events, proFlag, trackIndex) {
   const pairs = notePairs(events);
-  const sp = rangesOf(pairs.filter(p => p.note === 116));
-  const toms = { 2: rangesOf(pairs.filter(p => p.note === 110)), 3: rangesOf(pairs.filter(p => p.note === 111)), 4: rangesOf(pairs.filter(p => p.note === 112)) };
-  const pro = proFlag || Object.values(toms).some(r => r.length);
-  const out = {};
+  const toms = { 2: rangesOf(pairs.filter(p => p.note === 110)), 3: rangesOf(pairs.filter(p => p.note === 111)),
+                 4: rangesOf(pairs.filter(p => p.note === 112)) };
+  const model = { kind: "drums", trackIndex, hopoTicks: 0, diffs: {}, dirty: new Set(), sharedDirty: false,
+                  sp: rangesOf(pairs.filter(p => p.note === 116)), tap: [], toms,
+                  pro: proFlag || Object.values(toms).some(r => r.length),
+                  // Bumbo duplo do Expert+ (nota 95): só mostrado, o editor não mexe nele
+                  doubleKick: pairs.filter(p => p.note === 95).map(p => p.tick) };
   for (const diff of DIFFS) {
     const base = BASE[diff];
-    const byTick = new Map();
-    for (const p of pairs) {
-      let lane = p.note - base;
-      if (diff === "expert" && p.note === 95) lane = 0;   // bumbo duplo (Expert+)
-      if (lane < 0 || lane > 5) continue;
-      const n = byTick.get(p.tick) || { tick: p.tick, lanes: [] };
-      if (!n.lanes.includes(lane)) n.lanes.push(lane);
-      byTick.set(p.tick, n);
-    }
-    out[diff] = [...byTick.values()].sort((a, b) => a.tick - b.tick).map(n => {
-      const cym = new Set();
-      for (const lane of n.lanes) if (pro && lane >= 2 && lane <= 4 && !inRanges(toms[lane], n.tick)) cym.add(lane);
-      return { time: tm.time(n.tick), end: null, lanes: n.lanes.sort(), cym, sp: inRanges(sp, n.tick) };
+    model.diffs[diff] = pairs.filter(p => p.note >= base && p.note <= base + 5)
+      .map(p => ({ tick: p.tick, len: p.len, lane: p.note - base })).sort(byTickLane);
+  }
+  return model;
+}
+const isCymbal = (m, lane, tick) => m.pro && lane >= 2 && lane <= 4 && !inRanges(m.toms[lane], tick);
+
+function renderDrums(chart, instr) {
+  const m = chart.edit[instr], tm = chart.tm, out = {};
+  for (const diff of DIFFS) {
+    const notes = chordsOf(m.diffs[diff] || []).map(c => {
+      const lanes = c.gems.map(g => g.lane);
+      return { tick: c.tick, time: tm.time(c.tick), end: null, lanes, sp: inRanges(m.sp, c.tick),
+               cym: new Set(lanes.filter(l => isCymbal(m, l, c.tick))), gems: Object.fromEntries(c.gems.map(g => [g.lane, g])) };
     });
+    if (diff === "expert" && m.doubleKick.length) {
+      const at = new Map(notes.map(n => [n.tick, n]));
+      for (const tick of m.doubleKick) {
+        const n = at.get(tick);
+        if (n && !n.lanes.includes(0)) n.lanes.unshift(0);
+        else if (!n) notes.push({ tick, time: tm.time(tick), end: null, lanes: [0], sp: inRanges(m.sp, tick), cym: new Set(), gems: {} });
+      }
+      notes.sort((a, b) => a.tick - b.tick);
+    }
+    out[diff] = notes;
   }
   return out;
 }
@@ -709,6 +735,7 @@ function addLane(chartIndex = 0, instr, diff, view = "highway") {
     selD.value = lane.diff;
     const notes = state.charts[lane.chartIndex].chart.tracks[lane.instr]?.[lane.diff] || [];
     panel.querySelector(".stats").textContent = `${notes.length} notas`;
+    if (state.editMode) updateEditStatus();
   };
   lane.fill = fill;
   src.onchange = () => { lane.chartIndex = +src.value; fill(); };
@@ -756,14 +783,18 @@ function drawLane(lane, now, lookahead) {
       const sc = 1 - (strikeY - y) / (strikeY - topY) * (1 - scale(1));
       if (sc <= 0.05) return null;
       const z = (1 / sc - 1) / K;
-      const idx = Math.floor((x - (cx - halfW(z))) / (2 * halfW(z) / nLanes));
-      return { time: t + z * lookahead, lane: Math.max(0, Math.min(nLanes - 1, idx)) };
+      const idx = Math.max(0, Math.min(nLanes - 1, Math.floor((x - (cx - halfW(z))) / (2 * halfW(z) / nLanes))));
+      // Bateria: as lanes da pista são as peças (1-4); o bumbo (0) entra pelo piano roll ou pela tecla 1
+      return { time: t + z * lookahead, lane: drums ? idx + 1 : idx };
     },
     hit(n, ln, x, y) {
       const z = zOf(n.time);
       if (z < -0.04 || z > 1) return 0;
       const r = gemR * scale(Math.max(z, 0)) / scale(0);
-      const dx = (x - laneX(ln, z)) / r, dy = (y - yOf(z)) / (r * 0.55 + 4);
+      if (drums && ln === 0) {   // bumbo: a barra atravessando a pista
+        return Math.abs(y - yOf(z)) <= 3 * r / gemR + 4 && Math.abs(x - cx) <= halfW(z) ? 1 : 0;
+      }
+      const dx = (x - laneX(drums ? ln - 1 : ln, z)) / r, dy = (y - yOf(z)) / (r * 0.55 + 4);
       return dx * dx + dy * dy <= 1.3 ? 1 : 0;
     },
   };
@@ -854,16 +885,18 @@ function drawLane(lane, now, lookahead) {
       continue;
     }
     for (const ln of n.lanes) {
+      const picked = sel?.has(n.gems?.[ln]);
       if (drums && ln === 0) {   // bumbo: barra atravessando a pista
         g.fillStyle = n.sp ? css("--sp") : css("--orange");
         g.fillRect(cx - halfW(z) * 0.96, y - 3 * s, 2 * halfW(z) * 0.96, 6 * s);
+        if (picked) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.strokeRect(cx - halfW(z) * 0.97, y - 5 * s, 2 * halfW(z) * 0.97, 10 * s); }
         continue;
       }
       const idx = drums ? ln - 1 : ln;
       const x = laneX(idx, z), r = gemR * s;
       const color = n.sp ? css("--sp") : colors[idx];
       if (drums && n.cym?.has(ln)) {          // prato: losango achatado
-        g.fillStyle = color; g.strokeStyle = "#fff"; g.lineWidth = 1.5;
+        g.fillStyle = color; g.strokeStyle = picked ? "#fff" : "rgba(255,255,255,0.8)"; g.lineWidth = picked ? 3 : 1.5;
         g.beginPath(); g.moveTo(x - r, y); g.lineTo(x, y - r * 0.5); g.lineTo(x + r, y); g.lineTo(x, y + r * 0.5); g.closePath(); g.fill(); g.stroke();
         continue;
       }
@@ -898,12 +931,12 @@ function drawRoll(lane, now) {
   const colors = drums ? [css("--orange"), ...PAD_COLORS(nRows - 1)] : FRET_COLORS();
   const t = now - chart.audioOffset, pps = state.pps;
   const nowX = Math.min(160, W * 0.2), top = 22, bottom = H - 6, rowH = (bottom - top) / nRows;
-  const noteH = Math.min(rowH * 0.66, 22), minW = 16;
+  const noteH = Math.max(2, Math.min(rowH * 0.66, 22)), minW = 16;   // pista bem baixa: ainda desenha
   const xOf = (time) => nowX + (time - t) * pps;
   const yOf = (row) => bottom - (row + 0.5) * rowH;
   const t0 = t - nowX / pps, t1 = t + (W - nowX) / pps;
   // Fim da nota de cada cor: no editor, o comprimento MIDI de verdade (mesmo curto)
-  const endOf = (n, ln) => n.gems ? chart.tm.time(n.gems[ln].tick + n.gems[ln].len) : (n.end ?? n.time);
+  const endOf = (n, ln) => n.gems?.[ln] ? chart.tm.time(n.gems[ln].tick + n.gems[ln].len) : (n.end ?? n.time);
   const model = lane.chartIndex === 0 ? chart.edit?.[lane.instr] : null;
   g.clearRect(0, 0, W, H);
 
@@ -1130,8 +1163,9 @@ function activeLane() {
 }
 
 function cloneModel(m) {
+  const copy = (ranges) => ranges.map(r => r.slice());
   return { diffs: Object.fromEntries(Object.entries(m.diffs).map(([d, list]) => [d, list.map(g => ({ ...g }))])),
-           sp: m.sp.map(r => r.slice()), tap: m.tap.map(r => r.slice()) };
+           sp: copy(m.sp), tap: copy(m.tap), ...(m.toms ? { toms: { 2: copy(m.toms[2]), 3: copy(m.toms[3]), 4: copy(m.toms[4]) } } : {}) };
 }
 function pushUndo(lane) {
   state.undo.push({ instr: lane.instr, diff: lane.diff, data: cloneModel(state.charts[0].chart.edit[lane.instr]) });
@@ -1171,7 +1205,7 @@ function normalize(m, diff) {
 }
 function changed(instr) {
   const chart = state.charts[0].chart;
-  chart.tracks[instr] = renderFrets(chart, instr);
+  chart.tracks[instr] = renderTrack(chart, instr);
   state.dirty = true;
   for (const l of state.lanes) {
     if (l.chartIndex === 0 && l.instr === instr) l.panel.querySelector(".stats").textContent = `${chart.tracks[instr][l.diff]?.length || 0} notas`;
@@ -1189,7 +1223,18 @@ function edit(lane, fn, shared = false) {
   changed(lane.instr);
 }
 
+// Cores dos botões: cordas (verde..laranja) ou bateria (bumbo, vermelho, amarelo, azul, verde)
+const FRET_BUTTONS = [["--green", "verde"], ["--red", "vermelho"], ["--yellow", "amarelo"], ["--blue", "azul"], ["--orange", "laranja"]];
+const DRUM_BUTTONS = [["--orange", "bumbo"], ["--red", "vermelho (caixa)"], ["--yellow", "amarelo"], ["--blue", "azul"], ["--green", "verde"]];
 function updateEditStatus() {
+  const drums = activeLane()?.instr === "drums";
+  document.querySelectorAll("#editbar .fret").forEach((b, i) => {
+    const [color, name] = (drums ? DRUM_BUTTONS : FRET_BUTTONS)[i];
+    b.style.background = `var(${color})`;
+    b.title = `${i + 1}: ${name}`;
+  });
+  $("eCym").hidden = !drums;
+  $("eHopo").hidden = $("eTap").hidden = drums;
   const n = state.sel.set.size;
   $("eStatus").textContent = (n ? `${n} selecionada${n > 1 ? "s" : ""} · ` : "") + (state.dirty ? "alterações não salvas" : "sem alterações");
 }
@@ -1206,7 +1251,14 @@ function selectedChords(lane) {
 function setFret(lane, k, toggle) {
   const gems = selected(lane);
   if (!gems.length) return;
-  if (!toggle) { edit(lane, () => { for (const g of gems) g.lane = k; }); return; }
+  if (!toggle) {
+    edit(lane, (m, list) => {
+      const moves = gems.map(g => [g.tick, g, g.lane]);
+      for (const g of gems) g.lane = k;
+      carryShared(m, moves, list);
+    }, true);
+    return;
+  }
   // Shift: põe ou tira a cor k em cada acorde da seleção (sem deixar acorde vazio)
   const added = [];
   edit(lane, (m, list) => {
@@ -1224,7 +1276,7 @@ function setFret(lane, k, toggle) {
 }
 function toggleHopo(lane) {
   const chords = selectedChords(lane);
-  if (!chords.length) return;
+  if (!chords.length || lane.instr === "drums") return;
   const target = !chords.every(c => c.hopo);
   // Só força quando o natural (pela distância entre as notas) não dá o que se quer.
   edit(lane, () => {
@@ -1233,7 +1285,7 @@ function toggleHopo(lane) {
 }
 function toggleTap(lane) {
   const ticks = [...new Set(selected(lane).map(g => g.tick))];
-  if (!ticks.length) return;
+  if (!ticks.length || lane.instr === "drums") return;
   edit(lane, (m) => {
     const off = ticks.every(t => inRanges(m.tap, t));
     for (const t of ticks) m.tap = off ? subRange(m.tap, t, t + 1) : normRanges([...m.tap, [t, t + 1]]);
@@ -1247,21 +1299,59 @@ function toggleSp(lane) {
     m.sp = gems.every(g => inRanges(m.sp, g.tick)) ? subRange(m.sp, a, b) : normRanges([...m.sp, [a, b]]);
   }, true);
 }
+// Bateria: amarelo, azul e verde selecionados viram tom (ou prato, se já forem todos tom).
+// No MIDI isso é um marcador de tom (110-112), que vale para todas as dificuldades.
+function toggleCymbal(lane) {
+  const gems = selected(lane).filter(g => g.lane >= 2 && g.lane <= 4);
+  const model = state.charts[0].chart.edit[lane.instr];
+  if (model?.kind !== "drums" || !gems.length) return;
+  const toTom = gems.some(g => isCymbal(model, g.lane, g.tick));
+  edit(lane, (m) => {
+    m.pro = true;
+    for (const g of gems) {
+      m.toms[g.lane] = toTom ? normRanges([...m.toms[g.lane], [g.tick, g.tick + 1]]) : subRange(m.toms[g.lane], g.tick, g.tick + 1);
+    }
+  }, true);
+}
 function deleteSelected(lane) {
   const gems = selected(lane);
   if (gems.length) edit(lane, () => { for (const g of gems) g.dead = true; });
 }
-// No MIDI o tap é um trecho de tempo, não da nota: quando notas tap mudam de tick, o trecho vai junto.
-//   moves: [[tick antigo, nota já no tick novo]]; tapBase: os trechos de antes da mudança.
-//   O tick antigo só perde o tap se nenhuma nota ficou nele (ex.: tirar uma cor de um acorde tap).
+// No MIDI, tap (cordas) e tom x prato (bateria) são trechos de tempo, não da nota: quando as
+// notas mudam de lugar, o trecho vai junto.
+//   moves: [[tick antigo, nota já no lugar novo, cor antiga]]; base: os trechos de antes da mudança.
+const sharedOf = (m) => ({ tap: m.tap, toms: m.toms && { ...m.toms } });
+function carryShared(m, moves, list, base = sharedOf(m)) {
+  if (m.kind === "drums") carryToms(m, moves, list, base.toms); else carryTap(m, moves, list, base.tap);
+}
+// As notas de todas as dificuldades (o tap e o marcador de tom valem para todas ao mesmo tempo)
+const allGems = (m) => Object.values(m.diffs).flat().filter(g => !g.dead);
+// O tick antigo só perde o tap se nenhuma nota ficou nele, em nenhuma dificuldade.
 function carryTap(m, moves, list, tapBase = m.tap) {
   const tapped = moves.filter(([old, g]) => old !== g.tick && inRanges(tapBase, old));
   if (!tapped.length) return;
-  const stays = new Set(list.filter(g => !g.dead).map(g => g.tick));
+  const stays = new Set(allGems(m).map(g => g.tick));
   let tap = tapBase;
   for (const [old] of tapped) if (!stays.has(old)) tap = subRange(tap, old, old + 1);
   m.tap = normRanges([...tap, ...tapped.map(([, g]) => [g.tick, g.tick + 1])]);
   m.sharedDirty = true;
+}
+// Cada peça movida continua prato ou tom no lugar novo; o lugar antigo perde o marcador de tom
+// se nenhuma outra nota da mesma cor ficou lá, em nenhuma dificuldade.
+function carryToms(m, moves, list, base) {
+  const toms = { ...base };
+  const live = new Set(allGems(m).map(g => `${g.tick}:${g.lane}`));   // em qualquer dificuldade
+  let touched = false;
+  for (const [oldTick, g, oldLane] of moves) {
+    if (oldTick === g.tick && oldLane === g.lane) continue;
+    const wasTom = oldLane >= 2 && oldLane <= 4 && inRanges(base[oldLane], oldTick);
+    if (wasTom && !live.has(`${oldTick}:${oldLane}`)) toms[oldLane] = subRange(toms[oldLane], oldTick, oldTick + 1);
+    if (g.lane >= 2 && g.lane <= 4) {
+      toms[g.lane] = wasTom ? normRanges([...toms[g.lane], [g.tick, g.tick + 1]]) : subRange(toms[g.lane], g.tick, g.tick + 1);
+    }
+    touched = true;
+  }
+  if (touched) { m.toms = toms; m.sharedDirty = true; }
 }
 function moveSelected(lane, dt, dl) {
   const gems = selected(lane);
@@ -1270,9 +1360,9 @@ function moveSelected(lane, dt, dl) {
   if (Math.min(...lanes) + dl < 0 || Math.max(...lanes) + dl > 4) dl = 0;
   if (Math.min(...gems.map(g => g.tick)) + dt < 0) dt = 0;
   if (dt || dl) edit(lane, (m, list) => {
-    const moves = gems.map(g => [g.tick, g]);
+    const moves = gems.map(g => [g.tick, g, g.lane]);
     for (const g of gems) { g.tick += dt; g.lane += dl; }
-    carryTap(m, moves, list);
+    carryShared(m, moves, list);
   });
 }
 function stretchSelected(lane, dlen) {
@@ -1281,8 +1371,9 @@ function stretchSelected(lane, dlen) {
 }
 function copySelected(lane) {
   const gems = selected(lane).sort(byTickLane);
-  const tap = state.charts[0].chart.edit[lane.instr].tap;
-  if (gems.length) state.clip = gems.map(g => ({ dt: g.tick - gems[0].tick, len: g.len, lane: g.lane, force: g.force, tap: inRanges(tap, g.tick) }));
+  const m = state.charts[0].chart.edit[lane.instr];
+  if (gems.length) state.clip = gems.map(g => ({ dt: g.tick - gems[0].tick, len: g.len, lane: g.lane, force: g.force,
+                                                tap: inRanges(m.tap, g.tick), tom: m.kind === "drums" && g.lane >= 2 && !isCymbal(m, g.lane, g.tick) }));
 }
 function paste(lane) {
   if (!state.clip) return;
@@ -1293,6 +1384,10 @@ function paste(lane) {
     list.push(...created);
     const taps = created.filter((g, i) => state.clip[i].tap).map(g => [g.tick, g.tick + 1]);
     if (taps.length) m.tap = normRanges([...m.tap, ...taps]);
+    if (m.kind === "drums") created.forEach((g, i) => {
+      if (g.lane < 2 || g.lane > 4) return;
+      m.toms[g.lane] = state.clip[i].tom ? normRanges([...m.toms[g.lane], [g.tick, g.tick + 1]]) : subRange(m.toms[g.lane], g.tick, g.tick + 1);
+    });
   }, true);
   const list = chart.edit[lane.instr].diffs[lane.diff];
   setSelection(lane, created.filter(g => list.includes(g)));
@@ -1303,6 +1398,7 @@ function paste(lane) {
 //   chart.base: a chart como estava ao abrir ou na última vez que foi salva (para achar o que mudou)
 //   chart.edits: o antes/depois de cada compasso mexido desde que a música foi aberta (vai no pedido à IA)
 const LANE_NAMES = ["verde", "vermelho", "amarelo", "azul", "laranja"];
+const DRUM_NAMES = ["bumbo", "vermelho", "amarelo", "azul", "verde", "laranja"];
 
 // Compassos [início, fim) em ticks, até um pouco depois do fim da música
 function measureTicks(chart) {
@@ -1349,26 +1445,28 @@ function locksJson(chart) {
 // O que mudou desde chart.base, compasso a compasso: [{instr, diff, measure, before, after}]
 function manualChanges(chart) {
   const out = [];
-  const key = (g) => `${g.tick}:${g.lane}:${g.len}:${g.force || ""}`;
+  const key = (g) => `${g.tick}:${g.lane}:${g.len}:${g.force || ""}:${g.cymbal ?? ""}`;
   const clip = (ranges, [a, b]) => ranges.filter(([x, y]) => x < b && y > a).map(([x, y]) => [Math.max(x, a), Math.min(y, b)]);
   for (const [instr, m] of Object.entries(chart.edit)) {
     const base = chart.base[instr];
     for (const diff of DIFFS) {
       const per = new Map();
-      const put = (list, w) => {
+      const put = (list, w, model) => {
         for (const g of list || []) {
           const k = measureOf(chart, g.tick);
           if (!per.has(k)) per.set(k, [[], []]);
-          per.get(k)[w].push(g);
+          // Bateria: se a peça é prato ou tom faz parte da nota (para o "antes/depois" e as travas)
+          per.get(k)[w].push(m.kind === "drums" && g.lane >= 2 && g.lane <= 4 ? { ...g, cymbal: isCymbal(model, g.lane, g.tick) } : g);
         }
       };
-      put(base.diffs[diff], 0); put(m.diffs[diff], 1);
+      put(base.diffs[diff], 0, { ...m, ...base }); put(m.diffs[diff], 1, m);
       for (const [measure, [before, after]] of per) {
         if (before.map(key).sort().join() !== after.map(key).sort().join()) out.push({ instr, diff, measure, before, after });
       }
     }
     chart.measures.forEach((r, measure) => {
-      const before = { sp: clip(base.sp, r), tap: clip(base.tap, r) }, after = { sp: clip(m.sp, r), tap: clip(m.tap, r) };
+      const shared = (x) => ({ sp: clip(x.sp, r), tap: clip(x.tap, r), ...(x.toms ? { toms: [2, 3, 4].map(l => clip(x.toms[l], r)) } : {}) });
+      const before = shared(base), after = shared(m);
       if (JSON.stringify(before) !== JSON.stringify(after)) out.push({ instr, diff: "shared", measure, before, after });
     });
   }
@@ -1385,8 +1483,9 @@ function recordChanges(chart) {
 // Pedido para a IA (ai_request.json): o texto, onde o usuário estava e o antes/depois de cada compasso mexido.
 function buildRequest(chart, text) {
   const lane = activeLane() || state.lanes[0];
-  const gem = (g) => ({ tick: g.tick, color: LANE_NAMES[g.lane], len: g.len, ...(g.force ? { force: g.force } : {}) });
-  const side = (c, v) => c.diff === "shared" ? v : v.map(gem);
+  const gem = (g, names) => ({ tick: g.tick, color: names[g.lane], len: g.len, ...(g.force ? { force: g.force } : {}),
+                                ...(g.cymbal !== undefined ? { kind: g.cymbal ? "prato" : "tom" } : {}) });
+  const side = (c, v) => c.diff === "shared" ? v : v.map(g => gem(g, c.instr === "drums" ? DRUM_NAMES : LANE_NAMES));
   return {
     version: 1, created: new Date().toISOString(),
     song: { name: state.ini?.name || "", artist: state.ini?.artist || "" },
@@ -1462,7 +1561,11 @@ function hitNote(lane, x, y) {
   for (const n of notes) {
     if (n.time > lane.geo.t1) break;
     if (!n.gems || n.time < lane.geo.t0 - 60) continue;
-    for (const ln of n.lanes) { const part = lane.geo.hit(n, ln, x, y); if (part) found = { n, ln, part, gem: n.gems[ln] }; }
+    for (const ln of n.lanes) {
+      if (!n.gems[ln]) continue;   // ex.: bumbo duplo do Expert+, que o editor não mexe
+      const part = lane.geo.hit(n, ln, x, y);
+      if (part) found = { n, ln, part, gem: n.gems[ln] };
+    }
   }
   return found;
 }
@@ -1499,7 +1602,10 @@ function onLaneMouseDown(lane, e) {
     let gem;
     edit(lane, (m, list) => {
       gem = list.find(g => g.tick === tick && g.lane === pos.lane);
-      if (!gem) list.push(gem = { tick, len: 0, lane: pos.lane, force: list.find(g => g.tick === tick)?.force ?? null });
+      // Comprimento curto (1/16 de batida), o mesmo que vai para o arquivo
+      const len = Math.max(1, Math.round(chart.res / 16));
+      if (!gem) list.push(gem = m.kind === "drums" ? { tick, len, lane: pos.lane }
+                                              : { tick, len, lane: pos.lane, force: list.find(g => g.tick === tick)?.force ?? null });
     });
     setSelection(lane, [gem]);
     startDrag(lane, "move", gem, pos, true);
@@ -1507,7 +1613,7 @@ function onLaneMouseDown(lane, e) {
 }
 function startDrag(lane, kind, anchor, pos, pushed) {
   const chart = state.charts[0].chart;
-  state.drag = { kind, lane, anchor, pushed, startTick: chart.tm.tick(pos.time), startLane: pos.lane, tap: chart.edit[lane.instr].tap,
+  state.drag = { kind, lane, anchor, pushed, startTick: chart.tm.tick(pos.time), startLane: pos.lane, shared: sharedOf(chart.edit[lane.instr]),
                  orig: new Map([...state.sel.set].map(g => [g, { tick: g.tick, len: g.len, lane: g.lane }])) };
 }
 window.addEventListener("mousemove", (e) => {
@@ -1530,7 +1636,7 @@ window.addEventListener("mousemove", (e) => {
     if (!d.pushed) { pushUndo(d.lane); d.pushed = true; }
     d.dt = dt; d.dl = dl;
     for (const [g, o] of d.orig) { g.tick = o.tick + dt; g.lane = o.lane + dl; }
-    carryTap(m, [...d.orig].map(([g, o]) => [o.tick, g]), m.diffs[d.lane.diff], d.tap);
+    carryShared(m, [...d.orig].map(([g, o]) => [o.tick, g, o.lane]), m.diffs[d.lane.diff], d.shared);
   } else {
     const end = snapTick(chart, a.tick + a.len + delta);
     const dlen = Math.max(0, end - a.tick) - a.len;
@@ -1554,7 +1660,7 @@ window.addEventListener("mouseup", () => {
     const [ta, tb] = [Math.min(p.time, q.time), Math.max(p.time, q.time)];
     const [la, lb] = [Math.min(p.lane, q.lane), Math.max(p.lane, q.lane)];
     const inside = chart.tracks[d.lane.instr][d.lane.diff].filter(n => n.time >= ta && n.time <= tb)
-      .flatMap(n => n.lanes.filter(l => l >= la && l <= lb).map(l => n.gems[l]));
+      .flatMap(n => n.lanes.filter(l => l >= la && l <= lb).map(l => n.gems[l]).filter(Boolean));
     setSelection(d.lane, [...d.add, ...inside]);
     return;
   }
@@ -1594,7 +1700,7 @@ function editKey(e) {
   const step = Math.max(1, Math.round(snapStep(state.charts[0].chart)));
   const actions = {
     Delete: () => deleteSelected(lane), Backspace: () => deleteSelected(lane),
-    KeyH: () => toggleHopo(lane), KeyT: () => toggleTap(lane), KeyS: () => toggleSp(lane),
+    KeyH: () => toggleHopo(lane), KeyT: () => toggleTap(lane), KeyS: () => toggleSp(lane), KeyC: () => toggleCymbal(lane),
     ArrowLeft: () => e.shiftKey ? stretchSelected(lane, -step) : moveSelected(lane, -step, 0),
     ArrowRight: () => e.shiftKey ? stretchSelected(lane, step) : moveSelected(lane, step, 0),
     ArrowUp: () => moveSelected(lane, 0, 1), ArrowDown: () => moveSelected(lane, 0, -1),
@@ -1608,6 +1714,7 @@ $("editBtn").onclick = toggleEdit;
 for (const b of document.querySelectorAll("#editbar .fret")) b.onclick = (e) => { const l = activeLane(); if (l) setFret(l, Number(b.dataset.lane), e.shiftKey); };
 const onActive = (fn) => () => { const l = activeLane(); if (l) fn(l); };
 $("eHopo").onclick = onActive(toggleHopo);
+$("eCym").onclick = onActive(toggleCymbal);
 $("eTap").onclick = onActive(toggleTap);
 $("eSp").onclick = onActive(toggleSp);
 $("eDel").onclick = onActive(deleteSelected);

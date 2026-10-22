@@ -86,3 +86,32 @@ def test_show_lists_measures_and_marks_locks(tmp_path):
     lines = show(tmp_path).splitlines()
     assert lines[1].split() == ["1", "|", "0:G"]
     assert lines[2].split() == ["2", "[trava]", "|", "0:R*"]
+
+
+def test_drum_locks_protect_notes_and_tom_markers():
+    def drums(notes):
+        midi = make_midi([])
+        events, now = [], 0
+        for tick, length, pitch in notes:
+            events += [(tick, 1, mido.Message("note_on", note=pitch, velocity=100)),
+                       (tick + length, 0, mido.Message("note_off", note=pitch, velocity=0))]
+        track = mido.MidiTrack([mido.MetaMessage("track_name", name="PART DRUMS", time=0)])
+        for tick, _, msg in sorted(events, key=lambda e: e[:2]):
+            track.append(msg.copy(time=tick - now))
+            now = tick
+        midi.tracks.append(track)
+        return midi
+    original = drums([(BAR, 12, 98), (BAR, 12, 110)])       # compasso 2: tom amarelo
+    revised = drums([(BAR, 12, 99), (2 * BAR, 12, 96)])      # a "IA" trocou por prato azul e pôs um bumbo
+    locks = {"drums": {"expert": [(BAR, 2 * BAR)], "shared": [(BAR, 2 * BAR)]}}
+    merged, undone = protect(original, revised, locks)
+    track = next(t for t in merged.tracks if t.name == "PART DRUMS")
+    got, open_, tick = set(), {}, 0
+    for msg in track:
+        tick += msg.time
+        if msg.type == "note_on" and msg.velocity:
+            open_[msg.note] = tick
+        elif msg.type in ("note_on", "note_off") and msg.note in open_:
+            got.add((open_.pop(msg.note), msg.note))
+    assert got == {(BAR, 98), (BAR, 110), (2 * BAR, 96)}     # travado volta; fora da trava fica a revisão
+    assert undone == 3

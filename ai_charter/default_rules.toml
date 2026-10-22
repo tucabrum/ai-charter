@@ -100,7 +100,12 @@ threshold = 0.15             # força mínima (0-1) relativa a um golpe típico 
 kick_max_hz = 95.0           # bumbo: altura (pico nos graves) até aqui; acima é tom
 floor_tom_max_hz = 130.0     # tom abaixo disso é o surdo (verde); acima, tons de rack
 tom_min_ring = 0.25          # tom ressoa: mantém essa fração do volume ~80 ms depois
-snare_min_wires = 0.4        # caixa: ruído das esteiras (2-8 kHz) ≥ isso × o corpo (80-600 Hz)
+snare_min_rattle = 0.3       # caixa: o chiado das esteiras (2-8 kHz) mantém isso ~80 ms depois; tom não
+tom_share_in_snare = 0.25    # um som "caixa" com essa fração de golpes sem chiado também é tom (golpe a golpe)
+drum_cymbal_air = 0.55       # som de caixa ou tom só leva prato junto com esta fração de energia acima de 6 kHz
+cymbal_over_snare = 0.5      # chimbal mais fraco que isso no golpe de uma caixa é chiado das esteiras
+hat_over_snare_air = 0.75    # ...a não ser que os agudos (>7 kHz) passem disso × a esteira (2-6 kHz)
+weak_share = 0.1             # golpe fraco (ex.: mascarado pelo bumbo): só entra se continuar um padrão
 ride_sustain_ratio = 0.15    # prato que ainda soa um pouco ~150-300 ms depois é condução
 crash_sustain_ratio = 0.4    # prato que ainda soa muito ~150-300 ms depois é ataque (crash)
 

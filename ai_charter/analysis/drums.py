@@ -39,6 +39,7 @@ ATTACK = slice(6, 10)         # janela longa, ~35-55 ms depois: o som que chegou
 SHORT_PRE = slice(-4, -2)     # janela curta, ~15-20 ms antes
 SHORT_ATTACK = slice(1, 4)    # janela curta, logo depois do ataque
 SHORT_LATE = slice(13, 15)    # janela curta, ~80 ms depois (antes da próxima semicolcheia)
+MERGE_FRAMES = 6              # ataques a menos de ~35 ms são o mesmo golpe
 CYMBAL_TAIL = slice(25, 52)   # janela curta, ~150-300 ms depois: só prato de ataque ainda soa
 # O que já soava antes do golpe também decai um pouco até o ataque ser medido;
 # só conta como som novo o que passar disso.
@@ -56,6 +57,7 @@ class DrumHit:
     time: float
     piece: str       # KICK, SNARE, HIHAT, RIDE, CRASH, TOM_HIGH, TOM_MID ou TOM_LOW
     strength: float  # ~0 a 1, relativo às batidas mais fortes da mesma peça
+    weak: bool = False   # pouca evidência (ex.: mascarado pelo bumbo): só entra se continuar um padrão
 
 
 @dataclass
@@ -67,6 +69,7 @@ class DrumSound:
     hits: int               # quantos golpes formaram o grupo desse som
     template: np.ndarray = field(repr=False)
     also: str = ""          # molde de duas peças que sempre soam juntas (ex.: bumbo + prato): a 2ª
+    tom_as: str = ""        # som de corpo médio que ressoa: nos golpes SEM chiado de esteira é este tom
 
 
 # ------------------------------------------------------------------ espectros
@@ -114,6 +117,7 @@ def _onsets(S: np.ndarray, freqs: np.ndarray, delta: float) -> np.ndarray:
     sr_half = freqs[-1]
     log = np.log1p(100.0 * S / (S.max() + 1e-12))
     found: list[int] = []
+    total = np.zeros(S.shape[1])
     for lo, hi in ((20, 200), (200, 3000), (3000, sr_half + 1)):
         band = log[(freqs >= lo) & (freqs < hi)]
         # "superflux": compara com o máximo das frequências vizinhas 2 quadros antes,
@@ -122,12 +126,18 @@ def _onsets(S: np.ndarray, freqs: np.ndarray, delta: float) -> np.ndarray:
         flux = np.maximum(0.0, band[:, 2:] - ref[:, :-2]).mean(axis=0)
         flux = np.concatenate([[0.0, 0.0], flux])
         flux /= np.percentile(flux, 99.5) + 1e-9
+        total += flux
         found += librosa.util.peak_pick(flux, pre_max=3, post_max=3, pre_avg=12, post_avg=4,
                                         delta=delta, wait=5).tolist()
-    # Os picos de cada faixa juntos; dois a menos de ~20 ms são o mesmo ataque
+    # Os picos de cada faixa juntos. Dois a menos de ~35 ms são o mesmo golpe (o estalo nos
+    # agudos chega antes do corpo nos graves): fica o ponto de ataque mais forte, para medir
+    # o golpe inteiro e não só o começo dele.
     peaks: list[int] = []
     for p in sorted(found):
-        if not peaks or p - peaks[-1] > 3:
+        if peaks and p - peaks[-1] <= MERGE_FRAMES:
+            if total[p] > total[peaks[-1]]:
+                peaks[-1] = p
+        else:
             peaks.append(p)
     peaks = np.array(peaks, dtype=int)
     return peaks[(peaks + PRE.start >= 0) & (peaks + SHORT_LATE.stop < S.shape[1])]
@@ -202,47 +212,65 @@ def _drop_combinations(sounds: list[tuple[np.ndarray, np.ndarray]], tolerance: f
 
 
 # ------------------------------------------------------------------ nomes dos sons
-def _label(w: np.ndarray, centers: np.ndarray, ring: float, cfg: DrumDetection) -> tuple[str, str, float]:
-    """(peça, peça extra, altura) de um molde; ring: quanto ele ressoa ~80 ms depois."""
+def _label(w: np.ndarray, centers: np.ndarray, ring: float, rattle: float,
+           cfg: DrumDetection) -> tuple[str, str, float, bool]:
+    """(peça, peça extra, altura, pode ser tom) de um molde.
+
+    ring: quanto o corpo ressoa ~80 ms depois; rattle: quanto o chiado de 2-8 kHz ainda soa
+    ~80 ms depois (as esteiras da caixa continuam chiando; num tom, o estalo da baqueta some)."""
     air = float(w[centers >= 6000].sum())
     tonal = (centers >= 35) & (centers < 600)
     pitch = float(centers[tonal][np.argmax(w[tonal])])
     # Pratos vivem acima de ~6 kHz; as esteiras da caixa ficam mais embaixo (2-6 kHz).
     # Qual prato (chimbal, condução ou ataque) é decidido golpe a golpe, pela ressonância.
     if air >= 0.6:
-        return CYMBAL, "", pitch
-    # Muito agudo junto com outra peça: as duas sempre tocam juntas (bumbo + chimbal,
-    # caixa + chimbal, bumbo + prato no começo das frases) e viraram um som só.
-    also = CYMBAL if air >= 0.3 else ""
+        return CYMBAL, "", pitch, False
     body = np.where(centers < 6000, w, 0.0)
     body /= body.sum() + 1e-12
     share = lambda lo, hi: float(body[(centers >= lo) & (centers < hi)].sum())   # noqa: E731
+    snare_like = rattle >= cfg.snare_min_rattle
+
+    def also(piece: str) -> str:
+        # Muito agudo junto com outra peça: as duas sempre tocam juntas (bumbo + chimbal,
+        # bumbo + prato no começo das frases) e viraram um som só. Caixa e tom já têm agudos
+        # próprios (esteiras, estalo da baqueta): neles só conta prato com agudos bem fortes.
+        return CYMBAL if air >= (0.3 if piece == KICK else cfg.drum_cymbal_air) else ""
+
     if share(0, 300) >= 0.5:                            # graves: bumbo ou tom
         # Bumbo: altura bem grave. Um som um pouco mais agudo que ainda ressoa é um surdo.
         rings_like_tom = ring >= cfg.tom_min_ring and pitch > 0.75 * cfg.kick_max_hz
-        return (KICK if pitch <= cfg.kick_max_hz and not rings_like_tom else TOM), also, pitch
-    # Médios: caixa x tom agudo. As esteiras da caixa somam muito ruído em 2-8 kHz ao corpo;
-    # a ressonância sozinha não separa (uma caixa com reverb ressoa tanto quanto um tom).
-    wires = share(2000, 8000) / (share(80, 600) + 1e-12)
-    if wires < cfg.snare_min_wires and ring >= cfg.tom_min_ring and share(80, 500) >= 0.35:
-        return TOM, also, pitch
-    return SNARE, also, pitch
+        piece = KICK if pitch <= cfg.kick_max_hz and not rings_like_tom else TOM
+        return piece, also(piece), pitch, False
+    # Médios: caixa x tom. A ressonância do corpo não separa (caixa com reverb ressoa como um
+    # tom); o que separa é o chiado das esteiras continuar depois do golpe. Caixa e tom de corpo
+    # parecido podem cair no mesmo som: aí a decisão é golpe a golpe, pelo chiado de cada um.
+    rings_like_tom = ring >= cfg.tom_min_ring and share(80, 500) >= 0.35
+    if rings_like_tom and not snare_like:
+        return TOM, also(TOM), pitch, False
+    return SNARE, also(SNARE), pitch, rings_like_tom
 
 
 def _name_toms(sounds: list[DrumSound], cfg: DrumDetection) -> None:
     """Surdo, tom médio e tom agudo pela altura de cada tom encontrado."""
-    toms = sorted((s for s in sounds if s.piece == TOM), key=lambda s: -s.pitch)
+    toms = sorted((s for s in sounds if s.piece == TOM or s.tom_as == TOM), key=lambda s: -s.pitch)
     racks = [s for s in toms if s.pitch >= cfg.floor_tom_max_hz]
+
+    def name(s: DrumSound, piece: str) -> None:
+        if s.piece == TOM:
+            s.piece = piece
+        else:
+            s.tom_as = piece
+
     for s in toms:
         if s.pitch < cfg.floor_tom_max_hz:
-            s.piece = TOM_LOW
+            name(s, TOM_LOW)
     distinct = sorted({round(np.log2(s.pitch) * 12) for s in racks}, reverse=True)   # em semitons
     for s in racks:
         semis = round(np.log2(s.pitch) * 12)
         if len(distinct) == 1:
-            s.piece = TOM_HIGH if s.pitch >= 200 else TOM_MID
+            name(s, TOM_HIGH if s.pitch >= 200 else TOM_MID)
         else:   # o mais agudo é o tom agudo; os outros, o médio
-            s.piece = TOM_HIGH if semis >= distinct[0] - 1 else TOM_MID
+            name(s, TOM_HIGH if semis >= distinct[0] - 1 else TOM_MID)
 
 
 def _support(w: np.ndarray, mass: float = 0.8) -> np.ndarray:
@@ -273,6 +301,8 @@ class KitAnalysis:
     explained_also: np.ndarray  # o mesmo para a parte de prato dos sons combinados (só agudos)
     strength: np.ndarray     # [som, ataque]: força do golpe, relativa a um golpe típico desse som
     cymbal_tail: np.ndarray  # [ataque]: quanto dos agudos do golpe ainda soa em ~150-300 ms
+    rattle: np.ndarray       # [ataque]: quanto do chiado de 2-8 kHz ainda soa ~80 ms depois
+    air_ratio: np.ndarray    # [ataque]: agudos (>7 kHz) sobre esteira (2-6 kHz) no som novo
 
 
 def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
@@ -281,7 +311,8 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
     onsets = _onsets(S, librosa.fft_frequencies(sr=sr, n_fft=SHORT_FFT), cfg.onset_delta)
     if len(onsets) < 4:
         empty = np.zeros((0, len(onsets)))
-        return KitAnalysis([], onsets, empty, empty, empty, np.zeros(len(onsets)))
+        zero = np.zeros(len(onsets))
+        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero)
     L, centers = _band_spectrogram(y, sr, LONG_FFT)
     Ls, centers_short = _band_spectrogram(y, sr, SHORT_FFT)
     at = lambda M, s: np.stack([M[:, i + s.start: i + s.stop].mean(axis=1) for i in onsets], axis=1)   # noqa: E731
@@ -298,13 +329,25 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
     air_new = np.array([air_short[i + SHORT_ATTACK.start: i + SHORT_ATTACK.stop].mean() for i in onsets]) - CARRY * air_pre
     air_tail = np.array([air_short[i + CYMBAL_TAIL.start: i + CYMBAL_TAIL.stop].min() for i in onsets]) - CARRY * air_pre
     tail = np.clip(np.maximum(air_tail, 0.0) / np.maximum(air_new, 1e-9), 0.0, 1.5)
+    # Chiado das esteiras: quanto do ruído novo em 2-8 kHz ainda soa ~80 ms depois
+    wires = (centers_short >= 2000) & (centers_short < 8000)
+    w_pre, w_new, w_late = (at(Ls[wires], s).sum(axis=0) for s in (SHORT_PRE, SHORT_ATTACK, SHORT_LATE))
+    rattle = np.clip(np.maximum(w_late - CARRY * w_pre, 0.0) / np.maximum(w_new - CARRY * w_pre, 1e-9), 0.0, 1.5)
+    # Agudos (>7 kHz) sobre esteira (2-6 kHz) no som novo: uma caixa com chimbal junto tem agudos
+    # de sobra; o chiado da caixa sozinha fica bem abaixo
+    hi_pre, hi_new = (at(Ls[centers_short >= 7000], s).sum(axis=0) for s in (SHORT_PRE, SHORT_ATTACK))
+    mid = (centers_short >= 2000) & (centers_short < 6000)
+    mid_pre, mid_new = (at(Ls[mid], s).sum(axis=0) for s in (SHORT_PRE, SHORT_ATTACK))
+    air_ratio = np.maximum(hi_new - CARRY * hi_pre, 0.0) / np.maximum(mid_new - CARRY * mid_pre, 1e-9)
     # Ataques quase sem som novo (ex.: o fim de um prato) não ensinam nada.
     loud = V.sum(axis=0) >= cfg.min_level * np.percentile(V.sum(axis=0), 95)
-    onsets, V, fresh, left, tail = onsets[loud], V[:, loud], fresh[:, loud], left[:, loud], tail[loud]
+    onsets, V, fresh, left, tail, rattle, air_ratio = (onsets[loud], V[:, loud], fresh[:, loud], left[:, loud],
+                                                       tail[loud], rattle[loud], air_ratio[loud])
     found = _discover_sounds(V, cfg)
     if not found:
         empty = np.zeros((0, len(onsets)))
-        return KitAnalysis([], onsets, empty, empty, empty, np.zeros(len(onsets)))
+        zero = np.zeros(len(onsets))
+        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero)
     W = np.stack([t for t, _ in found], axis=1)
     H = _update_h(V, W, np.ones((W.shape[1], V.shape[1])), 100)
     explained, explained_also = np.zeros_like(H), np.zeros_like(H)
@@ -321,31 +364,67 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
         w = W[rows, k]
         rings = np.clip((w @ left[rows]) / (w @ fresh[rows] + 1e-12), 0.0, 1.5)
         ring = float(np.median(rings[members]))   # nos golpes do próprio grupo: sem mistura
-        piece, also, pitch = _label(W[:, k], centers, ring, cfg)
+        piece, also, pitch, maybe_tom = _label(W[:, k], centers, ring, float(np.median(rattle[members])), cfg)
         # Som combinado (ex.: bumbo + chimbal): cada parte é conferida nas suas bandas.
         explained[k] = _explained(V, W[:, k], H[k], rows & ~air if also else rows)
         explained_also[k] = _explained(V, W[:, k], H[k], rows & air) if also else 0.0
         strength[k] = np.clip(H[k] / (np.median(H[k][members]) + 1e-12), 0.0, 1.0)
-        sounds.append(DrumSound(piece, pitch, ring, len(members), W[:, k], also))
+        sounds.append(DrumSound(piece, pitch, ring, len(members), W[:, k], also, TOM if maybe_tom else ""))
     _name_toms(sounds, cfg)
-    return KitAnalysis(sounds, onsets, explained, explained_also, strength, tail)
+    return KitAnalysis(sounds, onsets, explained, explained_also, strength, tail, rattle, air_ratio)
 
 
 def detect_drum_hits(y: np.ndarray, sr: int, cfg: DrumDetection) -> list[DrumHit]:
+    """As batidas de cada peça. As de pouca evidência vêm com weak=True: o charting só as usa se
+    continuarem um padrão da mesma peça (ex.: o surdo de um ciclo, mascarado pelo bumbo)."""
     if not np.any(y):
         return []
     kit = analyze_kit(y, sr, cfg)
     hits: dict[tuple[int, str], float] = {}
+    weak: dict[tuple[int, str], float] = {}
+    # Som de corpo médio que é caixa e tom ao mesmo tempo: uma parte boa dos golpes sem chiado.
+    # Um som que é quase sempre caixa continua caixa (golpes rápidos medem menos chiado).
+    played = (kit.explained >= cfg.min_share) & (kit.strength >= cfg.threshold)
+    mixed = [float(np.mean(kit.rattle[played[k]] < cfg.snare_min_rattle)) >= cfg.tom_share_in_snare
+             if played[k].any() else False for k in range(len(kit.sounds))]
     for k, sound in enumerate(kit.sounds):
         for i in np.flatnonzero(kit.strength[k] >= cfg.threshold):
             parts = [(sound.piece, kit.explained[k][i]), (sound.also, kit.explained_also[k][i])]
             for piece, share in parts:
-                if not piece or share < cfg.min_share:
+                if not piece or share < cfg.weak_share:
                     continue
+                if piece == SNARE and sound.tom_as and kit.rattle[i] < cfg.snare_min_rattle and mixed[k]:
+                    piece = sound.tom_as   # sem chiado de esteira: foi o tom
                 if piece == CYMBAL:   # chimbal some; condução ainda soa um pouco; ataque, muito
                     ring = kit.cymbal_tail[i]
                     piece = CRASH if ring >= cfg.crash_sustain_ratio else RIDE if ring >= cfg.ride_sustain_ratio else HIHAT
+                target = hits if share >= cfg.min_share else weak
                 key = (int(kit.onsets[i]), piece)
-                hits[key] = max(hits.get(key, 0.0), float(kit.strength[k][i]))
+                target[key] = max(target.get(key, 0.0), float(kit.strength[k][i]))
+
+    def demote(key: tuple[int, str]) -> None:
+        if key in hits:
+            weak[key] = max(weak.get(key, 0.0), hits.pop(key))
+
+    # Caixa x tom de rack é uma decisão do GOLPE (tem chiado de esteira ou não), não de cada som:
+    # sons de corpo parecido dividem o mesmo golpe. O perdedor vira fraco: se continuar um padrão
+    # (o tom de um ciclo que segue por baixo da caixa), o charting ainda o usa.
+    rattle_at = dict(zip(kit.onsets.tolist(), kit.rattle))
+    air_at = dict(zip(kit.onsets.tolist(), kit.air_ratio))
+    rack = (TOM_HIGH, TOM_MID)
+    for f in {f for f, piece in hits if piece == SNARE}:
+        if any((f, t) in hits for t in rack):
+            for piece in ([SNARE] if rattle_at[f] < cfg.snare_min_rattle else rack):
+                demote((f, piece))
+    # Chimbal/condução fracos no golpe de uma caixa costumam ser o chiado das esteiras nos agudos;
+    # com agudos de sobra (air_ratio) pode ser um chimbal de verdade: fica fraco, e o padrão decide.
+    for f in {f for f, piece in hits if piece == SNARE}:
+        for piece in (HIHAT, RIDE):
+            if (f, piece) in hits and hits[(f, piece)] < cfg.cymbal_over_snare:
+                demote((f, piece))
+        if air_at[f] >= cfg.hat_over_snare_air and (f, HIHAT) not in hits:
+            weak[(f, HIHAT)] = max(weak.get((f, HIHAT), 0.0), cfg.threshold)
     to_time = lambda f: float(librosa.frames_to_time(f, sr=sr, hop_length=HOP)) - ONSET_LATENCY  # noqa: E731
-    return sorted((DrumHit(to_time(f), piece, s) for (f, piece), s in hits.items()), key=lambda h: h.time)
+    out = [DrumHit(to_time(f), piece, v) for (f, piece), v in hits.items()]
+    out += [DrumHit(to_time(f), piece, v, weak=True) for (f, piece), v in weak.items() if (f, piece) not in hits]
+    return sorted(out, key=lambda h: h.time)
