@@ -84,6 +84,32 @@ def test_floor_tom_groove_is_not_kick():
     assert not any(found(hits, t, KICK) for t in floor)
 
 
+def test_model_sees_ticks_in_the_tempo_map_grid(kit_song):
+    """Charts do Rock Band têm 480 ticks por batida, não 192: o modelo tem de receber a grade do
+    mapa de tempo, senão a posição de cada golpe no compasso sai embaralhada."""
+    from ai_charter.drum_model import OUTPUTS
+    from ai_charter.pipeline import model_drum_candidates
+
+    seen = {}
+
+    class Spy:
+        thresholds = np.ones(len(OUTPUTS))
+
+        def predict_song(self, features, ticks, resolution):
+            seen.update(ticks=ticks, resolution=resolution)
+            return np.zeros((len(ticks), len(OUTPUTS)))
+
+    rng = np.random.default_rng(3)
+    y = np.zeros(int(6 * SR))
+    for b in range(8):
+        add(y, drum("kick", rng), 0.5 + b * BEAT, 0.8)
+    tempo = TempoMap(np.arange(0, 14) * BEAT, 480)
+    model_drum_candidates(y, SR, tempo, RULES, Spy())
+    assert seen["resolution"] == 480
+    beats = seen["ticks"] / 480
+    assert np.median(np.abs(beats - np.round(beats))) < 0.05   # ataques caem nas batidas
+
+
 def test_synthetic_song_drums_end_to_end(tmp_path):
     """O mesmo que o teste de ponta a ponta (que precisa do ffmpeg), direto pelo pipeline."""
     from synth import START, render
@@ -136,6 +162,25 @@ def test_shipped_drum_model_loads_and_matches_the_features():
     features = np.random.default_rng(0).normal(size=(20, len(FEATURE_NAMES))).astype(np.float32)
     p = model.predict(model_inputs(features, np.arange(20) * 48.0, 192))
     assert p.shape == (20, len(OUTPUTS)) and np.all((p >= 0) & (p <= 1))
+
+
+def test_groove_inputs_see_the_bars_around():
+    """A etapa da levada vê, para cada ataque, o que a etapa do som achou em cada semicolcheia em volta."""
+    from ai_charter.drum_model import GROOVE_NAMES, GROOVE_OFFSETS, OUTPUTS, groove_inputs
+
+    res = 480
+    ticks = np.array([0, res, 4 * res, 4 * res + res // 4], dtype=float)   # 1, 2, compasso seguinte, +1/16
+    probs = np.zeros((4, len(OUTPUTS)), dtype=np.float32)
+    probs[:, OUTPUTS.index(HIHAT)] = [0.9, 0.8, 0.7, 0.6]
+    x = groove_inputs(probs, ticks, res)
+    assert x.shape == (4, len(GROOVE_NAMES))
+    width = len(OUTPUTS) + 1
+    at = lambda row, off, k: x[row, GROOVE_OFFSETS.index(off) * width + k]
+    hat = OUTPUTS.index(HIHAT)
+    assert at(0, 16, hat) == pytest.approx(0.7)       # um compasso depois
+    assert at(0, 4, hat) == pytest.approx(0.8)        # uma batida depois
+    assert at(2, 1, hat) == pytest.approx(0.6) and at(2, 1, width - 1) == 1.0
+    assert at(1, 1, width - 1) == 0.0                 # nada logo depois da batida 2
 
 
 def test_model_from_another_feature_version_is_ignored(tmp_path):

@@ -36,7 +36,7 @@ from ai_charter.charting.sanitize import sanitize
 from ai_charter.charting.vocals import VocalTrack, build_vocal_track
 from ai_charter.config import Rules, load_rules
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
-from ai_charter.drum_model import DrumModel, model_inputs
+from ai_charter.drum_model import DrumModel
 from ai_charter.export import audio
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
@@ -190,12 +190,12 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     """Bateria pelo modelo treinado com charts oficiais: retrato acústico de cada ataque + lugar na
     levada -> probabilidade de cada peça; entra o que passa do limiar daquela peça. Para "tom", qual
     tom é vem dos sons do kit da música (o de maior presença no ataque), pela altura de cada um."""
-    res, triplets = rules.general.resolution, rules.general.allow_triplets
+    res, triplets = tempo.resolution, rules.general.allow_triplets   # a grade do mapa de tempo (480 nas charts do Rock Band)
     kit = analyze_kit(y, sr, rules.drum_detection)
     if not len(kit.onsets):
         return []
     ticks = np.asarray(tempo.time_to_tick(kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY), dtype=float)
-    probs = model.predict(model_inputs(kit.features, ticks, res))
+    probs = model.predict_song(kit.features, ticks, res)
     seen: dict[tuple[int, str], Candidate] = {}
     for j, raw in enumerate(ticks):
         tick = quantize_tick(raw, res, triplets)
@@ -229,9 +229,9 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackC
     model = DrumModel.load() if rules.drum_detection.use_model else None
     if model is not None:
         return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model), rules.drums,
-                                rules.general.resolution, sp_windows, rules.general.drum_fill_every_measures)
+                                tempo.resolution, sp_windows, rules.general.drum_fill_every_measures)
     hits = detect_drum_hits(y, sr, rules.drum_detection)
-    res, triplets = rules.general.resolution, rules.general.allow_triplets
+    res, triplets = tempo.resolution, rules.general.allow_triplets
     strong: dict[tuple[int, str], Candidate] = {}
     weak: dict[tuple[int, str], Candidate] = {}
     for h in hits:

@@ -210,8 +210,12 @@ Ideias principais:
   qual tom é qual vem dos sons do kit da música, pela altura. Ela foi treinada com charts de
   Rock Band, com vazamento de guitarra, baixo e voz misturado à bateria (como na bateria separada
   do mix), e é isso que dá ao charting a noção de levada: caixa costuma cair no 2 e no 4, quase
-  toda colcheia tem um prato marcando o tempo, tom no meio de um groove é raro. Sem o arquivo do
-  modelo, ou com `use_model = false` em `[drum_detection]`, valem só as regras.
+  toda colcheia tem um prato marcando o tempo, tom no meio de um groove é raro. Por cima vem uma
+  segunda rede, a **da levada**: ela olha o que a primeira achou em cada semicolcheia em volta
+  (meio compasso de cada lado e o mesmo lugar nos compassos vizinhos) e decide de novo, como um
+  charter que ouve o groove inteiro. Um golpe ambíguo no meio de uma linha de chimbal vira
+  chimbal, não caixa. Sem o arquivo do modelo, ou com `use_model = false` em `[drum_detection]`,
+  valem só as regras.
   Sons que sempre tocam juntos (bumbo + chimbal) viram as duas peças.
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
@@ -333,8 +337,14 @@ As músicas se dividem sempre do mesmo jeito em treino (~80%) e teste (~20%, pel
 `--test` mede só nas de teste: o placar é de músicas que o modelo nunca viu. `--bleed` mistura os
 outros stems da música à bateria (vazamento), como na bateria que o Demucs separa do mix.
 
-Em 48 músicas de teste do Rock Band, com vazamento: F1 geral 0,60 com o modelo (0,47 só com as
-regras); bumbo 0,87, caixa 0,77, chimbal 0,48, ataque 0,35, condução 0,19, tons 0,04-0,21.
+Com `--workers N` a coleta analisa N músicas ao mesmo tempo, e `--charter Harmonix` usa só
+charts oficiais (as do próprio ai-charter e do autochart nunca entram). O treino das duas etapas
+usa validação cruzada: a etapa da levada aprende com o que a etapa do som acha de músicas que ela
+não viu, para aprender a corrigir os erros de uma música nova.
+
+Treinado com 1481 músicas da Harmonix e medido em 60 das 422 de teste, com vazamento: F1 geral
+0,69 (0,63 com o modelo anterior, só com a etapa do som; 0,46 só com as regras); bumbo 0,92,
+caixa 0,73, chimbal 0,66, ataque 0,57, condução 0,51, tons 0,10-0,24.
 
 ## Testes
 

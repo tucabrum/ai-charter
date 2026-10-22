@@ -1,10 +1,14 @@
 """Modelo de bateria aprendido com charts oficiais.
 
-Para cada ataque, o transcritor mede um retrato acústico (analysis/drums.py: FEATURE_NAMES). Junto
-com o lugar do ataque na levada (posição no compasso e vizinhos), uma rede neural pequena dá a
-probabilidade de cada peça. Ela foi treinada com charts oficiais de Rock Band (ai-charter-bench
-train-drums): é assim que o charting "sabe" que caixa costuma cair no 2 e no 4, que quase toda
-colcheia tem um prato marcando o tempo e que tom no meio de um groove é raro.
+Duas etapas, as duas redes neurais pequenas treinadas com charts oficiais de Rock Band
+(ai-charter-bench train-drums):
+
+1. **Som.** Para cada ataque, o transcritor mede um retrato acústico (analysis/drums.py:
+   FEATURE_NAMES). Junto com o lugar do ataque no compasso, a rede dá a probabilidade de cada peça.
+2. **Levada.** A segunda rede olha as probabilidades da primeira nos compassos em volta (o que tocou
+   em cada semicolcheia, um compasso para trás e um para frente) e decide de novo. É ela que sabe
+   como as levadas são chartadas: chimbal em linha contínua, caixa no 2 e no 4, virada no fim da
+   frase. Um golpe ambíguo no meio de oito colcheias de chimbal vira chimbal, não caixa.
 
 Qual tom é qual (agudo, médio, surdo) o modelo não decide: a afinação muda de kit para kit. Ele diz
 só "é tom", e o tom vem dos sons do kit da própria música, ordenados pela altura.
@@ -28,6 +32,12 @@ CONTEXT_NAMES = [f"posicao_{i}" for i in range(16)] + ["fora_da_grade", "vizinho
 
 
 INPUT_NAMES = FEATURE_NAMES + [f"rel_{n}" for n in FEATURE_NAMES] + CONTEXT_NAMES
+
+# Etapa da levada: semicolcheias em volta do ataque (meio compasso de cada lado em detalhe, mais o
+# mesmo lugar no compasso anterior e no seguinte) e, em cada uma, a chance de cada peça + "houve ataque"
+GROOVE_OFFSETS = tuple(range(-8, 9)) + (-16, -12, 12, 16)
+GROOVE_NAMES = ([f"levada_{o:+d}_{p}" for o in GROOVE_OFFSETS for p in (*OUTPUTS, "ataque")]
+                + [f"proprio_{p}" for p in OUTPUTS] + CONTEXT_NAMES[:17])
 
 
 def song_relative(features: np.ndarray) -> np.ndarray:
@@ -67,18 +77,49 @@ def context_features(ticks: np.ndarray, resolution: int) -> np.ndarray:
     return out
 
 
+def groove_inputs(probs: np.ndarray, ticks: np.ndarray, resolution: int) -> np.ndarray:
+    """Entrada da etapa da levada para os ataques de UMA música: o que a etapa do som achou em cada
+    semicolcheia em volta (GROOVE_OFFSETS), o que achou do próprio ataque e o lugar no compasso."""
+    if not len(ticks):
+        return np.zeros((0, len(GROOVE_NAMES)), dtype=np.float32)
+    ticks = ticks * 192 / resolution
+    slot = np.round(ticks / 48).astype(int)
+    pad = max(abs(o) for o in GROOVE_OFFSETS)
+    idx = slot - slot.min() + pad
+    grid = np.zeros((idx.max() + pad + 1, len(OUTPUTS) + 1), dtype=np.float32)
+    for k in range(len(OUTPUTS)):
+        np.maximum.at(grid[:, k], idx, probs[:, k])
+    grid[idx, -1] = 1.0
+    return np.hstack([grid[idx + o] for o in GROOVE_OFFSETS]
+                     + [probs.astype(np.float32), context_features(ticks, 192)[:, :17]])
+
+
+def mlp(params: dict, x: np.ndarray, rows: np.ndarray | None = None, chunk: int = 65536) -> np.ndarray:
+    """Probabilidades da rede (uma camada oculta) para as linhas `rows` de x, em blocos."""
+    rows = np.arange(len(x)) if rows is None else rows
+    out = np.empty((len(rows), len(params["b2"])), dtype=np.float32)
+    for s in range(0, len(rows), chunk):
+        xb = (x[rows[s: s + chunk]].astype(np.float32) - params["mean"]) / params["std"]
+        h = np.maximum(0.0, xb @ params["w1"] + params["b1"])
+        out[s: s + chunk] = 1.0 / (1.0 + np.exp(-np.clip(h @ params["w2"] + params["b2"], -30.0, 30.0)))
+    return out
+
+
+def _arrays(params: dict) -> dict:
+    out = {k: np.array(params[k], dtype=np.float32) for k in ("mean", "std", "w1", "b1", "w2", "b2")}
+    out["std"] = np.where(out["std"] > 0, out["std"], 1.0).astype(np.float32)   # coluna constante
+    return out
+
+
 class DrumModel:
-    """Rede de uma camada oculta: entrada (retrato + contexto) -> probabilidade de cada peça."""
+    """Etapa do som (retrato + contexto -> peça) e, se houver, etapa da levada por cima."""
 
     def __init__(self, params: dict):
-        self.mean = np.array(params["mean"], dtype=np.float32)
-        self.std = np.array(params["std"], dtype=np.float32)
-        self.w1 = np.array(params["w1"], dtype=np.float32)
-        self.b1 = np.array(params["b1"], dtype=np.float32)
-        self.w2 = np.array(params["w2"], dtype=np.float32)
-        self.b2 = np.array(params["b2"], dtype=np.float32)
+        self.sound = _arrays(params)
+        self.groove = _arrays(params["groove"]) if params.get("groove") else None
         self.thresholds = np.array(params["thresholds"], dtype=np.float32)
         self.info = params.get("info", {})
+        self.w1, self.w2 = self.sound["w1"], self.sound["w2"]
 
     @classmethod
     def load(cls, path: Path = MODEL_PATH) -> "DrumModel | None":
@@ -87,35 +128,57 @@ class DrumModel:
         params = json.loads(path.read_text(encoding="utf-8"))
         if params.get("features") != INPUT_NAMES or params.get("outputs") != list(OUTPUTS):
             return None   # modelo de outra versão do retrato: melhor não usar
+        if params.get("groove") and params["groove"].get("features") != GROOVE_NAMES:
+            return None
         return cls(params)
 
     def predict(self, x: np.ndarray) -> np.ndarray:
-        h = np.maximum(0.0, ((x - self.mean) / self.std) @ self.w1 + self.b1)
-        return 1.0 / (1.0 + np.exp(-np.clip(h @ self.w2 + self.b2, -30.0, 30.0)))
+        """Só a etapa do som."""
+        return mlp(self.sound, x)
+
+    def predict_song(self, features: np.ndarray, ticks: np.ndarray, resolution: int) -> np.ndarray:
+        """Os ataques de uma música inteira: etapa do som e, por cima, a da levada."""
+        probs = self.predict(model_inputs(features, ticks, resolution))
+        if self.groove is None or not len(probs):
+            return probs
+        return mlp(self.groove, groove_inputs(probs, ticks, resolution))
 
 
-def train(x: np.ndarray, y: np.ndarray, hidden: int = 48, epochs: int = 60, lr: float = 3e-3,
-          seed: int = 0, log=print) -> dict:
-    """Treina a rede (entropia cruzada, Adam, minilotes). Devolve os parâmetros (sem limiares)."""
+def _standardize_stats(x: np.ndarray, rows: np.ndarray, chunk: int = 262144) -> tuple[np.ndarray, np.ndarray]:
+    total = np.zeros(x.shape[1]); sq = np.zeros(x.shape[1])
+    for s in range(0, len(rows), chunk):
+        xb = x[rows[s: s + chunk]].astype(np.float64)
+        total += xb.sum(axis=0)
+        sq += (xb ** 2).sum(axis=0)
+    mean = total / len(rows)
+    std = np.sqrt(np.maximum(sq / len(rows) - mean ** 2, 0.0)) + 1e-6
+    return mean.astype(np.float32), std.astype(np.float32)
+
+
+def train(x: np.ndarray, y: np.ndarray, rows: np.ndarray | None = None, hidden: int = 48, epochs: int = 60,
+          lr: float = 3e-3, seed: int = 0, log=print) -> dict:
+    """Treina a rede (entropia cruzada, Adam, minilotes) nas linhas `rows` de x e y, sem copiar x
+    inteiro (cabe com milhões de ataques). Devolve os parâmetros (sem limiares)."""
     rng = np.random.default_rng(seed)
-    mean, std = x.mean(axis=0), x.std(axis=0) + 1e-6
-    xs = ((x - mean) / std).astype(np.float32)
-    params = {"w1": rng.normal(0, np.sqrt(2 / xs.shape[1]), (xs.shape[1], hidden)).astype(np.float32),
+    rows = np.arange(len(x)) if rows is None else rows
+    mean, std = _standardize_stats(x, rows)
+    prior = y[rows].mean(axis=0)
+    params = {"w1": rng.normal(0, np.sqrt(2 / x.shape[1]), (x.shape[1], hidden)).astype(np.float32),
               "b1": np.zeros(hidden, np.float32),
               "w2": rng.normal(0, np.sqrt(1 / hidden), (hidden, y.shape[1])).astype(np.float32),
-              "b2": np.log(y.mean(axis=0) / (1 - y.mean(axis=0)) + 1e-9).astype(np.float32)}
+              "b2": np.log(prior / (1 - prior) + 1e-9).astype(np.float32)}
     m = {k: np.zeros_like(v) for k, v in params.items()}
     v = {k: np.zeros_like(p) for k, p in params.items()}
     step = 0
     for epoch in range(epochs):
-        order = rng.permutation(len(xs))
+        order = rows[rng.permutation(len(rows))]
         total = 0.0
-        for start in range(0, len(xs), 512):
-            idx = order[start: start + 512]
-            xb, yb = xs[idx], y[idx]
+        for start in range(0, len(order), 512):
+            idx = np.sort(order[start: start + 512])
+            xb, yb = (x[idx].astype(np.float32) - mean) / std, y[idx]
             z1 = xb @ params["w1"] + params["b1"]
             h = np.maximum(0.0, z1)
-            p = 1.0 / (1.0 + np.exp(-(h @ params["w2"] + params["b2"])))
+            p = 1.0 / (1.0 + np.exp(-np.clip(h @ params["w2"] + params["b2"], -30.0, 30.0)))
             total += float(-(yb * np.log(p + 1e-7) + (1 - yb) * np.log(1 - p + 1e-7)).sum())
             g2 = (p - yb) / len(xb)
             grads = {"w2": h.T @ g2, "b2": g2.sum(axis=0)}
@@ -126,13 +189,23 @@ def train(x: np.ndarray, y: np.ndarray, hidden: int = 48, epochs: int = 60, lr: 
                 m[k] = 0.9 * m[k] + 0.1 * grads[k]
                 v[k] = 0.999 * v[k] + 0.001 * grads[k] ** 2
                 params[k] -= lr * (m[k] / (1 - 0.9 ** step)) / (np.sqrt(v[k] / (1 - 0.999 ** step)) + 1e-8)
-        if epoch % 10 == 9:
-            log(f"  época {epoch + 1}: perda {total / len(xs):.4f}")
+        if epoch % 5 == 4 or epoch == epochs - 1:
+            log(f"  época {epoch + 1}/{epochs}: perda {total / len(rows):.4f}")
     return {"mean": mean, "std": std, **params}
 
 
-def save(params: dict, thresholds: np.ndarray, info: dict, path: Path = MODEL_PATH) -> None:
-    out = {k: np.asarray(v).round(5).tolist() for k, v in params.items()}
+def _jsonable(params: dict) -> dict:
+    # Pesos com 5 casas; média e desvio com 6 algarismos (um desvio de 1e-6 não pode virar 0)
+    return {k: (np.asarray(v).astype(float).round(5) if k not in ("mean", "std")
+                else np.array([float(f"{x:.6g}") for x in np.asarray(v, dtype=float)])).tolist()
+            for k, v in params.items()}
+
+
+def save(params: dict, thresholds: np.ndarray, info: dict, path: Path = MODEL_PATH,
+         groove: dict | None = None) -> None:
+    out = _jsonable(params)
     out.update(thresholds=np.asarray(thresholds).round(3).tolist(), features=INPUT_NAMES,
                outputs=list(OUTPUTS), info=info)
+    if groove is not None:
+        out["groove"] = {**_jsonable(groove), "features": GROOVE_NAMES}
     path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")

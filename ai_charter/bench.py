@@ -43,6 +43,8 @@ def official_hits(midi: mido.MidiFile) -> set[tuple[int, str]] | None:
     if track is None:
         return None
     notes, _ = _split(track)
+    if any(n.pitch == EXPERT + 5 for n in notes):   # bateria de 5 peças (Guitar Hero): outra distribuição
+        return None
     toms = {lane: [(n.start, n.end) for n in notes if n.pitch == marker] for lane, marker in TOM_MARKER.items()}
     hits = set()
     for n in notes:
@@ -129,56 +131,114 @@ def evaluate(folder: Path, rules, bleed: tuple[float, float] | None = None) -> d
     return match(ours, theirs, midi.ticks_per_beat // 8)
 
 
-def song_folders(root: Path) -> list[Path]:
-    return sorted(p.parent for p in root.rglob("notes.mid"))
+# Charts feitas por programas (como o próprio ai-charter) nunca servem de gabarito
+NOT_OFFICIAL = ("ai-charter", "autochart")
+# Músicas sempre no teste (casos que acompanhamos de perto)
+HOLDOUT = {"phoenix - lasso"}
+
+
+def charter_of(folder: Path) -> str:
+    ini = folder / "song.ini"
+    if not ini.is_file():
+        return ""
+    for line in ini.read_text(encoding="utf-8", errors="ignore").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "charter":
+            return value.strip()
+    return ""
+
+
+def song_folders(root: Path, charter: str | None = None) -> list[Path]:
+    """Pastas com notes.mid; sem charts geradas por programa e, se pedido, só de um charter."""
+    out = []
+    for p in sorted(root.rglob("notes.mid")):
+        who = charter_of(p.parent).lower()
+        if any(bad in who for bad in NOT_OFFICIAL):
+            continue
+        if charter and charter.lower() not in who:
+            continue
+        out.append(p.parent)
+    return out
+
+
+def song_key(name: str) -> str:
+    """A música por trás do nome da pasta: sem jogo na frente, sem "(2x Bass Pedal)", em minúsculas."""
+    import re
+
+    name = name.replace("\\", "/").split("/")[-1]
+    return re.sub(r"\s*[\(\[].*?[\)\]]", "", name).strip().lower()
 
 
 def is_test(name: str) -> bool:
-    """A música é do conjunto de teste (fixo, pelo nome)?"""
-    return zlib.crc32(name.encode("utf-8")) % 5 == 0
+    """A música é do conjunto de teste? Fixo pelo nome normalizado: a mesma música, em jogos
+    diferentes, cai sempre do mesmo lado."""
+    key = song_key(name)
+    return key in HOLDOUT or zlib.crc32(key.encode("utf-8")) % 5 == 0
 
 
-def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = (0.05, 0.4)) -> None:
+def _collect_one(folder: Path, rules, bleed: tuple[float, float]):
+    """Ataques de uma música: (retrato, ticks em 192/batida, gabarito, golpes perdidos, golpes)."""
+    from ai_charter.analysis.drums import ONSET_LATENCY, HOP, analyze_kit
+    from ai_charter.pipeline import DRUMS_SR
+
+    midi = mido.MidiFile(folder / "notes.mid")
+    theirs = official_hits(midi)
+    y = drum_audio(folder, DRUMS_SR) if theirs else None
+    if y is None:
+        return None
+    gain = np.random.default_rng(zlib.crc32(folder.name.encode("utf-8"))).uniform(*bleed)
+    others = other_audio(folder, DRUMS_SR, len(y))
+    if others is not None:
+        y = y + gain * others
+    kit = analyze_kit(y, DRUMS_SR, rules.drum_detection)
+    tempo, res = _tempo_map(midi), midi.ticks_per_beat
+    ticks = np.asarray(tempo.time_to_tick(kit.onsets * HOP / DRUMS_SR - ONSET_LATENCY), dtype=float)
+    labels = np.zeros((len(ticks), len(PIECES)), dtype=np.float32)
+    missed = 0
+    for t, piece in theirs:
+        near = np.flatnonzero(np.abs(ticks - t) <= res // 8)
+        if len(near):
+            labels[near[np.argmin(np.abs(ticks[near] - t))], PIECES.index(piece)] = 1.0
+        else:
+            missed += 1
+    return kit.features, ticks * 192 / res, labels, missed, len(theirs), gain
+
+
+def _collect_safe(args):
+    folder, rules, bleed = args
+    try:
+        return folder, _collect_one(folder, rules, bleed), None
+    except Exception as err:   # uma música com arquivo estranho não para a coleta
+        return folder, None, str(err)
+
+
+def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = (0.05, 0.4), workers: int = 1) -> None:
     """Para cada ataque: retrato acústico, tick e as peças da chart oficial.
 
     A bateria do Rock Band é limpa (gravada à parte); a que o ai-charter recebe é separada do mix e
     vaza guitarra, baixo e voz. Por isso cada música entra com os outros stems dela misturados à
-    bateria, num volume sorteado (sempre o mesmo para a mesma música) dentro de `bleed`."""
-    from ai_charter.analysis.drums import ONSET_LATENCY, HOP, analyze_kit
-    from ai_charter.pipeline import DRUMS_SR
+    bateria, num volume sorteado (sempre o mesmo para a mesma música) dentro de `bleed`.
+    Com workers > 1, várias músicas são analisadas ao mesmo tempo (um processo cada)."""
+    from concurrent.futures import ProcessPoolExecutor
 
     feats, ticks_all, ys, songs, missed, total = [], [], [], [], 0, 0
-    for i, folder in enumerate(folders, 1):
-        try:
-            midi = mido.MidiFile(folder / "notes.mid")
-            theirs = official_hits(midi)
-            y = drum_audio(folder, DRUMS_SR) if theirs else None
-            if y is None:
-                continue
-            gain = np.random.default_rng(zlib.crc32(folder.name.encode("utf-8"))).uniform(*bleed)
-            others = other_audio(folder, DRUMS_SR, len(y))
-            if others is not None:
-                y = y + gain * others
-            kit = analyze_kit(y, DRUMS_SR, rules.drum_detection)
-            tempo, res = _tempo_map(midi), midi.ticks_per_beat
-            ticks = np.asarray(tempo.time_to_tick(kit.onsets * HOP / DRUMS_SR - ONSET_LATENCY), dtype=float)
-        except Exception as err:
-            print(f"[{i}/{len(folders)}] {folder.name}: erro ({err})", flush=True)
+    jobs = [(f, rules, bleed) for f in folders]
+    results = (map(_collect_safe, jobs) if workers <= 1
+               else ProcessPoolExecutor(workers).map(_collect_safe, jobs, chunksize=1))
+    for i, (folder, res, err) in enumerate(results, 1):
+        if err or res is None:
+            if err:
+                print(f"[{i}/{len(folders)}] {folder.name}: erro ({err})", flush=True)
             continue
-        labels = np.zeros((len(ticks), len(PIECES)), dtype=np.float32)
-        tol = res // 8
-        for t, piece in theirs:
-            near = np.flatnonzero(np.abs(ticks - t) <= tol)
-            if len(near):
-                labels[near[np.argmin(np.abs(ticks[near] - t))], PIECES.index(piece)] = 1.0
-            else:
-                missed += 1
-        total += len(theirs)
-        feats.append(kit.features)
-        ticks_all.append(ticks * 192 / res)
-        ys.append(labels)
-        songs += [folder.name] * len(ticks)
-        print(f"[{i}/{len(folders)}] {folder.name}: {len(ticks)} ataques (vazamento {gain:.2f})", flush=True)
+        f, t, y, m, n, gain = res
+        feats.append(f)
+        ticks_all.append(t)
+        ys.append(y)
+        missed += m
+        total += n
+        songs += [f"{folder.parent.name}/{folder.name}"] * len(t)   # duas cópias da mesma música não se misturam
+        if i % 25 == 0 or i == len(folders):
+            print(f"[{i}/{len(folders)}] {folder.name}: {len(t)} ataques (vazamento {gain:.2f})", flush=True)
     np.savez_compressed(out, features=np.vstack(feats), ticks=np.concatenate(ticks_all), y=np.vstack(ys),
                         songs=np.array(songs))
     print(f"{len(set(songs))} músicas, {sum(len(x) for x in feats)} ataques; golpes oficiais sem ataque detectado: "
@@ -208,34 +268,80 @@ def _outputs(y8: np.ndarray) -> np.ndarray:
     return np.hstack([y8[:, cols], tom])
 
 
-def train_drums(data: Path) -> None:
-    from ai_charter import drum_model
+def _epochs(rows: int) -> int:
+    """Épocas para dar ~70 mil passos de treino: muitas com poucas músicas, poucas com milhares."""
+    return int(np.clip(round(70_000 * 512 / max(1, rows)), 8, 60))
+
+
+def train_drums(data: Path, folds: int = 3) -> None:
+    """Treina as duas etapas do modelo de bateria (drum_model.py).
+
+    A etapa da levada aprende com o que a etapa do som acha de músicas que ela NÃO viu no treino
+    (validação cruzada em `folds` partes): se aprendesse com as respostas da etapa do som para as
+    próprias músicas de treino (quase sempre certas), confiaria demais nela e não aprenderia a
+    corrigir os erros que aparecem numa música nova."""
+    from ai_charter import drum_model as dm
 
     d = np.load(data)
     songs = d["songs"]
-    names = list(dict.fromkeys(songs.tolist()))
-    x = np.vstack([drum_model.model_inputs(d["features"][songs == n], d["ticks"][songs == n], 192) for n in names])
-    y = _outputs(np.vstack([d["y"][songs == n] for n in names]))
-    songs = np.concatenate([songs[songs == n] for n in names])
-    test = np.array([is_test(str(n)) for n in songs])
-    val = np.array([zlib.crc32(str(n).encode("utf-8")) % 10 == 3 for n in songs]) & ~test
+    cut = np.flatnonzero(songs[1:] != songs[:-1]) + 1    # os ataques de cada música vêm juntos
+    starts, ends = np.concatenate([[0], cut]), np.concatenate([cut, [len(songs)]])
+    names = [str(songs[s]) for s in starts]
+    del songs
+    ticks, y = d["ticks"], _outputs(d["y"])
+    feats = d["features"]
+    x1 = np.empty((len(ticks), len(dm.INPUT_NAMES)), dtype=np.float32)
+    for s, e in zip(starts, ends):
+        x1[s:e] = dm.model_inputs(feats[s:e], ticks[s:e], 192)
+    del feats
+    song_of = np.repeat(np.arange(len(names)), ends - starts)
+    crc = np.array([zlib.crc32(n.encode("utf-8")) for n in names])
+    test = np.array([is_test(n) for n in names])[song_of]
+    val = (crc % 10 == 3)[song_of] & ~test
     fit = ~test & ~val
-    print(f"treino {len(set(songs[fit]))} músicas, validação {len(set(songs[val]))}, teste {len(set(songs[test]))}")
-    params = drum_model.train(x[fit], y[fit])
-    model = drum_model.DrumModel({**params, "thresholds": [0.5] * y.shape[1]})
+    fold = (crc % folds)[song_of]
+    print(f"treino {len(set(song_of[fit]))} músicas, validação {len(set(song_of[val]))}, "
+          f"teste {len(set(song_of[test]))}; {fit.sum()} ataques de treino", flush=True)
+
+    epochs = _epochs(int(fit.sum()))
+    p1 = np.zeros(y.shape, dtype=np.float32)
+    for k in range(folds):
+        print(f"etapa do som, parte {k + 1}/{folds} (para a etapa da levada aprender com erros reais)", flush=True)
+        params = dm.train(x1, y, np.flatnonzero(fit & (fold != k)), epochs=epochs)
+        held = np.flatnonzero(fit & (fold == k))
+        p1[held] = dm.mlp(params, x1, held)
+    print("etapa do som, modelo final", flush=True)
+    sound = dm.train(x1, y, np.flatnonzero(fit), epochs=epochs)
+    rest = np.flatnonzero(~fit)
+    p1[rest] = dm.mlp(sound, x1, rest)
+    del x1
+
+    x2 = np.empty((len(ticks), len(dm.GROOVE_NAMES)), dtype=np.float16)
+    for s, e in zip(starts, ends):
+        x2[s:e] = dm.groove_inputs(p1[s:e], ticks[s:e], 192)
+    print("etapa da levada", flush=True)
+    groove = dm.train(x2, y, np.flatnonzero(fit), hidden=64, epochs=epochs)
+
     # Limiar de cada saída: o que dá o melhor F1 na validação
-    pv = model.predict(x[val])
-    thresholds = [float(max(np.arange(0.1, 0.9, 0.05), key=lambda th: _f1(pv[:, k] >= th, y[val, k] > 0)))
-                  for k in range(y.shape[1])]
-    pt = model.predict(x[test])
-    print(f"{'saída':10s} {'limiar':>6s} {'F1 teste':>9s} (por ataque)")
+    val_rows, test_rows = np.flatnonzero(val), np.flatnonzero(test)
+    pv, pt = dm.mlp(groove, x2, val_rows), dm.mlp(groove, x2, test_rows)
+    pv1, pt1 = p1[val_rows], p1[test_rows]
+    grid = np.arange(0.1, 0.9, 0.05)
+
+    def best(p: np.ndarray, k: int) -> float:
+        return float(max(grid, key=lambda th: _f1(p[:, k] >= th, y[val_rows, k] > 0)))
+
+    thresholds = [best(pv, k) for k in range(y.shape[1])]
+    thresholds1 = [best(pv1, k) for k in range(y.shape[1])]
+    print(f"{'saída':10s} {'só som':>7s} {'+levada':>8s}   (F1 por ataque no teste)")
     report = {}
-    for k, piece in enumerate(drum_model.OUTPUTS):
-        report[piece] = round(_f1(pt[:, k] >= thresholds[k], y[test, k] > 0), 3)
-        print(f"{piece:10s} {thresholds[k]:6.2f} {report[piece]:9.3f}")
-    drum_model.save(params, np.array(thresholds), {"teste_f1_por_ataque": report,
-                                                   "musicas_treino": int(len(set(songs[fit])))})
-    print(f"modelo salvo em {drum_model.MODEL_PATH}")
+    for k, piece in enumerate(dm.OUTPUTS):
+        f_sound = _f1(pt1[:, k] >= thresholds1[k], y[test_rows, k] > 0)
+        report[piece] = round(_f1(pt[:, k] >= thresholds[k], y[test_rows, k] > 0), 3)
+        print(f"{piece:10s} {f_sound:7.3f} {report[piece]:8.3f}")
+    dm.save(sound, np.array(thresholds), {"teste_f1_por_ataque": report,
+                                          "musicas_treino": int(len(set(song_of[fit])))}, groove=groove)
+    print(f"modelo salvo em {dm.MODEL_PATH}")
 
 
 def _f1(pred: np.ndarray, true: np.ndarray) -> float:
@@ -257,6 +363,9 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("folder", type=Path)
     c.add_argument("out", type=Path)
     c.add_argument("--rules", type=Path)
+    c.add_argument("--workers", type=int, default=1, help="músicas analisadas ao mesmo tempo")
+    c.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
+    p.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     t = sub.add_parser("train-drums", help="treina o modelo de bateria (ai_charter/drum_model.json)")
     t.add_argument("data", type=Path)
     args = parser.parse_args(argv)
@@ -269,9 +378,9 @@ def main(argv: list[str] | None = None) -> None:
         train_drums(args.data)
         return
     rules = load_rules(args.rules)
-    folders = song_folders(args.folder)
+    folders = song_folders(args.folder, args.charter)
     if args.command == "collect":
-        collect(folders, args.out, rules)
+        collect(folders, args.out, rules, workers=args.workers)
         return
     if args.test:
         folders = [f for f in folders if is_test(f.name)]
