@@ -37,4 +37,4 @@ ai-charter-bench = "ai_charter.bench:main"
 include = ["ai_charter*"]
 
 [tool.setuptools.package-data]
-ai_charter = ["default_rules.toml", "viewer/*.html"]
+ai_charter = ["default_rules.toml", "genres/*.toml", "viewer/*.html"]

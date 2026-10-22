@@ -1,0 +1,24 @@
+# MPB, bossa nova e samba: violão de nylon, síncope em semicolcheias e acordes com 7ª e 9ª.
+
+[preset]
+name = "MPB / Bossa / Samba"
+description = "MPB, bossa nova, samba, pagode: violão de nylon, síncope e acordes com tensões."
+aliases = ["mpb", "bossa nova", "bossa", "samba", "pagode", "choro", "música popular brasileira",
+           "musica popular brasileira", "brazilian", "brazilian music", "samba-rock", "samba rock",
+           "axé", "axe", "tropicália", "tropicalia", "latin", "bolero"]
+
+[general]
+allow_triplets = false            # a síncope é em semicolcheias, não em tercinas
+drum_fill_every_measures = 0      # percussão e bateria leve: sem viradas de Star Power fixas
+
+[detection.guitar]
+onset_delta = 0.03                # nylon tem ataque suave
+min_rms_db = -40.0
+chord_third_ratio = 0.4           # a terça do nylon soa mais fraca
+chord_smoothing = 3               # a harmonia muda mais rápido (acordes de passagem)
+
+[detection.keys]
+min_rms_db = -40.0
+
+[frets.medium]
+allow_offgrid = true              # a síncope faz parte da música até no Medium

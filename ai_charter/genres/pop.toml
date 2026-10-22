@@ -1,0 +1,14 @@
+# Pop: produção limpa, teclado/sintetizador em destaque e voz na frente.
+
+[preset]
+name = "Pop"
+description = "Pop, pop rock, R&B, soul, funk: produção limpa, teclado em destaque."
+aliases = ["pop", "pop rock", "pop/rock", "pop-rock", "dance pop", "r&b", "r&b/soul/funk", "soul",
+           "funk", "rnb", "contemporary r&b", "britpop", "power pop", "teen pop", "k-pop", "j-pop"]
+
+[general]
+min_stem_energy = 0.02            # teclado e sintetizadores mais baixos na mix ainda viram chart
+
+[detection.keys]
+onset_delta = 0.035
+min_rms_db = -38.0

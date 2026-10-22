@@ -1,0 +1,10 @@
+# Rock: as regras padrão do ai-charter já foram ajustadas para rock (guitarra, baixo, bateria e voz).
+# Este arquivo existe para o gênero aparecer na lista e reconhecer as tags.
+
+[preset]
+name = "Rock"
+description = "Rock, hard rock, alternativo, grunge, indie: as regras padrão."
+aliases = ["rock", "classic rock", "hard rock", "alternative", "alternative rock", "indie", "indie rock",
+           "grunge", "southern rock", "glam", "glam rock", "psychedelic rock", "new wave", "progressive",
+           "prog", "prog rock", "progressive rock", "post-rock", "garage rock", "rock nacional", "brock",
+           "rock brasileiro", "rock alternativo", "surf rock", "rockabilly", "stoner rock"]

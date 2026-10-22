@@ -1,7 +1,8 @@
 """Carrega as regras de charting a partir de arquivos TOML.
 
-As regras padrão ficam em `default_rules.toml`. O usuário pode passar um
-arquivo próprio que sobrescreve apenas os valores que ele mudar.
+As regras padrão ficam em `default_rules.toml`. Por cima delas podem vir, nesta
+ordem, uma predefinição de gênero musical (`genres/<gênero>.toml`, só com o que
+muda) e um arquivo do usuário, que sobrescreve apenas os valores que ele mudar.
 """
 
 from __future__ import annotations
@@ -168,10 +169,55 @@ def _build(cls, data: dict[str, Any], where: str):
     return cls(**data)
 
 
-def load_rules(path: str | Path | None = None) -> Rules:
-    """Lê as regras padrão e, se `path` for informado, aplica as do usuário por cima."""
+@dataclass
+class Genre:
+    """Predefinição de regras para um gênero musical (arquivo genres/<id>.toml)."""
+    id: str
+    name: str
+    description: str
+    aliases: list[str]        # tags de gênero (em minúsculas) que correspondem a ele
+    tempo: str | None         # mapa de tempo sugerido quando o usuário deixa "auto"
+    rules: dict[str, Any]     # só o que muda em relação ao default_rules.toml
+
+
+def list_genres() -> list[Genre]:
+    """As predefinições de gênero que vêm com o ai-charter, na ordem do nome do arquivo."""
+    genres = []
+    folder = resources.files("ai_charter").joinpath("genres")
+    for item in sorted(folder.iterdir(), key=lambda p: p.name):
+        if not item.name.endswith(".toml"):
+            continue
+        data = tomllib.loads(item.read_text("utf-8"))
+        preset = data.pop("preset", {})
+        genres.append(Genre(
+            id=item.name[:-len(".toml")], name=preset.get("name", item.name), description=preset.get("description", ""),
+            aliases=[a.lower() for a in preset.get("aliases", [])], tempo=preset.get("tempo"), rules=data,
+        ))
+    return genres
+
+
+def get_genre(genre: str) -> Genre:
+    for g in list_genres():
+        if g.id == genre:
+            return g
+    names = ", ".join(g.id for g in list_genres())
+    raise ValueError(f"Gênero desconhecido: {genre} (disponíveis: {names})")
+
+
+def genre_for_tag(tag: str | None) -> str | None:
+    """O gênero cuja lista de apelidos tem a tag (ex.: "Thrash Metal" -> "metal"); None se nenhum."""
+    tag = (tag or "").strip().lower()
+    if not tag:
+        return None
+    return next((g.id for g in list_genres() if tag in g.aliases), None)
+
+
+def load_rules(path: str | Path | None = None, genre: str | None = None) -> Rules:
+    """Lê as regras padrão, aplica as do gênero (se houver) e, por fim, as do arquivo `path`."""
     default_text = resources.files("ai_charter").joinpath("default_rules.toml").read_text("utf-8")
     data = tomllib.loads(default_text)
+    if genre:
+        data = _merge(data, get_genre(genre).rules)
     if path is not None:
         with open(path, "rb") as f:
             data = _merge(data, tomllib.load(f))

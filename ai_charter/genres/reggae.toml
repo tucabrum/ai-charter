@@ -1,0 +1,18 @@
+# Reggae e ska: guitarra "skank" curta no contratempo, baixo em destaque e órgão "bubble".
+
+[preset]
+name = "Reggae / Ska"
+description = "Reggae, ska, dub: acordes curtos no contratempo e baixo em destaque."
+aliases = ["reggae", "ska", "reggae/ska", "dub", "rocksteady", "dancehall", "reggae rock", "roots reggae"]
+
+[general]
+min_stem_energy = 0.02            # o órgão costuma ficar baixo na mix
+
+[detection.guitar]
+release_ratio = 0.5               # o skank é abafado logo depois do ataque: notas curtas
+
+[detection.bass]
+onset_delta = 0.035
+
+[frets.expert]
+sustain_min_beats = 0.75          # acordes picados não viram sustain

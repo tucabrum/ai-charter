@@ -1,0 +1,20 @@
+# Punk: power chords em colcheias, andamento rápido, sem quiálteras.
+
+[preset]
+name = "Punk"
+description = "Punk, pop punk, hardcore, emo: power chords em colcheias, rápido e direto."
+aliases = ["punk", "punk rock", "pop punk", "pop-punk", "hardcore", "hardcore punk", "post-hardcore",
+           "emo", "skate punk", "ska punk", "melodic hardcore", "street punk"]
+
+[general]
+allow_triplets = false            # quiálteras quase não aparecem: quantiza no grid reto
+
+[detection.guitar]
+chord_third_ratio = 0.6
+power_chord_third_margin = 0.015
+
+[sanitize]
+noise_ratio = 3.5
+
+[frets.hard]
+min_reduction = 0.05              # o Hard fica mais perto do Expert (a música é repetitiva)

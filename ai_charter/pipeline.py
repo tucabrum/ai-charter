@@ -34,7 +34,7 @@ from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
 from ai_charter.charting.lyrics import read_lyrics
 from ai_charter.charting.sanitize import sanitize
 from ai_charter.charting.vocals import VocalTrack, build_vocal_track
-from ai_charter.config import Rules, load_rules
+from ai_charter.config import Rules, get_genre, load_rules
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
 from ai_charter.drum_model import DrumModel
 from ai_charter.export import audio
@@ -65,6 +65,7 @@ class Options:
     separator: str = "demucs"
     stems_dir: Path | None = None
     rules_path: Path | None = None
+    genre: str | None = None       # predefinição de regras (ai_charter/genres/<gênero>.toml)
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
     tempo_mode: str = "auto"
     title: str | None = None
@@ -253,8 +254,14 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackC
 
 def run(opts: Options, log=print) -> Result:
     audio.require_ffmpeg()
-    rules = load_rules(opts.rules_path)
+    rules = load_rules(opts.rules_path, opts.genre)
     res = rules.general.resolution
+    tempo_mode = opts.tempo_mode
+    if opts.genre:
+        genre = get_genre(opts.genre)
+        log(f"Regras do gênero: {genre.name}")
+        if tempo_mode == "auto" and genre.tempo:
+            tempo_mode = genre.tempo
 
     tags = audio.read_tags(opts.input)
     title = opts.title or tags.get("title") or opts.input.stem
@@ -272,7 +279,7 @@ def run(opts: Options, log=print) -> Result:
         mix_rms = float(np.sqrt(np.mean(mix ** 2)))
 
         log("2/5 Detectando o andamento (BPM)...")
-        tempo = estimate_tempo_map(mix, ANALYSIS_SR, res, opts.tempo_mode)
+        tempo = estimate_tempo_map(mix, ANALYSIS_SR, res, tempo_mode)
         log(f"    BPM médio: {tempo.average_bpm:.1f}")
         tuning = estimate_tuning(mix, ANALYSIS_SR)
         if abs(tuning) >= 0.1:

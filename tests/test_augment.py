@@ -104,6 +104,28 @@ def test_replace_keeps_locked_measures(song):
     assert expert_guitar(after, 4 * measure, 10 ** 9) == expert_guitar(generated, 4 * measure, 10 ** 9) != []
 
 
+def test_tracks_mido_cannot_read_are_copied_byte_by_byte(song):
+    # Charts oficiais (Guitar Hero, Phase Shift) têm sysex com bytes acima de 127: o mido não as aceita.
+    name = b"\xff\x03\x05EXTRA"
+    sysex = b"\x00\xf0\x05\x50\x53\x00\x80\xf7"   # byte 0x80 dentro do sysex
+    body = b"\x00" + name + sysex + b"\x00\xff\x2f\x00"
+    raw_track = b"MTrk" + len(body).to_bytes(4, "big") + body
+    chart = song / "notes.mid"
+    data = chart.read_bytes()
+    count = int.from_bytes(data[10:12], "big")
+    chart.write_bytes(data[:10] + (count + 1).to_bytes(2, "big") + data[12:] + raw_track)
+    with pytest.raises(ValueError):
+        mido.MidiFile(chart)
+    before = chart.read_bytes()
+
+    result = augment(song, ("bass",), log=lambda *_: None)
+    assert result.added == ["bass"]
+    after = chart.read_bytes()
+    assert after.startswith(before[:10]) and after[10:12] == (count + 2).to_bytes(2, "big")
+    assert before[14:] in after   # todas as pistas antigas (inclusive a com sysex) idênticas, na mesma ordem
+    assert existing_parts(song) == ["guitar", "bass"]
+
+
 def test_missing_stem_and_lyrics_are_reported(song):
     (song / "bass.ogg").unlink()
     result = augment(song, ("bass", "vocals", "keys"), log=lambda *_: None)

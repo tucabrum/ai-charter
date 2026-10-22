@@ -1,0 +1,17 @@
+# Blues e jazz: swing, acordes com mais notas (7ª, 9ª) e dinâmica mais suave.
+
+[preset]
+name = "Blues / Jazz"
+description = "Blues, jazz, swing: acordes com 7ª e 9ª, dinâmica suave e ritmo em tercinas."
+aliases = ["blues", "blues rock", "jazz", "swing", "jazz fusion", "fusion", "bebop", "big band",
+           "electric blues", "delta blues", "boogie", "smooth jazz", "jazz rock"]
+
+[detection.guitar]
+onset_delta = 0.035
+min_rms_db = -38.0                # toques mais leves
+chord_notes = 3                   # acordes de 7ª/9ª: a chart mostra mais da harmonia
+chord_third_ratio = 0.45
+
+[detection.keys]
+chord_notes = 3
+min_rms_db = -38.0

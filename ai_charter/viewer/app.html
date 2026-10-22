@@ -68,6 +68,7 @@
   td.act { text-align: right; white-space: nowrap; }
   .chips span { display: inline-block; font-size: 12px; padding: 1px 8px; margin: 2px 4px 2px 0; border-radius: 10px; background: var(--panel-2); color: var(--muted); }
   label.check.off { color: var(--muted); }
+  .genre-hint button { padding: 1px 8px; margin-left: 6px; font-size: 12px; }
   #addForm { max-width: 640px; }
   .lib-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .lib-tools input { flex: 1; min-width: 200px; }
@@ -99,6 +100,11 @@
         <div class="field">
           <span>Instrumentos</span>
           <div id="instruments"></div>
+        </div>
+        <div class="field">
+          <span>Gênero (ajusta as regras de charting)</span>
+          <select name="genre" class="genre-select"><option value="">Padrão (regras gerais)</option></select>
+          <p class="help genre-hint" hidden></p>
         </div>
         <div class="field">
           <span>Vocais: a letra evita que a IA invente palavras</span>
@@ -177,6 +183,11 @@
         <span>Instrumentos a gerar</span>
         <div id="addInstruments"><p class="help">Escolha a pasta para ver o que dá para acrescentar.</p></div>
         <label class="check" style="margin-top: 6px"><input type="checkbox" name="replace"> Refazer também as partes que já existem (os compassos travados no editor ficam como estão)</label>
+      </div>
+      <div class="field">
+        <span>Gênero (ajusta as regras de charting)</span>
+        <select name="genre" class="genre-select"><option value="">Padrão (regras gerais)</option></select>
+        <p class="help genre-hint" hidden></p>
       </div>
       <div class="field" id="addVocals" hidden>
         <span>Letra dos vocais</span>
@@ -286,6 +297,7 @@ form.onsubmit = async ev => {
     input: f.input.value, title: f.title.value, artist: f.artist.value, output: f.output.value,
     instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
     separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
+    genre: f.genre.value,
     format: f.format.value, zip: f.zip.checked, open_editor: f.open_editor.checked, overwrite: f.overwrite.checked,
     lyrics_text: mode === "paste" ? f.lyrics_text.value : "",
     lyrics: mode === "file" ? f.lyrics.value : "",
@@ -304,6 +316,51 @@ form.onsubmit = async ev => {
 };
 
 function showError(text) { $("#formError").textContent = text; }
+
+// ---- gênero ----
+function genreName(id) {
+  return (state.genres.find(g => g.id === id) || {}).name || id;
+}
+
+function showGenreHint(owner, tag, genre) {
+  const hint = $(".genre-hint", owner), select = owner.elements.genre;
+  hint.hidden = !tag;
+  if (!tag) return;
+  if (!genre) {
+    hint.textContent = `A tag de gênero diz "${tag}", que não corresponde a nenhuma predefinição.`;
+    return;
+  }
+  hint.textContent = `A tag de gênero diz "${tag}".`;
+  if (select.value !== genre) {
+    const use = document.createElement("button");
+    use.type = "button";
+    use.textContent = "Usar " + genreName(genre);
+    use.onclick = () => { select.value = genre; select.dispatchEvent(new Event("change", { bubbles: true })); };
+    hint.append(use);
+  }
+}
+
+for (const select of document.querySelectorAll(".genre-select")) {
+  select.addEventListener("change", () => {
+    const g = state.genres.find(g => g.id === select.value);
+    select.title = g ? g.description : "";
+    const button = $(".genre-hint button", select.closest("form"));
+    if (button) button.remove();
+  });
+}
+
+async function suggestFromTags() {
+  const file = form.elements.input.value.trim();
+  if (!file) return showGenreHint(form, "", null);
+  try {
+    const tags = await api("api/tags?file=" + encodeURIComponent(file));
+    form.elements.title.placeholder = tags.title || "Título (padrão: tag do arquivo)";
+    form.elements.artist.placeholder = tags.artist || "Artista (padrão: tag do arquivo)";
+    showGenreHint(form, tags.genre_tag, tags.genre);
+  } catch { showGenreHint(form, "", null); }
+}
+form.elements.input.addEventListener("picked", suggestFromTags);
+form.elements.input.addEventListener("change", suggestFromTags);
 
 // ---- gerações ----
 const jobs = new Map();
@@ -373,6 +430,7 @@ async function loadSong() {
   song = null;
   $("#addInfo").hidden = true;
   $("#addError").textContent = "";
+  showGenreHint(addForm, "", null);
   $("#addInstruments").innerHTML = '<p class="help">Escolha a pasta para ver o que dá para acrescentar.</p>';
   if (dir) {
     try {
@@ -381,6 +439,7 @@ async function loadSong() {
       $("#addParts").innerHTML = song.parts.length ? song.parts.map(p => `<span>${esc(NAMES[p] || p)}</span>`).join("")
         : "<span>nenhuma parte</span>";
       $("#addInfo").hidden = false;
+      showGenreHint(addForm, song.genre_tag, song.genre);
       const folderLyrics = $("#addFolderLyrics");
       folderLyrics.hidden = !song.lyrics;
       if (song.lyrics) {
@@ -429,6 +488,7 @@ addForm.onsubmit = async ev => {
   const vocals = instruments.includes("vocals");
   const body = {
     folder: f.folder.value, instruments, replace: f.replace.checked, rules: f.rules.value,
+    genre: f.genre.value,
     open_editor: f.open_editor.checked,
     lyrics_text: vocals && mode === "paste" ? f.lyrics_text.value : "",
     lyrics: vocals && mode === "file" ? f.lyrics.value : "",
@@ -488,6 +548,10 @@ $("#libFilter").addEventListener("input", renderLibrary);
   $("#instruments").innerHTML = state.instruments.map(i =>
     `<label class="check"><input type="checkbox" name="instrument" value="${i}" checked> ${NAMES[i] || i}</label>`).join("");
   form.elements.output.value = state.settings.output || "";
+  for (const select of document.querySelectorAll(".genre-select")) {
+    select.insertAdjacentHTML("beforeend", state.genres.map(g =>
+      `<option value="${esc(g.id)}" title="${esc(g.description)}">${esc(g.name)}</option>`).join(""));
+  }
   $("#libDir").value = state.settings.library || "";
   if (!state.ffmpeg) $("#warn").textContent = "ffmpeg não encontrado no PATH: a geração vai falhar até instalá-lo.";
   for (const info of state.jobs) addJob(info);

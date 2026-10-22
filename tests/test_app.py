@@ -71,6 +71,16 @@ def test_page_and_state(server):
     state = get(base + "api/state")
     assert state["instruments"] == ["guitar", "bass", "drums", "keys"]
     assert state["jobs"] == []
+    assert {"id": "metal", "name": "Metal"}.items() <= next(g for g in state["genres"] if g["id"] == "metal").items()
+
+
+def test_genre_is_passed_and_validated(server, music):
+    base, app = server
+    assert parse_request({"input": str(music), "instruments": ["guitar"], "genre": "punk"}, app.settings).genre == "punk"
+    assert parse_request({"input": str(music), "instruments": ["guitar"], "genre": ""}, app.settings).genre is None
+    with pytest.raises(urllib.error.HTTPError) as err:
+        post(base + "api/jobs", {"input": str(music), "instruments": ["guitar"], "genre": "polca"})
+    assert "gênero inválido" in json.loads(err.value.read())["error"]
 
 
 def test_job_runs_and_reports_log_and_folder(server, music, tmp_path):
@@ -189,9 +199,11 @@ def test_add_to_existing_chart(server, tmp_path):
     for name in ("song.ogg", "guitar.ogg", "vocals.ogg"):
         (song / name).write_bytes(b"OggS")
     (song / "letra.txt").write_text("la la", encoding="utf-8")
+    (song / "song.ini").write_text("[song]\nname = Música\ngenre = Bossa Nova\n", encoding="utf-8")
     info = get(base + "api/song?dir=" + urllib.parse.quote(str(song)))
     assert info["parts"] == ["guitar"] and info["stems"] == ["guitar", "other", "vocals"]
     assert info["lyrics"] == "letra.txt"
+    assert (info["genre_tag"], info["genre"]) == ("Bossa Nova", "mpb")   # só sugestão: a página decide
 
     seen = []
     app.add_runner = lambda req, log: seen.append(req) or req.folder

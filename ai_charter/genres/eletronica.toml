@@ -1,0 +1,16 @@
+# Eletrônica e dance: andamento fixo (feito no computador) e sintetizadores em destaque.
+
+[preset]
+name = "Eletrônica / Dance"
+description = "Eletrônica, dance, EDM, synthpop: BPM fixo e sintetizadores."
+aliases = ["electronic", "electronica", "eletrônica", "eletronica", "dance", "edm", "house", "techno",
+           "trance", "pop/dance/electronic", "synthpop", "synth-pop", "synthwave", "dubstep",
+           "drum and bass", "drum & bass", "industrial", "electropop", "electro", "disco"]
+tempo = "constant"                # com o mapa de tempo em "automático", usa BPM constante
+
+[general]
+min_stem_energy = 0.02
+
+[detection.keys]
+onset_delta = 0.035
+chord_ratio = 0.55                # pads de sintetizador: acordes com notas de volume parecido

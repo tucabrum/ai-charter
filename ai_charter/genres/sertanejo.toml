@@ -1,0 +1,21 @@
+# Sertanejo, country e forró: violão dedilhado, sanfona/teclado e frases longas de voz.
+
+[preset]
+name = "Sertanejo / Country"
+description = "Sertanejo, country, forró, folk: violão, sanfona e frases de voz longas."
+aliases = ["sertanejo", "sertanejo universitário", "sertanejo universitario", "música sertaneja",
+           "musica sertaneja", "caipira", "country", "country rock", "alt-country", "forró", "forro",
+           "piseiro", "arrocha", "folk", "folk rock", "bluegrass", "americana", "vanerão", "vanerao"]
+
+[general]
+min_stem_energy = 0.025           # a sanfona costuma ficar atrás na mix
+
+[detection.guitar]
+onset_delta = 0.035               # dedilhado: ataques mais leves
+min_rms_db = -38.0
+
+[detection.keys]
+min_rms_db = -38.0
+
+[vocals]
+phrase_gap_beats = 1.0            # respirações curtas não quebram a frase

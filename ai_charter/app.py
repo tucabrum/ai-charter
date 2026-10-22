@@ -10,7 +10,8 @@ Sobe um servidor local (só nesta máquina) que entrega a página da interface
   GET  /api/state        configurações, instrumentos e as gerações desta sessão
   GET  /api/jobs/<id>    andamento de uma geração (?since=N: só as linhas novas do log)
   GET  /api/library      músicas da biblioteca (pastas com notes.mid ou notes.chart)
-  GET  /api/song?dir=    o que a pasta de uma música já tem (partes, stems e letra)
+  GET  /api/song?dir=    o que a pasta de uma música já tem (partes, stems, letra e gênero)
+  GET  /api/tags?file=   tags do arquivo de música e o gênero que corresponde à tag
   POST /api/jobs         põe uma geração na fila (uma de cada vez: o Demucs é pesado)
   POST /api/add          põe na fila o acréscimo de instrumentos a uma chart (augment.py)
   POST /api/editor       abre uma pasta de música no editor (o mesmo do ai-charter-view)
@@ -40,6 +41,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from ai_charter import view
+from ai_charter.config import genre_for_tag, list_genres
 
 PAGE = Path(__file__).parent / "viewer" / "app.html"
 SETTINGS_PATH = Path.home() / ".ai-charter" / "app.json"
@@ -105,6 +107,7 @@ class Request:
     separator: str = "demucs"
     stems_dir: Path | None = None
     rules_path: Path | None = None
+    genre: str | None = None
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -138,6 +141,13 @@ def _choice(data: dict, key: str, choices: tuple[str, ...]) -> str:
     return value
 
 
+def _genre(data: dict) -> str | None:
+    genre = str(data.get("genre") or "").strip() or None
+    if genre is not None and genre not in {g.id for g in list_genres()}:
+        raise BadRequest(f"gênero inválido: {genre}")
+    return genre
+
+
 def parse_request(data: dict, settings: dict) -> Request:
     """Valida o formulário da página (os mesmos cuidados da CLI)."""
     instruments = tuple(data.get("instruments") or ())
@@ -154,7 +164,7 @@ def parse_request(data: dict, settings: dict) -> Request:
     output = _path(data, "output", "") or (Path(settings["output"]) if settings.get("output") else Path("output"))
     return Request(
         input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
-        separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"),
+        separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -187,7 +197,7 @@ def run_request(req: Request, log) -> Path:
             lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
         opts = Options(
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
-            rules_path=req.rules_path, instruments=req.instruments, tempo_mode=req.tempo_mode,
+            rules_path=req.rules_path, genre=req.genre, instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
         )
@@ -206,6 +216,7 @@ class AddRequest:
     folder: Path
     instruments: tuple[str, ...]
     rules_path: Path | None = None
+    genre: str | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
     auto_lyrics: bool = False
@@ -226,7 +237,7 @@ def parse_add_request(data: dict) -> AddRequest:
     if not instruments:
         raise BadRequest("escolha ao menos um instrumento para acrescentar")
     return AddRequest(
-        folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"),
+        folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")),
@@ -241,7 +252,7 @@ def run_add_request(req: AddRequest, log) -> Path:
         lyrics = req.folder / LYRICS_NAME   # fica guardada na pasta, como numa chart nova
         lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
-                     rules_path=req.rules_path, replace_existing=req.replace, log=log)
+                     rules_path=req.rules_path, genre=req.genre, replace_existing=req.replace, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder
@@ -264,6 +275,7 @@ def song_info(folder: Path) -> dict:
         "folder": str(folder), "name": ini.get("name") or folder.name, "artist": ini.get("artist", ""),
         "parts": existing_parts(folder), "stems": stems,
         "lyrics": next((n for n in LYRICS_NAMES if (folder / n).is_file()), None),
+        "genre_tag": ini.get("genre", ""), "genre": genre_for_tag(ini.get("genre")),
     }
 
 
@@ -449,6 +461,7 @@ class App:
         return {
             "settings": self.settings, "instruments": INSTRUMENTS, "separators": SEPARATORS,
             "formats": FORMATS, "tempo_modes": TEMPO_MODES,
+            "genres": [{"id": g.id, "name": g.name, "description": g.description} for g in list_genres()],
             "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
             "jobs": [j.summary() for j in self.jobs.items.values()],
         }
@@ -474,6 +487,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8", status)
 
     def do_GET(self) -> None:
+        try:
+            self._get()
+        except Exception as exc:   # a página mostra o erro em vez de perder a conexão
+            traceback.print_exc()
+            self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
+
+    def _get(self) -> None:
         url = urlparse(self.path)
         path, query = unquote(url.path), parse_qs(url.query)
         if path in ("/", "/index.html"):
@@ -486,6 +506,15 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "geração não encontrada"}, 404)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._json({**job.summary(), "lines": job.lines[since:], "next": len(job.lines)})
+        if path == "/api/tags":
+            try:
+                file = _path({"file": (query.get("file") or [""])[0]}, "file", "file", required=True)
+            except BadRequest as exc:
+                return self._json({"error": str(exc)}, 400)
+            from ai_charter.export import audio
+            tags = audio.read_tags(file) if shutil.which("ffprobe") else {}
+            return self._json({"title": tags.get("title", ""), "artist": tags.get("artist", ""),
+                               "genre_tag": tags.get("genre", ""), "genre": genre_for_tag(tags.get("genre"))})
         if path == "/api/song":
             try:
                 folder = _path({"dir": (query.get("dir") or [""])[0]}, "dir", "dir", required=True)

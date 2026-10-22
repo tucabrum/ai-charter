@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from ai_charter.config import list_genres
 from ai_charter.pipeline import ALL_INSTRUMENTS, Options, run
 
 
@@ -21,6 +22,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                         help="como separar os stems (padrão: demucs)")
     parser.add_argument("--stems", type=Path, help="pasta com stems prontos (use com --separator folder)")
     parser.add_argument("--rules", type=Path, help="arquivo .toml com regras de charting personalizadas")
+    genres = list_genres()
+    parser.add_argument("--genre", choices=[g.id for g in genres], metavar="GENERO",
+                        help="regras ajustadas para um gênero (o --rules vale por cima delas): "
+                             + ", ".join(f"{g.id} ({g.name})" for g in genres))
     parser.add_argument("--instruments", default=",".join(ALL_INSTRUMENTS),
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",
@@ -52,7 +57,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
 
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
-        rules_path=args.rules, instruments=instruments, tempo_mode=args.tempo,
+        rules_path=args.rules, genre=args.genre, instruments=instruments, tempo_mode=args.tempo,
         title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
         output_format=args.format,
         make_zip=args.zip, keep_work=args.keep_work,

@@ -1,0 +1,22 @@
+# Acústico e baladas: dinâmica suave, violão/piano e notas longas.
+
+[preset]
+name = "Acústico / Balada"
+description = "Acústico, baladas, unplugged: dinâmica suave e notas longas."
+aliases = ["acoustic", "acústico", "acustico", "ballad", "balada", "unplugged", "singer-songwriter",
+           "soft rock", "power ballad", "lullaby"]
+
+[detection.guitar]
+onset_delta = 0.03
+min_rms_db = -42.0                # toques bem leves ainda contam
+release_ratio = 0.25              # notas soam por mais tempo
+
+[detection.keys]
+min_rms_db = -42.0
+release_ratio = 0.25
+
+[frets.expert]
+sustain_min_beats = 0.375         # mais notas longas viram sustain
+
+[frets.hard]
+sustain_min_beats = 0.5

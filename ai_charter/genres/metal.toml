@@ -1,0 +1,20 @@
+# Metal: guitarras com muita distorção, palhetada rápida e power chords.
+
+[preset]
+name = "Metal"
+description = "Heavy, thrash, nu metal: palhetada rápida e power chords, com distorção pesada."
+aliases = ["metal", "heavy metal", "thrash metal", "nu metal", "nu-metal", "alternative metal",
+           "death metal", "melodic death metal", "power metal", "black metal", "metalcore", "djent",
+           "progressive metal", "prog metal", "doom metal", "speed metal", "groove metal",
+           "industrial metal", "symphonic metal", "folk metal", "deathcore", "sludge metal"]
+
+[detection.guitar]
+onset_delta = 0.03                # palhetadas rápidas e abafadas: ataques mais fracos contam
+chord_third_ratio = 0.6           # a distorção cria harmônicos que parecem terça: exige terça mais forte
+power_chord_third_margin = 0.015  # na dúvida entre maior e menor, é power chord
+
+[detection.bass]
+onset_delta = 0.03
+
+[sanitize]
+noise_ratio = 4.0                 # distorção é "ruído" o tempo todo: só simplifica compassos muito sujos

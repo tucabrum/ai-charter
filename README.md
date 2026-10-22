@@ -60,6 +60,7 @@ Opções úteis:
 | `--format chart` | gera `notes.chart` em vez de `notes.mid` (o `.chart` não tem vocal) |
 | `--tempo constant` / `variable` | força BPM fixo ou variável (padrão: decide sozinho) |
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
+| `--genre metal` | regras ajustadas para um gênero (veja "Regras por gênero musical") |
 | `--zip` | também cria um `.zip` da pasta |
 
 ### Pela interface no navegador
@@ -183,6 +184,34 @@ Principais regras por dificuldade (guitarra/baixo/teclado):
 | Menor distância entre notas | semicolcheia | colcheia | colcheia | semínima |
 | HOPOs automáticos | sim | sim | não (tudo palhetado) | não |
 | Notas a menos que a dificuldade acima | — | ≥ 10% | ≥ 15% | ≥ 25% |
+
+### Regras por gênero musical
+
+`--genre` (ou o campo **Gênero** na interface, também no Acrescentar) aplica uma predefinição de
+[`ai_charter/genres/`](ai_charter/genres). Cada arquivo tem só o que muda em relação ao padrão. A ordem
+das camadas é: regras padrão → gênero → seu `--rules`, que vale por cima de tudo.
+
+```bash
+ai-charter musica.flac --genre metal
+ai-charter-add "pasta da música" --instruments guitar --replace --genre mpb
+```
+
+| `--genre` | Para | O que muda |
+|---|---|---|
+| `rock` | rock, hard rock, alternativo, grunge, indie | nada: é o padrão |
+| `metal` | heavy, thrash, nu metal | ataques mais sensíveis, power chords na dúvida, menos sanitização pela distorção |
+| `punk` | punk, pop punk, hardcore, emo | sem quiálteras, power chords, Hard mais perto do Expert |
+| `pop` | pop, pop rock, R&B, soul, funk | teclado mais baixo na mix ainda vira chart |
+| `blues_jazz` | blues, jazz, swing | acordes de 3 notas (7ª, 9ª), toques mais leves |
+| `reggae` | reggae, ska, dub | acordes picados sem sustain, órgão baixo na mix vira chart |
+| `mpb` | MPB, bossa nova, samba, pagode | violão de nylon (ataques suaves), síncope até no Medium, sem quiálteras nem viradas fixas |
+| `sertanejo` | sertanejo, country, forró, folk | dedilhado, sanfona baixa na mix, frases de voz mais longas |
+| `eletronica` | eletrônica, dance, EDM, synthpop | BPM constante (com `--tempo auto`), pads de sintetizador |
+| `acustico` | acústico, baladas, unplugged | toques bem leves, notas e sustains mais longos |
+
+Sem `--genre`, valem as regras padrão. A interface lê a tag de gênero do arquivo (ou do `song.ini`, no
+Acrescentar) e sugere a predefinição correspondente com um botão, mas só a aplica se você clicar. Os
+valores são um ponto de partida, ainda não medidos contra charts oficiais de cada gênero.
 
 ## Como funciona (por dentro)
 
