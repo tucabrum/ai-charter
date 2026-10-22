@@ -29,6 +29,7 @@ ai-charter-compare = "ai_charter.compare:main"
 ai-charter-critic = "ai_charter.critic:main"
 ai-charter-view = "ai_charter.view:main"
 ai-charter-revise = "ai_charter.revision:main"
+ai-charter-bench = "ai_charter.bench:main"
 
 [tool.setuptools.packages.find]
 include = ["ai_charter*"]

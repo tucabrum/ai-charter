@@ -202,6 +202,16 @@ Ideias principais:
   Uma peça mascarada por outra (o surdo debaixo do bumbo, o chimbal debaixo da caixa) entra
   como golpe fraco, e só fica na chart se continuar o ritmo que aquela peça está tocando ali
   (golpes firmes dela no mesmo intervalo antes e depois), como um charter faria de ouvido.
+- **Modelo de bateria aprendido com charts oficiais** (`ai_charter/drum_model.json`): para cada
+  ataque, o transcritor mede um retrato acústico (energia e ressonância em 12 faixas, chiado,
+  cauda dos agudos, altura nos graves, quanto cada som do kit explica o golpe) e o compara com o
+  resto da mesma música. Junto com o lugar do ataque na levada (posição no compasso, vizinhos),
+  uma rede neural pequena dá a probabilidade de bumbo, caixa, chimbal, condução, ataque e tom;
+  qual tom é qual vem dos sons do kit da música, pela altura. Ela foi treinada com charts de
+  Rock Band, com vazamento de guitarra, baixo e voz misturado à bateria (como na bateria separada
+  do mix), e é isso que dá ao charting a noção de levada: caixa costuma cair no 2 e no 4, quase
+  toda colcheia tem um prato marcando o tempo, tom no meio de um groove é raro. Sem o arquivo do
+  modelo, ou com `use_model = false` em `[drum_detection]`, valem só as regras.
   Sons que sempre tocam juntos (bumbo + chimbal) viram as duas peças.
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
@@ -308,6 +318,23 @@ transcritor), a partir do `drums.ogg` da pasta, mantendo o mapa de tempo, o Star
 ```bash
 ai-charter-revise drums "output/Phoenix - Lasso"
 ```
+
+## Avaliando e treinando a bateria com charts oficiais
+
+Com uma pasta de músicas com chart oficial e stem de bateria (ex.: Rock Band):
+
+```bash
+ai-charter-bench drums  "pasta" --test --bleed       # placar por peça (F1) contra o Expert oficial
+ai-charter-bench collect "pasta" exemplos.npz        # ataques + gabarito, para treinar
+ai-charter-bench train-drums exemplos.npz            # treina ai_charter/drum_model.json
+```
+
+As músicas se dividem sempre do mesmo jeito em treino (~80%) e teste (~20%, pelo nome), e
+`--test` mede só nas de teste: o placar é de músicas que o modelo nunca viu. `--bleed` mistura os
+outros stems da música à bateria (vazamento), como na bateria que o Demucs separa do mix.
+
+Em 48 músicas de teste do Rock Band, com vazamento: F1 geral 0,60 com o modelo (0,47 só com as
+regras); bumbo 0,87, caixa 0,77, chimbal 0,48, ataque 0,35, condução 0,19, tons 0,04-0,21.
 
 ## Testes
 

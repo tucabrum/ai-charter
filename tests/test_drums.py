@@ -124,3 +124,27 @@ def test_tempo_map_from_midi():
     tempo = _tempo_map(midi)
     assert tempo.beat_times[:6] == pytest.approx([0.0, 0.5, 1.0, 1.25, 1.5, 1.75])
     assert tempo.time_to_tick(1.25) == pytest.approx(576)
+
+
+def test_shipped_drum_model_loads_and_matches_the_features():
+    from ai_charter.analysis.drums import FEATURE_NAMES
+    from ai_charter.drum_model import INPUT_NAMES, OUTPUTS, DrumModel, model_inputs
+
+    model = DrumModel.load()
+    assert model is not None, "ai_charter/drum_model.json não carregou (treine com ai-charter-bench train-drums)"
+    assert model.w1.shape[0] == len(INPUT_NAMES) and model.w2.shape[1] == len(OUTPUTS)
+    features = np.random.default_rng(0).normal(size=(20, len(FEATURE_NAMES))).astype(np.float32)
+    p = model.predict(model_inputs(features, np.arange(20) * 48.0, 192))
+    assert p.shape == (20, len(OUTPUTS)) and np.all((p >= 0) & (p <= 1))
+
+
+def test_model_from_another_feature_version_is_ignored(tmp_path):
+    import json
+
+    from ai_charter.drum_model import DrumModel, MODEL_PATH
+
+    params = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
+    params["features"] = params["features"][:-1]
+    path = tmp_path / "velho.json"
+    path.write_text(json.dumps(params), encoding="utf-8")
+    assert DrumModel.load(path) is None

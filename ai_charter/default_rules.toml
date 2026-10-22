@@ -89,6 +89,7 @@ accent_min_beats = 2.0
 [drum_detection]
 # Como os conversores de bateria para MIDI: primeiro descobre os sons do kit da gravação
 # (grupos de golpes com o mesmo espectro), dá nome a cada um e depois marca quando cada som toca.
+use_model = true             # usa o modelo treinado com charts oficiais (ai_charter/drum_model.json), se existir
 onset_delta = 0.07           # sensibilidade dos ataques (menor = acha batidas mais fracas)
 min_level = 0.03             # ignora ataques com menos som novo que isso × os 5% mais fortes
 max_sounds = 12              # quantos sons diferentes procurar no kit

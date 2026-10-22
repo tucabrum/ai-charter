@@ -53,6 +53,7 @@ class PitchedDetection:
 
 @dataclass
 class DrumDetection:
+    use_model: bool
     onset_delta: float
     min_level: float
     max_sounds: int

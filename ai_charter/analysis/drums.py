@@ -293,6 +293,49 @@ def _explained(V: np.ndarray, w: np.ndarray, h: np.ndarray, rows: np.ndarray) ->
     return part.sum(axis=0) / (V[rows].sum(axis=0) + 1e-12)
 
 
+# ------------------------------------------------------------------ retrato de cada ataque
+# 12 faixas de ~1 oitava (30 Hz a 16 kHz): nível e formato do som novo, e quanto cada faixa ainda
+# soa ~80 ms depois; chiado, cauda dos agudos, excesso de agudos, volume, altura nos graves; e
+# quanto os sons do kit de cada tipo explicam o ataque (as regras viram pistas para o modelo).
+FEATURE_BANDS = np.geomspace(30.0, 16000.0, 13)   # bordas das 12 faixas
+SOUND_KINDS = (KICK, SNARE, TOM, CYMBAL)
+FEATURE_NAMES = ([f"nivel_{i}" for i in range(12)] + [f"forma_{i}" for i in range(12)]
+                 + [f"ressoa_{i}" for i in range(12)]
+                 + ["chiado", "cauda_agudos", "excesso_agudos", "volume", "altura_graves"]
+                 + [f"som_{k}" for k in SOUND_KINDS] + ["som_prato_junto"])
+
+
+def _kind(piece: str) -> str:
+    return TOM if piece in TOMS or piece == TOM else piece
+
+
+def _features(V, fresh, left, centers, centers_short, tail, rattle, air_ratio, sounds, explained,
+              explained_also, strength) -> np.ndarray:
+    def bands(M, c):
+        return np.stack([M[(c >= lo) & (c < hi)].sum(axis=0) for lo, hi in zip(FEATURE_BANDS[:-1], FEATURE_BANDS[1:])], axis=1)
+
+    level = bands(V, centers) + 1e-9
+    total = level.sum(axis=1, keepdims=True)
+    ref = np.median(total)
+    f_new, f_left = bands(fresh, centers_short), bands(left, centers_short)
+    tonal = (centers >= 35) & (centers < 600)
+    pitch = centers[tonal][np.argmax(V[tonal], axis=0)]
+    cols = [np.log10(level / ref), level / total, np.clip(f_left / (f_new + 1e-9), 0.0, 1.5),
+            rattle[:, None], tail[:, None], np.log1p(air_ratio)[:, None], np.log10(total / ref),
+            np.log2(pitch / 60.0)[:, None]]
+    evidence = np.zeros((V.shape[1], len(SOUND_KINDS) + 1))
+    for k, sound in enumerate(sounds):
+        score = explained[k] * np.minimum(strength[k], 1.0)
+        kind = SOUND_KINDS.index(_kind(sound.piece)) if _kind(sound.piece) in SOUND_KINDS else None
+        if kind is not None:
+            evidence[:, kind] = np.maximum(evidence[:, kind], score)
+        if sound.tom_as:   # som de caixa que às vezes é tom: conta também como tom
+            evidence[:, SOUND_KINDS.index(TOM)] = np.maximum(evidence[:, SOUND_KINDS.index(TOM)], score)
+        if sound.also:
+            evidence[:, -1] = np.maximum(evidence[:, -1], explained_also[k] * np.minimum(strength[k], 1.0))
+    return np.concatenate(cols + [evidence], axis=1).astype(np.float32)
+
+
 @dataclass
 class KitAnalysis:
     sounds: list[DrumSound]
@@ -303,6 +346,7 @@ class KitAnalysis:
     cymbal_tail: np.ndarray  # [ataque]: quanto dos agudos do golpe ainda soa em ~150-300 ms
     rattle: np.ndarray       # [ataque]: quanto do chiado de 2-8 kHz ainda soa ~80 ms depois
     air_ratio: np.ndarray    # [ataque]: agudos (>7 kHz) sobre esteira (2-6 kHz) no som novo
+    features: np.ndarray     # [ataque, FEATURE_NAMES]: o retrato acústico do ataque (para o modelo)
 
 
 def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
@@ -312,7 +356,7 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
     if len(onsets) < 4:
         empty = np.zeros((0, len(onsets)))
         zero = np.zeros(len(onsets))
-        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero)
+        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero, np.zeros((len(onsets), len(FEATURE_NAMES))))
     L, centers = _band_spectrogram(y, sr, LONG_FFT)
     Ls, centers_short = _band_spectrogram(y, sr, SHORT_FFT)
     at = lambda M, s: np.stack([M[:, i + s.start: i + s.stop].mean(axis=1) for i in onsets], axis=1)   # noqa: E731
@@ -347,7 +391,7 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
     if not found:
         empty = np.zeros((0, len(onsets)))
         zero = np.zeros(len(onsets))
-        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero)
+        return KitAnalysis([], onsets, empty, empty, empty, zero, zero, zero, np.zeros((len(onsets), len(FEATURE_NAMES))))
     W = np.stack([t for t, _ in found], axis=1)
     H = _update_h(V, W, np.ones((W.shape[1], V.shape[1])), 100)
     explained, explained_also = np.zeros_like(H), np.zeros_like(H)
@@ -371,7 +415,9 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
         strength[k] = np.clip(H[k] / (np.median(H[k][members]) + 1e-12), 0.0, 1.0)
         sounds.append(DrumSound(piece, pitch, ring, len(members), W[:, k], also, TOM if maybe_tom else ""))
     _name_toms(sounds, cfg)
-    return KitAnalysis(sounds, onsets, explained, explained_also, strength, tail, rattle, air_ratio)
+    features = _features(V, fresh, left, centers, centers_short, tail, rattle, air_ratio, sounds, explained,
+                         explained_also, strength)
+    return KitAnalysis(sounds, onsets, explained, explained_also, strength, tail, rattle, air_ratio, features)
 
 
 def detect_drum_hits(y: np.ndarray, sr: int, cfg: DrumDetection) -> list[DrumHit]:

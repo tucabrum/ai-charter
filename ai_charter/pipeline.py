@@ -11,7 +11,14 @@ from pathlib import Path
 import librosa
 import numpy as np
 
-from ai_charter.analysis.drums import detect_drum_hits
+from ai_charter.analysis.drums import HOP as DRUM_HOP
+from ai_charter.analysis.drums import ONSET_LATENCY as DRUM_ONSET_LATENCY
+from ai_charter.analysis.drums import FEATURE_NAMES as DRUM_FEATURES
+from ai_charter.analysis.drums import TOM as DRUM_TOM
+from ai_charter.analysis.drums import TOM_LOW as DRUM_TOM_LOW
+from ai_charter.analysis.drums import TOM_MID as DRUM_TOM_MID
+from ai_charter.analysis.drums import TOMS as DRUM_TOMS
+from ai_charter.analysis.drums import analyze_kit, detect_drum_hits
 from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
@@ -28,6 +35,8 @@ from ai_charter.charting.lyrics import read_lyrics
 from ai_charter.charting.sanitize import sanitize
 from ai_charter.charting.vocals import VocalTrack, build_vocal_track
 from ai_charter.config import Rules, load_rules
+from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
+from ai_charter.drum_model import DrumModel, model_inputs
 from ai_charter.export import audio
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
@@ -177,8 +186,50 @@ def continues_pattern(tick: int, ticks: set[int], resolution: int) -> bool:
     return (before and after) or (before and tick - 2 * step in ticks) or (after and tick + 2 * step in ticks)
 
 
+def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules, model) -> list[Candidate]:
+    """Bateria pelo modelo treinado com charts oficiais: retrato acústico de cada ataque + lugar na
+    levada -> probabilidade de cada peça; entra o que passa do limiar daquela peça. Para "tom", qual
+    tom é vem dos sons do kit da música (o de maior presença no ataque), pela altura de cada um."""
+    res, triplets = rules.general.resolution, rules.general.allow_triplets
+    kit = analyze_kit(y, sr, rules.drum_detection)
+    if not len(kit.onsets):
+        return []
+    ticks = np.asarray(tempo.time_to_tick(kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY), dtype=float)
+    probs = model.predict(model_inputs(kit.features, ticks, res))
+    seen: dict[tuple[int, str], Candidate] = {}
+    for j, raw in enumerate(ticks):
+        tick = quantize_tick(raw, res, triplets)
+        for k, piece in enumerate(MODEL_OUTPUTS):
+            if probs[j, k] < model.thresholds[k]:
+                continue
+            if piece == DRUM_TOM:
+                piece = which_tom(kit, j, rules.drum_detection.floor_tom_max_hz)
+            key = (tick, piece)
+            if key not in seen or probs[j, k] > seen[key].strength:
+                seen[key] = Candidate(tick, float(probs[j, k]), piece=piece)
+    return sorted(seen.values(), key=lambda c: c.tick)
+
+
+def which_tom(kit, j: int, floor_tom_max_hz: float) -> str:
+    """O tom do kit que mais aparece no ataque j; sem nenhum, pela altura do próprio golpe."""
+    best, piece = 0.0, None
+    for k, sound in enumerate(kit.sounds):
+        tom = sound.piece if sound.piece in DRUM_TOMS else sound.tom_as if sound.tom_as in DRUM_TOMS else None
+        score = kit.explained[k][j] * min(kit.strength[k][j], 1.0)
+        if tom and score > best:
+            best, piece = score, tom
+    if piece:
+        return piece
+    pitch = 60.0 * 2.0 ** kit.features[j, DRUM_FEATURES.index("altura_graves")]
+    return DRUM_TOM_LOW if pitch < floor_tom_max_hz else DRUM_TOM_MID
+
+
 def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackChart:
     y, sr = librosa.load(stem, sr=DRUMS_SR, mono=True)
+    model = DrumModel.load() if rules.drum_detection.use_model else None
+    if model is not None:
+        return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model), rules.drums,
+                                rules.general.resolution, sp_windows, rules.general.drum_fill_every_measures)
     hits = detect_drum_hits(y, sr, rules.drum_detection)
     res, triplets = rules.general.resolution, rules.general.allow_triplets
     strong: dict[tuple[int, str], Candidate] = {}
