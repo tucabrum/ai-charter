@@ -245,6 +245,149 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
           f"{missed}/{total} ({missed / max(1, total):.1%})")
 
 
+MIX_SR = 44100
+
+
+def cache_dir_for(cache: Path, folder: Path) -> Path:
+    return cache / f"{folder.parent.name} - {folder.name}"
+
+
+def song_mix(folder: Path) -> np.ndarray | None:
+    """Todos os stems da música somados (sem público e prévia): o "MP3" que o usuário teria."""
+    import librosa
+
+    stems = [p for p in sorted(folder.iterdir()) if p.suffix.lower() in (".ogg", ".opus", ".wav", ".mp3")
+             and not p.name.lower().startswith(("crowd", "preview"))]
+    parts = []
+    for p in stems:
+        y = librosa.load(p, sr=MIX_SR, mono=False)[0]
+        parts.append(np.vstack([y, y]) if y.ndim == 1 else y[:2])
+    if not parts:
+        return None
+    mix = np.zeros((2, max(p.shape[1] for p in parts)), dtype=np.float32)
+    for p in parts:
+        mix[:, : p.shape[1]] += p
+    return mix / max(1.0, float(np.abs(mix).max()) / 0.99)   # sem estourar
+
+
+def demucs_cache(folders: list[Path], cache: Path) -> None:
+    """Para cada música: mix de todos os stems -> Demucs (o mesmo do ai-charter) -> bateria separada.
+    Guarda mix.ogg e drums.ogg em cache/<pasta>; músicas já no cache são puladas (dá para parar e
+    continuar)."""
+    import shutil
+
+    import soundfile as sf
+
+    from ai_charter.export.audio import require_ffmpeg, to_ogg
+    from ai_charter.separation import separate_demucs
+
+    require_ffmpeg()
+    cache.mkdir(parents=True, exist_ok=True)
+    for i, folder in enumerate(folders, 1):
+        out = cache_dir_for(cache, folder)
+        if (out / "drums.ogg").is_file():
+            continue
+        start = time.time()
+        mix = song_mix(folder)
+        if mix is None:
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            mix_wav = Path(tmp) / "mix.wav"
+            sf.write(mix_wav, mix.T, MIX_SR)
+            stems = separate_demucs(mix_wav, Path(tmp))
+            out.mkdir(parents=True, exist_ok=True)
+            # OGG pelo ffmpeg, como no export (o libsndfile trava gravando OGG longo)
+            to_ogg(mix_wav, out / "mix.ogg")
+            to_ogg(stems["drums"][0], out / "drums.part.ogg")
+            shutil.move(out / "drums.part.ogg", out / "drums.ogg")   # só conta como pronta no fim
+        print(f"[{i}/{len(folders)}] {folder.name}: {time.time() - start:.0f}s", flush=True)
+
+
+def match_times(ours: list[tuple[float, str]], theirs: list[tuple[float, str, float]]) -> dict[str, list[int]]:
+    """Como `match`, mas em segundos: cada golpe oficial tem a sua tolerância (1/32 de nota no tempo
+    dele). É o jeito de comparar quando a nossa grade (BPM detectado) não é a da chart oficial."""
+    out = {p: [0, 0, 0] for p in PIECES}
+    for piece in PIECES:
+        a = sorted(t for t, p in ours if p == piece)
+        b = sorted((t, tol) for t, p, tol in theirs if p == piece)
+        out[piece][1], out[piece][2] = len(a), len(b)
+        widest = max((tol for _, tol in b), default=0.0)
+        used, j = set(), 0
+        for t in a:
+            while j < len(b) and b[j][0] < t - widest:
+                j += 1
+            k = j
+            while k < len(b) and b[k][0] <= t + widest:
+                if k not in used and abs(b[k][0] - t) <= b[k][1]:
+                    used.add(k)
+                    out[piece][0] += 1
+                    break
+                k += 1
+    return out
+
+
+def grid_score(ours, official, start: float, end: float, window: float = 0.07) -> dict[str, float]:
+    """A nossa grade contra a oficial entre `start` e `end`: batidas e inícios de compasso que caem a
+    até `window` segundos dos oficiais (F1), e a razão entre os andamentos (2 = dobro, 0,5 = metade)."""
+    def f1(a, b):
+        a, b = a[(a >= start) & (a <= end)], b[(b >= start) & (b <= end)]
+        if not len(a) or not len(b):
+            return 0.0
+        hit = sum(np.min(np.abs(b - t)) <= window for t in a)
+        return float(2 * hit / (len(a) + len(b)))
+
+    a, b = np.asarray(ours.beat_times), np.asarray(official.beat_times)
+    inside = lambda x: x[(x >= start) & (x <= end)]
+    ratio = float(np.median(np.diff(inside(b))) / np.median(np.diff(inside(a)))) if len(inside(a)) > 2 else 0.0
+    return {"batidas": f1(a, b), "compassos": f1(a[::4], b[::4]), "andamento": ratio}
+
+
+def game_metrics(hits: set[tuple[int, str]], res: int) -> dict[str, float]:
+    """O que se sente jogando, na grade da própria chart: caixa fora do 2 e do 4, buracos estranhos na
+    linha de chimbal (intervalos de 3, 5 ou 7 semicolcheias), quanto é tom."""
+    step = res / 4
+    snare = [t for t, p in hits if p == "caixa" and abs(t / step - round(t / step)) < 0.25]
+    off = sum(round(t / step) % 16 not in (4, 12) for t in snare) / max(1, len(snare))
+    hats = sorted(t for t, p in hits if p == "chimbal")
+    gaps = [round((b - a) / step) for a, b in zip(hats, hats[1:]) if 0 < b - a <= 4 * res]
+    odd = sum(g in (3, 5, 7) for g in gaps) / max(1, len(gaps))
+    toms = sum(p in ("tom amarelo", "tom azul", "surdo") for _, p in hits) / max(1, len(hits))
+    return {"golpes": float(len(hits)), "caixa_fora_2_4": off, "chimbal_buracos": odd, "tons": toms}
+
+
+def evaluate_real(folder: Path, cache: Path, rules, tempo_source: str = "nosso") -> dict | None:
+    """Uma música como no uso real: a bateria do Demucs (cache), e o mapa de tempo detectado por nós
+    no mix (tempo_source="nosso") ou o oficial ("oficial", para separar o erro da grade do resto)."""
+    import librosa
+
+    from ai_charter.pipeline import ANALYSIS_SR, chart_drums
+    from ai_charter.analysis.tempo import estimate_tempo_map
+
+    out = cache_dir_for(cache, folder)
+    if not (out / "drums.ogg").is_file():
+        return None
+    midi = mido.MidiFile(folder / "notes.mid")
+    theirs = official_hits(midi)
+    if not theirs:
+        return None
+    official = _tempo_map(midi)
+    if tempo_source == "oficial":
+        tempo = official
+    else:
+        mix = librosa.load(out / "mix.ogg", sr=ANALYSIS_SR, mono=True)[0]
+        tempo = estimate_tempo_map(mix, ANALYSIS_SR, rules.general.resolution, "auto")
+    ours = our_hits(chart_drums(out / "drums.ogg", tempo, rules, []))
+    eighth = midi.ticks_per_beat / 8
+    theirs_t = [(float(official.tick_to_time(t)), p,
+                 float(official.tick_to_time(t + eighth) - official.tick_to_time(t))) for t, p in theirs]
+    ours_t = [(float(tempo.tick_to_time(t)), p) for t, p in ours]
+    times = [t for t, _, _ in theirs_t]
+    return {"counts": match_times(ours_t, theirs_t),
+            "grade": grid_score(tempo, official, min(times), max(times)),
+            "jogo_nosso": game_metrics(ours, tempo.resolution),
+            "jogo_oficial": game_metrics(theirs, midi.ticks_per_beat)}
+
+
 def other_audio(folder: Path, sr: int, length: int) -> np.ndarray | None:
     """Os outros stems da música (sem bateria e sem público), somados e com o volume da bateria."""
     import librosa
@@ -366,8 +509,18 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--workers", type=int, default=1, help="músicas analisadas ao mesmo tempo")
     c.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     p.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
+    p.add_argument("--cache", type=Path, help="como no uso real: a bateria que o Demucs separou do mix (demucs-cache)")
+    p.add_argument("--tempo", choices=("nosso", "oficial"), default="nosso",
+                   help="com --cache: mapa de tempo detectado no mix (padrão) ou o da chart oficial")
     t = sub.add_parser("train-drums", help="treina o modelo de bateria (ai_charter/drum_model.json)")
     t.add_argument("data", type=Path)
+    m = sub.add_parser("demucs-cache", help="mix de cada música -> Demucs -> bateria separada, guardada em cache")
+    m.add_argument("folder", type=Path)
+    m.add_argument("cache", type=Path)
+    m.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
+    m.add_argument("--test", action="store_true", help="só as músicas do conjunto de teste")
+    m.add_argument("--limit", type=int, help="usa só N músicas (espalhadas pela lista)")
+    m.add_argument("--rules", type=Path)
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -386,12 +539,19 @@ def main(argv: list[str] | None = None) -> None:
         folders = [f for f in folders if is_test(f.name)]
     if args.limit and args.limit < len(folders):
         folders = [folders[i] for i in np.linspace(0, len(folders) - 1, args.limit).astype(int)]
+    if args.command == "demucs-cache":
+        demucs_cache(folders, args.cache)
+        return
     total: dict[str, list[int]] = defaultdict(lambda: [0, 0, 0])
-    per_song = {}
+    per_song, extras = {}, defaultdict(list)
     for i, folder in enumerate(folders, 1):
         start = time.time()
         try:
-            counts = evaluate(folder, rules, (0.05, 0.4) if args.bleed else None)
+            if args.cache:
+                real = evaluate_real(folder, args.cache, rules, args.tempo)
+                counts = real and real.pop("counts")
+            else:
+                real, counts = None, evaluate(folder, rules, (0.05, 0.4) if args.bleed else None)
         except Exception as err:   # uma música com arquivo estranho não para a avaliação
             print(f"[{i}/{len(folders)}] {folder.name}: erro ({err})")
             continue
@@ -403,7 +563,9 @@ def main(argv: list[str] | None = None) -> None:
         hit = sum(c[0] for c in counts.values())
         ours, theirs = sum(c[1] for c in counts.values()), sum(c[2] for c in counts.values())
         f1 = 2 * hit / (ours + theirs) if ours + theirs else 0.0
-        per_song[folder.name] = {"f1": f1, "pecas": score(counts)}
+        per_song[folder.name] = {"f1": f1, "pecas": score(counts), **(real or {})}
+        for group, values in (real or {}).items():
+            extras[group].append(values)
         print(f"[{i}/{len(folders)}] {folder.name}: F1 {f1:.2f} ({time.time() - start:.0f}s)", flush=True)
     rows = score(total)
     hit, ours, theirs = (sum(c[k] for c in total.values()) for k in range(3))
@@ -411,6 +573,8 @@ def main(argv: list[str] | None = None) -> None:
     print(f"{'peça':12s} {'precisão':>9s} {'revocação':>10s} {'F1':>6s} {'nossos':>7s} {'oficiais':>9s}")
     for piece, r in rows.items():
         print(f"{piece:12s} {r['precisão']:9.2f} {r['revocação']:10.2f} {r['f1']:6.2f} {r['nossos']:7d} {r['oficiais']:9d}")
+    for group, rows_ in extras.items():   # grade e métricas de jogo: média das músicas
+        print(f"{group:13s}", "  ".join(f"{k} {np.mean([r[k] for r in rows_]):.2f}" for k in rows_[0]))
     if args.report:
         args.report.write_text(json.dumps({"total": rows, "musicas": per_song}, ensure_ascii=False, indent=1), encoding="utf-8")
 
