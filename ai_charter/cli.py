@@ -26,6 +26,9 @@ def parse_args(argv: list[str] | None = None) -> Options:
     parser.add_argument("--genre", choices=[g.id for g in genres], metavar="GENERO",
                         help="regras ajustadas para um gênero (o --rules vale por cima delas): "
                              + ", ".join(f"{g.id} ({g.name})" for g in genres))
+    parser.add_argument("--cifra", type=Path,
+                        help="cifra copiada do Cifra Club (.txt): a letra vira a faixa de vocal (se não houver "
+                             "--lyrics) e os acordes limitam o reconhecimento de acordes")
     parser.add_argument("--reference", type=Path,
                         help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição: corrige altura e acordes "
                              "das notas detectadas (veja as pistas com: ai-charter-ref arquivo)")
@@ -60,6 +63,8 @@ def parse_args(argv: list[str] | None = None) -> Options:
         parser.error(f"arquivo não encontrado: {args.input}")
     if args.lyrics is not None and not args.lyrics.exists():
         parser.error(f"arquivo de letra não encontrado: {args.lyrics}")
+    if args.cifra is not None and not args.cifra.is_file():
+        parser.error(f"arquivo de cifra não encontrado: {args.cifra}")
     reference_tracks = None
     if args.reference is not None:
         from ai_charter.reference import parse_mapping, read_score
@@ -72,6 +77,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
         rules_path=args.rules, genre=args.genre, reference=args.reference, reference_tracks=reference_tracks,
+        cifra=args.cifra,
         instruments=instruments, tempo_mode=args.tempo,
         title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
         output_format=args.format,

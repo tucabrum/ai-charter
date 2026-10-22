@@ -68,6 +68,8 @@ class Options:
     genre: str | None = None       # predefinição de regras (ai_charter/genres/<gênero>.toml)
     reference: Path | None = None  # partitura (MIDI ou Guitar Pro) que guia a transcrição (reference.py)
     reference_tracks: dict[int, str] | None = None   # pista da partitura -> instrumento (None = palpite)
+    cifra: Path | None = None      # cifra (Cifra Club): letra e vocabulário de acordes (cifra.py)
+    cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
     tempo_mode: str = "auto"
     title: str | None = None
@@ -294,6 +296,18 @@ def run(opts: Options, log=print) -> Result:
         log(f"3/5 Separando os stems (modo: {opts.separator})...")
         stems = separate(opts.separator, mix_wav, work_dir, opts.stems_dir)
 
+        cifra = None
+        if opts.cifra is not None:
+            from dataclasses import replace
+
+            from ai_charter.cifra import prepare
+            cifra, vocabulary = prepare(opts.cifra, mix, ANALYSIS_SR, log)
+            if vocabulary:   # o reconhecimento de acordes só escolhe entre os acordes da cifra
+                rules = replace(rules, detection={name: replace(cfg, allowed_chords=vocabulary)
+                                                  for name, cfg in rules.detection.items()})
+            if Path(opts.cifra).resolve() != (song_dir / "cifra.txt").resolve():
+                shutil.copyfile(opts.cifra, song_dir / "cifra.txt")   # fica junto, para o Acrescentar
+
         guides = {}
         if opts.reference is not None:
             from ai_charter.reference import load_guides
@@ -330,6 +344,11 @@ def run(opts: Options, log=print) -> Result:
         lyrics = opts.lyrics
         if lyrics is None and opts.input.with_suffix(".txt").exists():
             lyrics = opts.input.with_suffix(".txt")  # letra com o mesmo nome da música
+        if lyrics is None and cifra is not None and cifra.lyrics and opts.cifra_lyrics:
+            from ai_charter.cifra import lyrics_text
+            lyrics = song_dir / "letra.txt"   # a letra da cifra
+            lyrics.write_text(lyrics_text(cifra), encoding="utf-8")
+            log(f"    vocals: letra tirada da cifra (salva em {lyrics.name})")
         if "vocals" not in stems:
             log("    vocals: sem stem de voz, pulando")
         elif opts.output_format != "mid":

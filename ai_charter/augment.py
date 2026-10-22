@@ -32,6 +32,7 @@ from ai_charter.config import list_genres
 CHART_NAME = "notes.mid"
 BEFORE_ADD_NAME = "notes.before-add.mid"
 LYRICS_NAMES = ("letra.txt", "lyrics.txt")   # letra guardada na pasta (a interface salva letra.txt)
+CIFRA_NAME = "cifra.txt"                     # cifra guardada na pasta da música
 INSTRUMENTS = ("guitar", "bass", "drums", "keys", "vocals")
 TRACK_NAMES = {"guitar": "PART GUITAR", "bass": "PART BASS", "drums": "PART DRUMS",
                "keys": "PART KEYS", "vocals": "PART VOCALS"}
@@ -157,6 +158,7 @@ def update_song_ini(path: Path, values: dict[str, object]) -> None:
 def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None = None,
             auto_lyrics: bool = False, rules_path: Path | None = None, genre: str | None = None,
             reference: Path | None = None, reference_tracks: dict[int, str] | None = None,
+            cifra: Path | None = None,
             replace_existing: bool = False, log=print) -> AugmentResult:
     from ai_charter.analysis.transcribe import transcribe_lyrics
     from ai_charter.charting.common import star_power_windows
@@ -211,6 +213,17 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
         sp_windows = star_power_windows(int(tempo.time_to_tick(duration)), midi.ticks_per_beat,
                                         rules.general.starpower_every_measures, rules.general.starpower_phrase_beats)
 
+    # Cifra: a informada ou a cifra.txt guardada na pasta (uma chart nova com cifra deixa uma lá).
+    cifra = cifra if cifra is not None else (folder / CIFRA_NAME if (folder / CIFRA_NAME).is_file() else None)
+    cifra_lyrics = None
+    if cifra is not None:
+        from ai_charter.cifra import lyrics_text, prepare
+        parsed, vocabulary = prepare(cifra, mix, ANALYSIS_SR, log)
+        if vocabulary:
+            rules = replace(rules, detection={name: replace(cfg, allowed_chords=vocabulary)
+                                              for name, cfg in rules.detection.items()})
+        cifra_lyrics = lyrics_text(parsed) if parsed.lyrics else None
+
     guides = {}
     if reference is not None and any(i in ("guitar", "bass", "keys") for i in todo):
         from ai_charter.reference import load_guides
@@ -226,6 +239,10 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
             continue
         if instrument == "vocals":
             words = _find_lyrics(folder, lyrics)
+            if words is None and cifra_lyrics:
+                words = folder / LYRICS_NAMES[0]
+                words.write_text(cifra_lyrics, encoding="utf-8")
+                log(f"    vocals: letra tirada da cifra (salva em {words.name})")
             if words is None and auto_lyrics:
                 words = folder / "letra_automatica.txt"
                 log(f"    vocals: transcrevendo a letra com o Whisper (modelo {rules.vocals.whisper_model})...")
@@ -305,6 +322,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--rules", type=Path, help="arquivo .toml com regras de charting personalizadas")
     parser.add_argument("--genre", choices=[g.id for g in list_genres()], metavar="GENERO",
                         help="regras ajustadas para um gênero: " + ", ".join(g.id for g in list_genres()))
+    parser.add_argument("--cifra", type=Path,
+                        help="cifra (texto do Cifra Club): letra e acordes da música (padrão: cifra.txt da pasta)")
     parser.add_argument("--reference", type=Path, help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição")
     parser.add_argument("--reference-tracks", help="pistas da partitura por instrumento, ex.: 2=guitar,4=bass")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
@@ -324,7 +343,7 @@ def main(argv: list[str] | None = None) -> None:
             mapping = parse_mapping(args.reference_tracks) if args.reference_tracks else None
         result = augment(args.folder, instruments, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
                          rules_path=args.rules, genre=args.genre, reference=args.reference,
-                         reference_tracks=mapping, replace_existing=args.replace)
+                         reference_tracks=mapping, cifra=args.cifra, replace_existing=args.replace)
     except (RuntimeError, ValueError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         sys.exit(1)

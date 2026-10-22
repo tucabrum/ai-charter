@@ -50,6 +50,7 @@ class PitchedDetection:
     chord_notes: int
     accent_chord_notes: int
     accent_min_beats: float
+    allowed_chords: list[str]   # acordes possíveis (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um
 
 
 @dataclass

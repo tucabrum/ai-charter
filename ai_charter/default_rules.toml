@@ -42,6 +42,7 @@ power_chord_notes = 2        # notas de um power chord na chart (1 = nota simple
 chord_notes = 2              # notas dos outros acordes (maior/menor) na chart: 2 deixa a chart limpa
 accent_chord_notes = 3       # acorde de ACENTO (segurado por muito tempo) ganha mais notas
 accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar acento
+allowed_chords = []          # só estes acordes (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um. A --cifra preenche
 
 [detection.bass]
 fmin = "E1"
@@ -62,6 +63,7 @@ power_chord_notes = 2
 chord_notes = 2
 accent_chord_notes = 3
 accent_min_beats = 2.0
+allowed_chords = []
 
 [detection.keys]
 fmin = "A1"
@@ -82,6 +84,7 @@ power_chord_notes = 2
 chord_notes = 2
 accent_chord_notes = 3
 accent_min_beats = 2.0
+allowed_chords = []
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

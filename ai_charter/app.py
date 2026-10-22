@@ -118,6 +118,8 @@ class Request:
     artist: str | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
+    cifra_text: str = ""             # cifra colada (Cifra Club)
+    lyrics_from_cifra: bool = False  # os vocais usam a letra da cifra
     auto_lyrics: bool = False
     make_zip: bool = False
     overwrite: bool = False
@@ -183,7 +185,9 @@ def parse_request(data: dict, settings: dict) -> Request:
     lyrics_text = str(data.get("lyrics_text") or "").strip()
     lyrics = _path(data, "lyrics", "file")
     auto_lyrics = bool(data.get("auto_lyrics"))
-    if not instruments and not (lyrics or lyrics_text or auto_lyrics):
+    cifra_text = str(data.get("cifra_text") or "").strip()
+    lyrics_from_cifra = bool(data.get("lyrics_from_cifra")) and bool(cifra_text)
+    if not instruments and not (lyrics or lyrics_text or auto_lyrics or lyrics_from_cifra):
         raise BadRequest("escolha ao menos um instrumento ou informe a letra para os vocais")
     separator = _choice(data, "separator", SEPARATORS)
     reference, reference_tracks = _reference(data)
@@ -196,6 +200,7 @@ def parse_request(data: dict, settings: dict) -> Request:
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
+        cifra_text=cifra_text, lyrics_from_cifra=lyrics_from_cifra,
         overwrite=bool(data.get("overwrite")), open_editor=bool(data.get("open_editor")),
     )
 
@@ -223,12 +228,17 @@ def run_request(req: Request, log) -> Path:
         if req.lyrics_text:
             lyrics = Path(tmp) / LYRICS_NAME
             lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
+        cifra = None
+        if req.cifra_text:
+            cifra = Path(tmp) / "cifra.txt"
+            cifra.write_text(req.cifra_text + "\n", encoding="utf-8")
         opts = Options(
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
             rules_path=req.rules_path, genre=req.genre, reference=req.reference,
             reference_tracks=req.reference_tracks, instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
+            cifra=cifra, cifra_lyrics=req.lyrics_from_cifra,
         )
         result = run(opts, log=log)
         # A letra fica junto da música, para refazer ou acrescentar os vocais depois.
@@ -250,6 +260,8 @@ class AddRequest:
     reference_tracks: dict[int, str] | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
+    cifra_text: str = ""             # cifra colada (Cifra Club)
+    lyrics_from_cifra: bool = False  # os vocais usam a letra da cifra
     auto_lyrics: bool = False
     replace: bool = False
     open_editor: bool = False
@@ -273,17 +285,29 @@ def parse_add_request(data: dict) -> AddRequest:
         reference=reference, reference_tracks=reference_tracks,
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
-        open_editor=bool(data.get("open_editor")),
+        open_editor=bool(data.get("open_editor")), cifra_text=str(data.get("cifra_text") or "").strip(),
+        lyrics_from_cifra=bool(data.get("lyrics_from_cifra")),
     )
 
 
 def run_add_request(req: AddRequest, log) -> Path:
     from ai_charter.augment import augment
 
+    from ai_charter.augment import CIFRA_NAME
+    from ai_charter.cifra import lyrics_text, read_cifra
+
     lyrics = req.lyrics
     if req.lyrics_text and "vocals" in req.instruments:
         lyrics = req.folder / LYRICS_NAME   # fica guardada na pasta, como numa chart nova
         lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
+    cifra = req.folder / CIFRA_NAME
+    if req.cifra_text:   # a cifra também fica guardada na pasta
+        cifra.write_text(req.cifra_text + "\n", encoding="utf-8")
+    if req.lyrics_from_cifra and "vocals" in req.instruments:
+        if not cifra.is_file() or not read_cifra(cifra).lyrics:
+            raise RuntimeError("a cifra não tem letra para os vocais")
+        lyrics = req.folder / LYRICS_NAME
+        lyrics.write_text(lyrics_text(read_cifra(cifra)), encoding="utf-8")
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
                      rules_path=req.rules_path, genre=req.genre, reference=req.reference,
                      reference_tracks=req.reference_tracks, replace_existing=req.replace, log=log)
@@ -309,6 +333,7 @@ def song_info(folder: Path) -> dict:
         "folder": str(folder), "name": ini.get("name") or folder.name, "artist": ini.get("artist", ""),
         "parts": existing_parts(folder), "stems": stems,
         "lyrics": next((n for n in LYRICS_NAMES if (folder / n).is_file()), None),
+        "cifra": (folder / "cifra.txt").is_file(),
         "genre_tag": ini.get("genre", ""), "genre": genre_for_tag(ini.get("genre")),
     }
 

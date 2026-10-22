@@ -61,6 +61,7 @@ Opções úteis:
 | `--tempo constant` / `variable` | força BPM fixo ou variável (padrão: decide sozinho) |
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
 | `--genre metal` | regras ajustadas para um gênero (veja "Regras por gênero musical") |
+| `--cifra cifra.txt` | cifra copiada do Cifra Club: letra para os vocais e acordes permitidos (veja "Cifra") |
 | `--reference musica.gp5` | partitura (MIDI ou Guitar Pro) que corrige altura e acordes da transcrição (veja "Partitura de referência") |
 | `--zip` | também cria um `.zip` da pasta |
 
@@ -213,6 +214,26 @@ ai-charter-add "pasta da música" --instruments guitar --replace --genre mpb
 Sem `--genre`, valem as regras padrão. A interface lê a tag de gênero do arquivo (ou do `song.ini`, no
 Acrescentar) e sugere a predefinição correspondente com um botão, mas só a aplica se você clicar. Os
 valores são um ponto de partida, ainda não medidos contra charts oficiais de cada gênero.
+
+## Cifra (Cifra Club)
+
+Copie a cifra inteira do Cifra Club (letra com os acordes em cima) para um `.txt`, ou cole no campo
+**Cifra** da interface:
+
+```bash
+ai-charter musica.flac --cifra cifra.txt
+ai-charter-add "pasta da música" --instruments guitar --replace --cifra cifra.txt
+```
+
+- **Acordes:** o reconhecimento de acordes da guitarra e do teclado só escolhe entre os acordes da cifra.
+  Isso corrige a fundamental e o maior/menor. G7, G7M, G/B e Gadd9 contam como G; Am7 e A° contam
+  como Am. O power chord de cada fundamental continua valendo. O capotraste ("Capotraste na 2ª casa")
+  é levado em conta, e a cifra é transposta sozinha se estiver em outro tom que a gravação (o log
+  avisa). Nos seus arquivos de regras, o mesmo vale com `allowed_chords = ["G", "D", "Em", "C"]`.
+- **Letra:** sem `--lyrics`, os vocais usam a letra da cifra, sem as linhas de acordes, os rótulos
+  ([Refrão]), as tablaturas e o cabeçalho. Ela fica salva como `letra.txt` na pasta da música. Na
+  interface, essa é a opção de vocais **Da cifra**. Com "Sem vocais", a cifra só ajuda nos acordes.
+- A cifra também fica salva como `cifra.txt` na pasta da música. O Acrescentar usa essa cópia sozinho.
 
 ## Partitura de referência (MIDI ou Guitar Pro)
 

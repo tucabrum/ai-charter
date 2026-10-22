@@ -35,6 +35,27 @@ from ai_charter.config import PitchedDetection
 
 # Só um acorde tocado várias vezes seguidas "soa por cima" do próximo.
 MIN_RINGING_STRUMS = 3
+# Acordes fora do vocabulário (cifra) perdem isto na pontuação: na prática, nunca são escolhidos.
+OUT_OF_VOCABULARY = 1.0
+
+
+def vocabulary_mask(names: list[str]) -> np.ndarray:
+    """Quais modelos de CHORDS um vocabulário permite ("Am" -> Lá menor e Lá power chord).
+
+    Notas simples sempre valem. O power chord da fundamental também, porque é como a guitarra
+    distorcida toca o acorde da cifra."""
+    from ai_charter.cifra import parse_chord
+
+    allowed = SINGLE_NOTE_MASK.copy()
+    for name in names:
+        parsed = parse_chord(name)   # aceita o jeito de escrever das cifras: Bb, F#m7, D/F#...
+        if parsed is None:
+            raise ValueError(f"acorde inválido em allowed_chords: {name!r}")
+        root, kind = parsed
+        for k in {kind, "5"}:
+            if (root, k) in CHORDS:
+                allowed[CHORDS.index((root, k))] = True
+    return allowed
 
 
 def _decide_kind(items: list[Candidate], labels: list[int], start: int, end: int,
@@ -89,6 +110,10 @@ def label_chords(cands: list[Candidate], resolution: int, cfg: PitchedDetection)
     items = [c for c, is_chord in zip(scored, chordal) if is_chord]
     if not items:
         return
+    if cfg.allowed_chords:   # vocabulário da cifra: os outros acordes praticamente somem
+        allowed = vocabulary_mask(cfg.allowed_chords)
+        for c in items:
+            c.chord_scores = np.where(allowed, c.chord_scores, c.chord_scores - OUT_OF_VOCABULARY)
     margin = cfg.chord_change_margin
     # Qual acorde: o modelo de acorde mais parecido (sem os modelos de nota simples).
     labels = [int(np.argmax(np.where(SINGLE_NOTE_MASK, -np.inf, c.chord_scores))) for c in items]

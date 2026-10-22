@@ -246,6 +246,58 @@ def test_reference_tracks_and_mapping(server, music, tmp_path):
     assert "exporte" in json.loads(err.value.read())["error"]
 
 
+CIFRA = "Banda - Música\n\n[Intro] G D\n\nG        D\nLa la la\n"
+
+
+def test_cifra_goes_to_the_pipeline(tmp_path, music, monkeypatch):
+    from ai_charter import pipeline
+    from ai_charter.export import audio
+
+    monkeypatch.setattr(audio, "require_ffmpeg", lambda: None)
+    monkeypatch.setattr(audio, "read_tags", lambda path: {})
+    used = {}
+
+    def fake_run(opts, log):
+        used["cifra"], used["cifra_lyrics"] = opts.cifra.read_text("utf-8"), opts.cifra_lyrics
+        song = opts.output_dir / "x"
+        song.mkdir(parents=True)
+        return pipeline.Result(song_dir=song)
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    # só a letra da cifra já basta para pedir uma chart (de vocais)
+    req = parse_request({"input": str(music), "output": str(tmp_path), "cifra_text": CIFRA,
+                         "lyrics_from_cifra": True}, {"output": ""})
+    run_request(req, print)
+    assert used == {"cifra": CIFRA.strip() + "\n", "cifra_lyrics": True}
+    req = parse_request({"input": str(music), "output": str(tmp_path / "b"), "instruments": ["guitar"],
+                         "cifra_text": CIFRA}, {"output": ""})
+    run_request(req, print)
+    assert used["cifra_lyrics"] is False   # "Sem vocais": a cifra só ajuda nos acordes
+
+
+def test_add_uses_cifra_lyrics_and_keeps_the_cifra(tmp_path, monkeypatch):
+    from ai_charter import app as app_module
+    from ai_charter import augment as augment_module
+
+    song = tmp_path / "song"
+    song.mkdir()
+    (song / "notes.mid").write_bytes(b"MThd")
+    (song / "letra.txt").write_text("letra antiga\n", encoding="utf-8")
+    seen = {}
+
+    def fake_augment(folder, instruments, **kwargs):
+        seen.update(kwargs)
+        return augment_module.AugmentResult(added=list(instruments))
+
+    monkeypatch.setattr(augment_module, "augment", fake_augment)
+    req = app_module.AddRequest(folder=song, instruments=("vocals",), cifra_text=CIFRA.strip(),
+                                lyrics_from_cifra=True)
+    app_module.run_add_request(req, print)
+    assert (song / "cifra.txt").read_text("utf-8") == CIFRA.strip() + "\n"
+    assert seen["lyrics"] == song / "letra.txt"
+    assert (song / "letra.txt").read_text("utf-8") == "La la la\n"   # a letra da cifra no lugar da antiga
+
+
 def test_bad_pick_kind():
     with pytest.raises(BadRequest):
         app_mod.Dialogs().ask("executavel")
