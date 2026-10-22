@@ -126,6 +126,18 @@ def test_tracks_mido_cannot_read_are_copied_byte_by_byte(song):
     assert existing_parts(song) == ["guitar", "bass"]
 
 
+def test_reference_guides_the_added_part(song):
+    from test_reference import write_midi
+
+    ref = write_midi(song.parent / "ref.mid", [
+        ("Guitarra", 29, 0, [(n, 0.5) for n in synth.MELODY]),
+        ("Baixo", 33, 1, [(n, 1.0) for n in synth.BASS[:len(synth.MELODY) // 2]])])
+    lines = []
+    result = augment(song, ("bass",), reference=ref, reference_tracks={2: "bass"}, log=lines.append)
+    assert result.added == ["bass"]
+    assert any(line.startswith("    bass: referência confere com 100%") for line in lines)
+
+
 def test_missing_stem_and_lyrics_are_reported(song):
     (song / "bass.ogg").unlink()
     result = augment(song, ("bass", "vocals", "keys"), log=lambda *_: None)

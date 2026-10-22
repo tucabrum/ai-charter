@@ -156,6 +156,7 @@ def update_song_ini(path: Path, values: dict[str, object]) -> None:
 
 def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None = None,
             auto_lyrics: bool = False, rules_path: Path | None = None, genre: str | None = None,
+            reference: Path | None = None, reference_tracks: dict[int, str] | None = None,
             replace_existing: bool = False, log=print) -> AugmentResult:
     from ai_charter.analysis.transcribe import transcribe_lyrics
     from ai_charter.charting.common import star_power_windows
@@ -210,6 +211,11 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
         sp_windows = star_power_windows(int(tempo.time_to_tick(duration)), midi.ticks_per_beat,
                                         rules.general.starpower_every_measures, rules.general.starpower_phrase_beats)
 
+    guides = {}
+    if reference is not None and any(i in ("guitar", "bass", "keys") for i in todo):
+        from ai_charter.reference import load_guides
+        guides = load_guides(reference, reference_tracks, mix, ANALYSIS_SR, tempo, rules, log)
+
     new_tracks: dict[str, mido.MidiTrack] = {}
     ini: dict[str, object] = {}
     for instrument in todo:
@@ -251,7 +257,8 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
             with tempfile.TemporaryDirectory(prefix="ai-charter-add-") as work:
                 track = chart_drums(_drums_stem(audio_files, Path(work)), tempo, rules, sp_windows)
         else:
-            track, _ = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning)
+            track, _ = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning,
+                                     guide=guides.get(instrument))
         new_tracks[instrument] = _fret_track(TRACK_NAMES[instrument], track, midi.ticks_per_beat,
                                              drums=instrument == "drums").build()
         ini[DIFF_KEYS[instrument]] = estimate_difficulty(track, duration)
@@ -298,6 +305,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--rules", type=Path, help="arquivo .toml com regras de charting personalizadas")
     parser.add_argument("--genre", choices=[g.id for g in list_genres()], metavar="GENERO",
                         help="regras ajustadas para um gênero: " + ", ".join(g.id for g in list_genres()))
+    parser.add_argument("--reference", type=Path, help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição")
+    parser.add_argument("--reference-tracks", help="pistas da partitura por instrumento, ex.: 2=guitar,4=bass")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
     args = parser.parse_args(argv)
     instruments = tuple(i.strip() for i in args.instruments.split(",") if i.strip())
@@ -308,8 +317,14 @@ def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # no Windows o padrão (cp1252) embaralha os acentos
     try:
+        mapping = None
+        if args.reference is not None:
+            from ai_charter.reference import parse_mapping, read_score
+            read_score(args.reference)
+            mapping = parse_mapping(args.reference_tracks) if args.reference_tracks else None
         result = augment(args.folder, instruments, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
-                         rules_path=args.rules, genre=args.genre, replace_existing=args.replace)
+                         rules_path=args.rules, genre=args.genre, reference=args.reference,
+                         reference_tracks=mapping, replace_existing=args.replace)
     except (RuntimeError, ValueError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         sys.exit(1)

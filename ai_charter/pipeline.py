@@ -66,6 +66,8 @@ class Options:
     stems_dir: Path | None = None
     rules_path: Path | None = None
     genre: str | None = None       # predefinição de regras (ai_charter/genres/<gênero>.toml)
+    reference: Path | None = None  # partitura (MIDI ou Guitar Pro) que guia a transcrição (reference.py)
+    reference_tracks: dict[int, str] | None = None   # pista da partitura -> instrumento (None = palpite)
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
     tempo_mode: str = "auto"
     title: str | None = None
@@ -141,8 +143,10 @@ def estimate_tuning(mix: np.ndarray, sr: int) -> float:
 
 
 def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Rules,
-                  sp_windows, log=print, tuning: float = 0.0) -> tuple[TrackChart, list[str]]:
-    """Chart de guitarra/baixo/teclado. Com várias guitarras, escolhe uma por compasso."""
+                  sp_windows, log=print, tuning: float = 0.0, guide=None) -> tuple[TrackChart, list[str]]:
+    """Chart de guitarra/baixo/teclado. Com várias guitarras, escolhe uma por compasso.
+
+    `guide` (opcional, ver reference.py) corrige altura e acordes das notas detectadas com uma partitura."""
     cfg = rules.detection[instrument]
     sources = []
     for stem in stems:
@@ -154,6 +158,8 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
         if simplified:
             log(f"    {instrument} ({stem.stem}): {len(simplified)} compasso(s) confuso(s) simplificado(s): "
                 + ", ".join(str(m + 1) for m in simplified))
+        if guide is not None:
+            cands = guide(cands, stem.stem if len(stems) > 1 else "", log)
         sources.append(GuitarSource(stem.stem, cands, y, sr))
     cands, chosen = merge_guitars(sources, tempo, rules.general.resolution, rules.guitar_selection)
     track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)
@@ -288,6 +294,11 @@ def run(opts: Options, log=print) -> Result:
         log(f"3/5 Separando os stems (modo: {opts.separator})...")
         stems = separate(opts.separator, mix_wav, work_dir, opts.stems_dir)
 
+        guides = {}
+        if opts.reference is not None:
+            from ai_charter.reference import load_guides
+            guides = load_guides(opts.reference, opts.reference_tracks, mix, ANALYSIS_SR, tempo, rules, log)
+
         log("4/5 Gerando as charts...")
         last_tick = int(tempo.time_to_tick(duration))
         sp_windows = star_power_windows(last_tick, res, rules.general.starpower_every_measures,
@@ -306,7 +317,8 @@ def run(opts: Options, log=print) -> Result:
             if instrument == "drums":
                 track = chart_drums(stem[0], tempo, rules, sp_windows)
             else:
-                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning)
+                track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning,
+                                              guide=guides.get(instrument))
                 if len(stem) > 1:
                     guitar_sources = chosen
                     log(f"    {instrument}: faixas usadas: {_describe_runs(chosen)}")

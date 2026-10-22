@@ -68,6 +68,10 @@
   td.act { text-align: right; white-space: nowrap; }
   .chips span { display: inline-block; font-size: 12px; padding: 1px 8px; margin: 2px 4px 2px 0; border-radius: 10px; background: var(--panel-2); color: var(--muted); }
   label.check.off { color: var(--muted); }
+  .ref-tracks table { margin-top: 6px; }
+  .ref-tracks td, .ref-tracks th { padding: 3px 6px; }
+  .ref-tracks select { padding: 2px 6px; }
+  .ref-error { color: var(--red); font-size: 12px; }
   .genre-hint button { padding: 1px 8px; margin-left: 6px; font-size: 12px; }
   #addForm { max-width: 640px; }
   .lib-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -105,6 +109,12 @@
           <span>Gênero (ajusta as regras de charting)</span>
           <select name="genre" class="genre-select"><option value="">Padrão (regras gerais)</option></select>
           <p class="help genre-hint" hidden></p>
+        </div>
+        <div class="field reference">
+          <span>Partitura de referência (MIDI ou Guitar Pro .gp3/.gp4/.gp5, opcional)</span>
+          <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="form">Procurar…</button></div>
+          <p class="help">Guia a transcrição: as notas continuam vindo do áudio, e a partitura corrige a altura e os acordes de cada nota que bate com ela. Por enquanto guia guitarra, baixo e teclado.</p>
+          <div class="ref-tracks"></div>
         </div>
         <div class="field">
           <span>Vocais: a letra evita que a IA invente palavras</span>
@@ -188,6 +198,12 @@
         <span>Gênero (ajusta as regras de charting)</span>
         <select name="genre" class="genre-select"><option value="">Padrão (regras gerais)</option></select>
         <p class="help genre-hint" hidden></p>
+      </div>
+      <div class="field reference">
+        <span>Partitura de referência (MIDI ou Guitar Pro .gp3/.gp4/.gp5, opcional)</span>
+        <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="addForm">Procurar…</button></div>
+        <p class="help">Guia a transcrição: as notas continuam vindo do áudio, e a partitura corrige a altura e os acordes de cada nota que bate com ela. Por enquanto guia guitarra, baixo e teclado.</p>
+        <div class="ref-tracks"></div>
       </div>
       <div class="field" id="addVocals" hidden>
         <span>Letra dos vocais</span>
@@ -297,7 +313,7 @@ form.onsubmit = async ev => {
     input: f.input.value, title: f.title.value, artist: f.artist.value, output: f.output.value,
     instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
     separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
-    genre: f.genre.value,
+    genre: f.genre.value, ...referenceBody(form),
     format: f.format.value, zip: f.zip.checked, open_editor: f.open_editor.checked, overwrite: f.overwrite.checked,
     lyrics_text: mode === "paste" ? f.lyrics_text.value : "",
     lyrics: mode === "file" ? f.lyrics.value : "",
@@ -361,6 +377,45 @@ async function suggestFromTags() {
 }
 form.elements.input.addEventListener("picked", suggestFromTags);
 form.elements.input.addEventListener("change", suggestFromTags);
+
+// ---- partitura de referência ----
+const REF_CHOICES = { "": "Não usar", guitar: "Guitarra", bass: "Baixo", keys: "Teclado", drums: "Bateria", vocals: "Vocais" };
+
+async function loadReference(owner) {
+  const box = $(".ref-tracks", owner), file = owner.elements.reference.value.trim();
+  owner.refTracks = null;
+  box.innerHTML = "";
+  if (!file) return;
+  box.innerHTML = '<p class="help">Lendo a partitura…</p>';
+  try {
+    const ref = await api("api/reference?file=" + encodeURIComponent(file));
+    const guided = new Set(ref.guided);
+    owner.refTracks = ref.tracks;
+    box.innerHTML = `<table><thead><tr><th>#</th><th>Pista</th><th>Notas</th><th>Usar para</th></tr></thead><tbody>${
+      ref.tracks.map(t => `<tr><td>${t.index}</td><td>${esc(t.name)}</td><td>${t.notes}</td><td><select data-track="${t.index}"${t.notes ? "" : " disabled"}>${
+        Object.entries(REF_CHOICES).map(([v, label]) =>
+          `<option value="${v}"${(ref.mapping[t.index] || "") === v ? " selected" : ""}>${label}${v && !guided.has(v) ? " (ainda não guia)" : ""}</option>`).join("")
+      }</select></td></tr>`).join("")}</tbody></table>`;
+  } catch (e) {
+    box.innerHTML = `<p class="ref-error">${esc(e.message)}</p>`;
+  }
+}
+
+function referenceBody(owner) {
+  const reference = owner.elements.reference.value.trim();
+  if (!reference) return { reference: "" };
+  if (!owner.refTracks) return { reference, reference_tracks: null };
+  const mapping = {};
+  for (const select of owner.querySelectorAll(".ref-tracks select[data-track]")) {
+    if (select.value) mapping[select.dataset.track] = select.value;
+  }
+  return { reference, reference_tracks: mapping };
+}
+
+for (const owner of [form, $("#addForm")]) {
+  owner.elements.reference.addEventListener("picked", () => loadReference(owner));
+  owner.elements.reference.addEventListener("change", e => { e.stopPropagation(); loadReference(owner); });
+}
 
 // ---- gerações ----
 const jobs = new Map();
@@ -488,7 +543,7 @@ addForm.onsubmit = async ev => {
   const vocals = instruments.includes("vocals");
   const body = {
     folder: f.folder.value, instruments, replace: f.replace.checked, rules: f.rules.value,
-    genre: f.genre.value,
+    genre: f.genre.value, ...referenceBody(addForm),
     open_editor: f.open_editor.checked,
     lyrics_text: vocals && mode === "paste" ? f.lyrics_text.value : "",
     lyrics: vocals && mode === "file" ? f.lyrics.value : "",

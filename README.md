@@ -61,6 +61,7 @@ Opções úteis:
 | `--tempo constant` / `variable` | força BPM fixo ou variável (padrão: decide sozinho) |
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
 | `--genre metal` | regras ajustadas para um gênero (veja "Regras por gênero musical") |
+| `--reference musica.gp5` | partitura (MIDI ou Guitar Pro) que corrige altura e acordes da transcrição (veja "Partitura de referência") |
 | `--zip` | também cria um `.zip` da pasta |
 
 ### Pela interface no navegador
@@ -212,6 +213,34 @@ ai-charter-add "pasta da música" --instruments guitar --replace --genre mpb
 Sem `--genre`, valem as regras padrão. A interface lê a tag de gênero do arquivo (ou do `song.ini`, no
 Acrescentar) e sugere a predefinição correspondente com um botão, mas só a aplica se você clicar. Os
 valores são um ponto de partida, ainda não medidos contra charts oficiais de cada gênero.
+
+## Partitura de referência (MIDI ou Guitar Pro)
+
+Uma partitura da música (MIDI, ou Guitar Pro `.gp3`/`.gp4`/`.gp5`, de sites como Songsterr ou Ultimate
+Guitar) ajuda a IA a acertar as notas:
+
+```bash
+pip install -e ".[refs]"                                    # só para ler Guitar Pro (pyguitarpro)
+ai-charter-ref musica.gp5                                   # lista as pistas e o palpite de cada uma
+ai-charter musica.flac --reference musica.gp5               # usa as pistas pelo palpite
+ai-charter musica.flac --reference musica.mid --reference-tracks 2=guitar,4=bass
+ai-charter-add "pasta da música" --instruments bass --replace --reference musica.gp5
+```
+
+Na interface, o campo **Partitura de referência** (em Nova chart e em Acrescentar) mostra as pistas
+do arquivo para você escolher qual vira cada instrumento.
+
+A partitura **guia** a transcrição, mas não a substitui: o ritmo das notas continua vindo do áudio (o que
+a gravação realmente toca), e cada nota detectada que cai perto de uma nota da partitura (até uma
+semicolcheia) recebe a **altura** e o **acorde** dela (nota simples, power chord, maior/menor, com as
+mesmas regras de quantas notas cada acorde tem na chart). Para isso, a partitura é **alinhada** com a
+gravação batida a batida (DTW sobre o chroma). Isso aguenta uma introdução diferente, trechos a mais ou
+a menos, a partitura em outro tom (afinação meio tom abaixo, capotraste) e o dobro ou a metade das
+batidas. O log mostra quanto a referência confere com cada instrumento. Abaixo de 30%, ela é ignorada.
+
+Por enquanto a referência guia guitarra, baixo e teclado. Bateria e vocais ainda não. Guitar Pro 6 ou
+mais novo (`.gpx`, `.gp`) ainda não é lido: exporte como `.gp5` ou MIDI no Guitar Pro, TuxGuitar ou
+MuseScore.
 
 ## Como funciona (por dentro)
 

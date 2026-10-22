@@ -26,6 +26,12 @@ def parse_args(argv: list[str] | None = None) -> Options:
     parser.add_argument("--genre", choices=[g.id for g in genres], metavar="GENERO",
                         help="regras ajustadas para um gênero (o --rules vale por cima delas): "
                              + ", ".join(f"{g.id} ({g.name})" for g in genres))
+    parser.add_argument("--reference", type=Path,
+                        help="partitura (.mid, .gp3, .gp4, .gp5) que guia a transcrição: corrige altura e acordes "
+                             "das notas detectadas (veja as pistas com: ai-charter-ref arquivo)")
+    parser.add_argument("--reference-tracks",
+                        help="pistas da partitura para cada instrumento, ex.: 2=guitar,4=bass "
+                             "(padrão: palpite pelo nome e instrumento da pista)")
     parser.add_argument("--instruments", default=",".join(ALL_INSTRUMENTS),
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",
@@ -54,10 +60,19 @@ def parse_args(argv: list[str] | None = None) -> Options:
         parser.error(f"arquivo não encontrado: {args.input}")
     if args.lyrics is not None and not args.lyrics.exists():
         parser.error(f"arquivo de letra não encontrado: {args.lyrics}")
+    reference_tracks = None
+    if args.reference is not None:
+        from ai_charter.reference import parse_mapping, read_score
+        try:   # lê já, para um arquivo ruim falhar antes da separação (que demora)
+            read_score(args.reference)
+            reference_tracks = parse_mapping(args.reference_tracks) if args.reference_tracks else None
+        except (OSError, RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
 
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
-        rules_path=args.rules, genre=args.genre, instruments=instruments, tempo_mode=args.tempo,
+        rules_path=args.rules, genre=args.genre, reference=args.reference, reference_tracks=reference_tracks,
+        instruments=instruments, tempo_mode=args.tempo,
         title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
         output_format=args.format,
         make_zip=args.zip, keep_work=args.keep_work,

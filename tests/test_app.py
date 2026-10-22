@@ -217,6 +217,35 @@ def test_add_to_existing_chart(server, tmp_path):
         assert message in json.loads(err.value.read())["error"]
 
 
+def test_reference_tracks_and_mapping(server, music, tmp_path):
+    base, app = server
+    midi = mido.MidiFile()
+    for name, program in (("Guitarra", 29), ("Baixo", 33)):
+        midi.tracks.append(mido.MidiTrack([
+            mido.MetaMessage("track_name", name=name), mido.Message("program_change", program=program),
+            mido.Message("note_on", note=50, velocity=90), mido.Message("note_off", note=50, time=480)]))
+    ref = tmp_path / "ref.mid"
+    midi.save(ref)
+    info = get(base + "api/reference?file=" + urllib.parse.quote(str(ref)))
+    assert [(t["index"], t["name"], t["guess"]) for t in info["tracks"]] == [(1, "Guitarra", "guitar"), (2, "Baixo", "bass")]
+    assert info["mapping"] == {"1": "guitar", "2": "bass"}
+
+    req = parse_request({"input": str(music), "instruments": ["guitar"], "reference": str(ref),
+                         "reference_tracks": {"2": "guitar"}}, app.settings)
+    assert req.reference == ref and req.reference_tracks == {2: "guitar"}
+    assert parse_request({"input": str(music), "instruments": ["guitar"], "reference": str(ref)},
+                         app.settings).reference_tracks is None   # sem tabela: palpite
+    for tracks, message in (({"7": "guitar"}, "pista da partitura inválida"), ({"1": "flauta"}, "inválida")):
+        with pytest.raises(urllib.error.HTTPError) as err:
+            post(base + "api/jobs", {"input": str(music), "instruments": ["guitar"], "reference": str(ref),
+                                     "reference_tracks": tracks})
+        assert message in json.loads(err.value.read())["error"]
+    (tmp_path / "x.gpx").write_bytes(b"BCFS")
+    with pytest.raises(urllib.error.HTTPError) as err:
+        get(base + "api/reference?file=" + urllib.parse.quote(str(tmp_path / "x.gpx")))
+    assert "exporte" in json.loads(err.value.read())["error"]
+
+
 def test_bad_pick_kind():
     with pytest.raises(BadRequest):
         app_mod.Dialogs().ask("executavel")

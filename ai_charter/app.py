@@ -12,6 +12,7 @@ Sobe um servidor local (só nesta máquina) que entrega a página da interface
   GET  /api/library      músicas da biblioteca (pastas com notes.mid ou notes.chart)
   GET  /api/song?dir=    o que a pasta de uma música já tem (partes, stems, letra e gênero)
   GET  /api/tags?file=   tags do arquivo de música e o gênero que corresponde à tag
+  GET  /api/reference?file=  pistas de uma partitura (MIDI ou Guitar Pro) e o palpite de cada uma
   POST /api/jobs         põe uma geração na fila (uma de cada vez: o Demucs é pesado)
   POST /api/add          põe na fila o acréscimo de instrumentos a uma chart (augment.py)
   POST /api/editor       abre uma pasta de música no editor (o mesmo do ai-charter-view)
@@ -56,6 +57,7 @@ PICK_TYPES = {
     "audio": [("Música", "*.mp3 *.flac *.wav *.ogg *.opus *.m4a"), ("Todos", "*.*")],
     "lyrics": [("Letra", "*.txt"), ("Todos", "*.*")],
     "rules": [("Regras", "*.toml"), ("Todos", "*.*")],
+    "score": [("Partitura", "*.mid *.midi *.kar *.gp3 *.gp4 *.gp5"), ("Todos", "*.*")],
 }
 
 
@@ -108,6 +110,8 @@ class Request:
     stems_dir: Path | None = None
     rules_path: Path | None = None
     genre: str | None = None
+    reference: Path | None = None
+    reference_tracks: dict[int, str] | None = None
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -148,6 +152,28 @@ def _genre(data: dict) -> str | None:
     return genre
 
 
+def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
+    """A partitura de referência e as pistas escolhidas ({"2": "guitar"}; None = palpite)."""
+    from ai_charter.reference import INSTRUMENTS as REF_INSTRUMENTS, read_score
+
+    path = _path(data, "reference", "file")
+    if path is None:
+        return None, None
+    try:
+        tracks = {t.index for t in read_score(path).tracks}
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise BadRequest(f"partitura: {exc}") from exc
+    raw = data.get("reference_tracks")
+    if raw is None:
+        return path, None
+    mapping = {}
+    for index, instrument in dict(raw).items():
+        if not str(index).isdigit() or int(index) not in tracks or instrument not in REF_INSTRUMENTS:
+            raise BadRequest(f"pista da partitura inválida: {index}={instrument}")
+        mapping[int(index)] = instrument
+    return path, mapping
+
+
 def parse_request(data: dict, settings: dict) -> Request:
     """Valida o formulário da página (os mesmos cuidados da CLI)."""
     instruments = tuple(data.get("instruments") or ())
@@ -160,11 +186,13 @@ def parse_request(data: dict, settings: dict) -> Request:
     if not instruments and not (lyrics or lyrics_text or auto_lyrics):
         raise BadRequest("escolha ao menos um instrumento ou informe a letra para os vocais")
     separator = _choice(data, "separator", SEPARATORS)
+    reference, reference_tracks = _reference(data)
     stems_dir = _path(data, "stems", "dir", required=separator == "folder")
     output = _path(data, "output", "") or (Path(settings["output"]) if settings.get("output") else Path("output"))
     return Request(
         input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
+        reference=reference, reference_tracks=reference_tracks,
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -197,7 +225,8 @@ def run_request(req: Request, log) -> Path:
             lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
         opts = Options(
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
-            rules_path=req.rules_path, genre=req.genre, instruments=req.instruments, tempo_mode=req.tempo_mode,
+            rules_path=req.rules_path, genre=req.genre, reference=req.reference,
+            reference_tracks=req.reference_tracks, instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
         )
@@ -217,6 +246,8 @@ class AddRequest:
     instruments: tuple[str, ...]
     rules_path: Path | None = None
     genre: str | None = None
+    reference: Path | None = None
+    reference_tracks: dict[int, str] | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
     auto_lyrics: bool = False
@@ -236,8 +267,10 @@ def parse_add_request(data: dict) -> AddRequest:
         raise BadRequest(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
     if not instruments:
         raise BadRequest("escolha ao menos um instrumento para acrescentar")
+    reference, reference_tracks = _reference(data)
     return AddRequest(
         folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
+        reference=reference, reference_tracks=reference_tracks,
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")),
@@ -252,7 +285,8 @@ def run_add_request(req: AddRequest, log) -> Path:
         lyrics = req.folder / LYRICS_NAME   # fica guardada na pasta, como numa chart nova
         lyrics.write_text(req.lyrics_text + "\n", encoding="utf-8")
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
-                     rules_path=req.rules_path, genre=req.genre, replace_existing=req.replace, log=log)
+                     rules_path=req.rules_path, genre=req.genre, reference=req.reference,
+                     reference_tracks=req.reference_tracks, replace_existing=req.replace, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder
@@ -515,6 +549,15 @@ class _Handler(BaseHTTPRequestHandler):
             tags = audio.read_tags(file) if shutil.which("ffprobe") else {}
             return self._json({"title": tags.get("title", ""), "artist": tags.get("artist", ""),
                                "genre_tag": tags.get("genre", ""), "genre": genre_for_tag(tags.get("genre"))})
+        if path == "/api/reference":
+            from ai_charter.reference import GUIDED, default_mapping, read_score
+            try:
+                file = _path({"file": (query.get("file") or [""])[0]}, "file", "file", required=True)
+                score = read_score(file)
+            except (BadRequest, OSError, RuntimeError, ValueError) as exc:
+                return self._json({"error": str(exc)}, 400)
+            return self._json({"tracks": [t.summary() for t in score.tracks], "guided": GUIDED,
+                               "mapping": default_mapping(score), "beats": round(score.length_beats)})
         if path == "/api/song":
             try:
                 folder = _path({"dir": (query.get("dir") or [""])[0]}, "dir", "dir", required=True)
