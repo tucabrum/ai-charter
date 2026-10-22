@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-charter</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #0d0f14;
+    --panel: #161a22;
+    --panel-2: #1e2430;
+    --line: #2b3240;
+    --text: #e8ebf1;
+    --muted: #8b93a5;
+    --accent: #5aa9ff;
+    --green: #35c46a;
+    --red: #ef4a4a;
+    --yellow: #f5d142;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  nav { display: flex; gap: 4px; }
+  nav button.on { border-color: var(--accent); color: var(--accent); }
+  #warn { color: var(--yellow); font-size: 13px; margin-left: auto; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  section.tab { display: none; }
+  section.tab.on { display: block; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; }
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+  .field > span { color: var(--muted); font-size: 12px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .row > input[type=text] { flex: 1; min-width: 0; }
+  input[type=text], textarea, select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  input[type=text]:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+  textarea { width: 100%; resize: vertical; min-height: 160px; }
+  button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.check { display: inline-flex; gap: 6px; align-items: center; margin-right: 14px; cursor: pointer; }
+  .help { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  details { margin: 6px 0 12px; }
+  details summary { cursor: pointer; color: var(--muted); margin-bottom: 10px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  #formError { color: var(--red); margin-top: 8px; min-height: 1em; }
+  .job { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+  .job .head { display: flex; gap: 8px; align-items: center; padding: 8px 10px; background: var(--panel-2); }
+  .job .head b { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .job pre { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; color: #c9cfdb; white-space: pre-wrap; }
+  .job .err { color: var(--red); padding: 0 10px 8px; }
+  .badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.running { color: var(--accent); border-color: var(--accent); }
+  .badge.done { color: var(--green); border-color: var(--green); }
+  .badge.error { color: var(--red); border-color: var(--red); }
+  .empty { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.parts span { display: inline-block; font-size: 11px; padding: 0 6px; margin: 1px 2px 1px 0; border-radius: 8px; background: var(--panel-2); color: var(--muted); }
+  td.act { text-align: right; white-space: nowrap; }
+  .lib-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .lib-tools input { flex: 1; min-width: 200px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ai-charter</h1>
+  <nav>
+    <button data-tab="create" class="on">Nova chart</button>
+    <button data-tab="library">Biblioteca</button>
+  </nav>
+  <div id="warn"></div>
+</header>
+<main>
+  <section class="tab on" id="tab-create">
+    <div class="grid">
+      <form class="card" id="form" autocomplete="off">
+        <h2>Nova chart</h2>
+        <div class="field">
+          <span>Música (MP3, FLAC, WAV, OGG)</span>
+          <div class="row"><input type="text" name="input" placeholder="C:\Músicas\artista - música.flac"><button type="button" data-pick="audio" data-for="input">Procurar…</button></div>
+        </div>
+        <div class="two">
+          <div class="field"><span>Título (padrão: tag do arquivo)</span><input type="text" name="title"></div>
+          <div class="field"><span>Artista (padrão: tag do arquivo)</span><input type="text" name="artist"></div>
+        </div>
+        <div class="field">
+          <span>Instrumentos</span>
+          <div id="instruments"></div>
+        </div>
+        <div class="field">
+          <span>Vocais: a letra evita que a IA invente palavras</span>
+          <div>
+            <label class="check"><input type="radio" name="lyricsMode" value="none" checked> Sem vocais</label>
+            <label class="check"><input type="radio" name="lyricsMode" value="paste"> Colar a letra</label>
+            <label class="check"><input type="radio" name="lyricsMode" value="file"> Arquivo .txt</label>
+            <label class="check"><input type="radio" name="lyricsMode" value="auto"> Transcrever (Whisper)</label>
+          </div>
+          <div id="lyrics-paste" hidden>
+            <textarea name="lyrics_text" placeholder="Uma linha por frase cantada.&#10;Separe as estrofes com uma linha em branco."></textarea>
+          </div>
+          <div id="lyrics-file" class="row" hidden><input type="text" name="lyrics" placeholder="letra.txt"><button type="button" data-pick="lyrics" data-for="lyrics">Procurar…</button></div>
+          <p class="help" id="lyrics-none">Se houver um .txt com o mesmo nome da música, ao lado dela, ele é usado como letra.</p>
+          <p class="help" id="lyrics-auto" hidden>A voz é transcrita com o Whisper e o rascunho fica salvo como letra_automatica.txt na pasta da música, para revisar e gerar de novo. Precisa de: pip install "ai-charter[lyrics]"</p>
+        </div>
+        <div class="field">
+          <span>Pasta de saída (onde a pasta da música será criada)</span>
+          <div class="row"><input type="text" name="output" placeholder="output"><button type="button" data-pick="folder" data-for="output">Procurar…</button></div>
+        </div>
+        <details>
+          <summary>Opções avançadas</summary>
+          <div class="two">
+            <div class="field"><span>Separação dos stems</span><select name="separator">
+              <option value="demucs">Demucs (IA, melhor)</option>
+              <option value="folder">Pasta com stems prontos</option>
+              <option value="none">Sem IA (só filtros, para testar)</option>
+            </select></div>
+            <div class="field"><span>Mapa de tempo</span><select name="tempo">
+              <option value="auto">Automático</option>
+              <option value="constant">Constante</option>
+              <option value="variable">Variável</option>
+            </select></div>
+          </div>
+          <div class="field" id="stems-field" hidden>
+            <span>Pasta com os stems (guitar.wav, bass.wav, drums.wav…)</span>
+            <div class="row"><input type="text" name="stems"><button type="button" data-pick="folder" data-for="stems">Procurar…</button></div>
+          </div>
+          <div class="field">
+            <span>Regras personalizadas (.toml, opcional)</span>
+            <div class="row"><input type="text" name="rules"><button type="button" data-pick="rules" data-for="rules">Procurar…</button></div>
+          </div>
+          <div class="field"><span>Formato</span><select name="format">
+            <option value="mid">notes.mid (com vocais)</option>
+            <option value="chart">notes.chart (sem vocais)</option>
+          </select></div>
+          <label class="check"><input type="checkbox" name="zip"> Criar também um .zip</label>
+        </details>
+        <div class="row" style="margin-bottom: 10px">
+          <label class="check"><input type="checkbox" name="open_editor" checked> Abrir no editor ao terminar</label>
+          <label class="check"><input type="checkbox" name="overwrite"> Substituir a chart existente</label>
+        </div>
+        <button class="primary" type="submit">Gerar chart</button>
+        <div id="formError"></div>
+      </form>
+      <div class="card">
+        <h2>Gerações</h2>
+        <div id="jobs"><p class="empty">Nenhuma ainda. As gerações rodam uma de cada vez; a separação pelo Demucs leva alguns minutos.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-library">
+    <div class="card">
+      <h2>Biblioteca</h2>
+      <div class="lib-tools">
+        <input type="text" id="libDir" placeholder="D:\Clone Hero\Songs">
+        <button type="button" data-pick="folder" data-for="libDir">Procurar…</button>
+        <button type="button" id="libLoad">Atualizar</button>
+      </div>
+      <div class="lib-tools"><input type="text" id="libFilter" placeholder="Filtrar por artista ou música"></div>
+      <div id="libStatus" class="empty"></div>
+      <table id="libTable" hidden>
+        <thead><tr><th>Artista</th><th>Música</th><th>Partes</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const NAMES = { guitar: "Guitarra", bass: "Baixo", drums: "Bateria", keys: "Teclado", vocals: "Vocais" };
+const $ = (sel, el = document) => el.querySelector(sel);
+const form = $("#form");
+let state = null, library = [];
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST", body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json", "X-AI-Charter": "app" },
+  };
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function esc(text) {
+  return String(text ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// ---- abas ----
+for (const btn of document.querySelectorAll("nav button")) {
+  btn.onclick = () => {
+    for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b === btn);
+    for (const s of document.querySelectorAll("section.tab")) s.classList.toggle("on", s.id === "tab-" + btn.dataset.tab);
+    if (btn.dataset.tab === "library" && !library.length) loadLibrary();
+  };
+}
+
+// ---- janelas de escolher arquivo ----
+for (const btn of document.querySelectorAll("[data-pick]")) {
+  btn.onclick = async () => {
+    const input = form.elements[btn.dataset.for] || document.getElementById(btn.dataset.for);
+    btn.disabled = true;
+    try {
+      const { path } = await api("api/pick", { kind: btn.dataset.pick, start: input.value });
+      if (path) {
+        input.value = path;
+        input.dispatchEvent(new Event("picked", { bubbles: true }));
+      }
+    } catch (e) { alert(e.message); }
+    btn.disabled = false;
+  };
+}
+
+// ---- formulário ----
+function syncForm() {
+  const mode = form.elements.lyricsMode.value;
+  $("#lyrics-paste").hidden = mode !== "paste";
+  $("#lyrics-file").hidden = mode !== "file";
+  $("#lyrics-auto").hidden = mode !== "auto";
+  $("#lyrics-none").hidden = mode !== "none";
+  $("#stems-field").hidden = form.elements.separator.value !== "folder";
+}
+form.addEventListener("change", syncForm);
+
+form.onsubmit = async ev => {
+  ev.preventDefault();
+  const f = form.elements, mode = f.lyricsMode.value;
+  const body = {
+    input: f.input.value, title: f.title.value, artist: f.artist.value, output: f.output.value,
+    instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
+    separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
+    format: f.format.value, zip: f.zip.checked, open_editor: f.open_editor.checked, overwrite: f.overwrite.checked,
+    lyrics_text: mode === "paste" ? f.lyrics_text.value : "",
+    lyrics: mode === "file" ? f.lyrics.value : "",
+    auto_lyrics: mode === "auto",
+  };
+  if (mode === "paste" && !body.lyrics_text.trim()) return showError("cole a letra ou escolha outra opção de vocais");
+  if (mode !== "none" && f.format.value !== "mid") return showError("o formato notes.chart não tem vocais: use notes.mid");
+  showError("");
+  try {
+    const job = await api("api/jobs", body);
+    if (f.output.value && f.output.value !== state.settings.output) {
+      state.settings = await api("api/settings", { output: f.output.value });
+    }
+    addJob(job);
+  } catch (e) { showError(e.message); }
+};
+
+function showError(text) { $("#formError").textContent = text; }
+
+// ---- gerações ----
+const jobs = new Map();
+const STATUS = { waiting: "na fila", running: "gerando", done: "pronta", error: "erro" };
+
+function addJob(info) {
+  if (!jobs.size) $("#jobs").innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "job";
+  el.innerHTML = `<div class="head"><b></b><span class="badge"></span><button hidden>Abrir no editor</button></div><pre></pre><div class="err" hidden></div>`;
+  $("#jobs").prepend(el);
+  const job = { info, el, next: 0 };
+  jobs.set(info.id, job);
+  $("button", el).onclick = () => openEditor(job.info.song_dir);
+  render(job);
+  if (info.status === "waiting" || info.status === "running") poll(job);
+  return job;
+}
+
+function render(job, lines = []) {
+  const { info, el } = job;
+  $("b", el).textContent = info.song_dir ? info.song_dir.split(/[\\/]/).pop() : info.title;
+  const badge = $(".badge", el);
+  badge.className = "badge " + info.status;
+  badge.textContent = STATUS[info.status] || info.status;
+  $("button", el).hidden = info.status !== "done";
+  if (lines.length) {
+    const pre = $("pre", el);
+    const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
+    pre.textContent += lines.join("\n") + "\n";
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+  }
+  const err = $(".err", el);
+  err.hidden = !info.error;
+  err.textContent = info.error || "";
+}
+
+async function poll(job) {
+  try {
+    const data = await api(`api/jobs/${job.info.id}?since=${job.next}`);
+    job.next = data.next;
+    job.info = data;
+    render(job, data.lines);
+    if (data.status === "done" || data.status === "error") return;
+  } catch { /* servidor fechado: tenta de novo */ }
+  setTimeout(() => poll(job), 1000);
+}
+
+async function openEditor(songDir) {
+  // A aba é aberta já no clique (senão o navegador bloqueia) e recebe o endereço depois.
+  const tab = window.open("", "_blank");
+  try {
+    const { url } = await api("api/editor", { song_dir: songDir });
+    if (tab) tab.location = url; else window.open(url, "_blank");
+  } catch (e) {
+    if (tab) tab.close();
+    alert(e.message);
+  }
+}
+
+// ---- biblioteca ----
+async function loadLibrary() {
+  const dir = $("#libDir").value.trim();
+  $("#libStatus").textContent = "Procurando músicas…";
+  $("#libTable").hidden = true;
+  try {
+    if (dir && dir !== state.settings.library) state.settings = await api("api/settings", { library: dir });
+    const data = await api("api/library" + (dir ? "?dir=" + encodeURIComponent(dir) : ""));
+    library = data.songs;
+    $("#libStatus").textContent = data.error || "";
+    renderLibrary();
+  } catch (e) { $("#libStatus").textContent = e.message; }
+}
+
+function renderLibrary() {
+  const q = $("#libFilter").value.trim().toLowerCase();
+  const rows = library.filter(s => !q || (s.artist + " " + s.name).toLowerCase().includes(q));
+  $("#libTable").hidden = !library.length;
+  if (library.length && !$("#libStatus").textContent.startsWith("escolha")) {
+    $("#libStatus").textContent = `${library.length} músicas` + (q ? `, ${rows.length} com "${q}"` : "");
+  }
+  $("#libTable tbody").innerHTML = rows.slice(0, 500).map((s, i) => `
+    <tr><td>${esc(s.artist)}</td><td>${esc(s.name)}${s.ai ? ' <span class="badge">ai-charter</span>' : ""}</td>
+    <td class="parts">${s.parts.map(p => `<span>${esc(NAMES[p] || p)}</span>`).join("")}</td>
+    <td class="act"><button data-song="${i}">Abrir no editor</button></td></tr>`).join("");
+  for (const btn of document.querySelectorAll("#libTable [data-song]")) {
+    btn.onclick = () => openEditor(rows[+btn.dataset.song].path);
+  }
+}
+$("#libLoad").onclick = loadLibrary;
+$("#libDir").addEventListener("keydown", e => { if (e.key === "Enter") loadLibrary(); });
+$("#libDir").addEventListener("picked", loadLibrary);
+$("#libFilter").addEventListener("input", renderLibrary);
+
+// ---- início ----
+(async () => {
+  state = await api("api/state");
+  $("#instruments").innerHTML = state.instruments.map(i =>
+    `<label class="check"><input type="checkbox" name="instrument" value="${i}" checked> ${NAMES[i] || i}</label>`).join("");
+  form.elements.output.value = state.settings.output || "";
+  $("#libDir").value = state.settings.library || "";
+  if (!state.ffmpeg) $("#warn").textContent = "ffmpeg não encontrado no PATH: a geração vai falhar até instalá-lo.";
+  for (const info of state.jobs) addJob(info);
+  syncForm();
+})();
+</script>
+</body>
+</html>

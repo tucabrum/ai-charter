@@ -62,6 +62,25 @@ Opções úteis:
 | `--rules minhas_regras.toml` | usa suas próprias regras de charting |
 | `--zip` | também cria um `.zip` da pasta |
 
+### Pela interface no navegador
+
+```bash
+ai-charter-app                                  # abre a interface no navegador
+ai-charter-app --library "D:\Clone Hero\Songs"   # e já aponta a sua biblioteca de músicas
+```
+
+- **Nova chart**: escolha a música (o botão **Procurar…** abre a janela de arquivos do Windows),
+  os instrumentos e os vocais. A letra pode ser colada na página, vir de um `.txt` ou ser transcrita
+  com o Whisper. As opções da linha de comando ficam em **Opções avançadas**. O log da geração
+  aparece ao vivo. As gerações rodam uma de cada vez, em fila.
+- Ao terminar, **Abrir no editor** abre a música no visualizador/editor (o mesmo do
+  `ai-charter-view`). A opção "Abrir no editor ao terminar" faz isso sozinha.
+- A letra usada fica guardada como `letra.txt` na pasta da música. Se já existir uma chart com o
+  mesmo nome na pasta de saída, nada é gerado, a menos que "Substituir a chart existente" esteja
+  marcada. Nesse caso a anterior fica em `notes.backup.mid`.
+- **Biblioteca** lista as músicas da pasta do Clone Hero/YARG, com as partes de cada uma, para abrir no editor.
+- A pasta de saída e a biblioteca ficam salvas em `~/.ai-charter/app.json`.
+
 ## Vocais
 
 A faixa de vocal precisa da **letra** num arquivo de texto, **uma linha por frase cantada**:
