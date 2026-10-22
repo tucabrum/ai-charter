@@ -13,6 +13,10 @@ Fluxo:
 Uso:
   ai-charter-revise show  "pasta da música" [--instrument guitar] [--difficulty expert]
   ai-charter-revise apply "pasta da música" revisada.mid
+  ai-charter-revise drums "pasta da música" [--rules minhas_regras.toml]
+
+`drums` refaz a bateria a partir do stem (drums.ogg) com a transcrição atual do ai-charter,
+mantendo o mapa de tempo e as frases de Star Power da chart, e grava como o `apply`.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import argparse
 import json
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
@@ -38,6 +43,7 @@ BASE = {"expert": 96, "hard": 84, "medium": 72, "easy": 60}
 # Notas de cada dificuldade: 5 cores (base..base+4), HOPO forçado (+5) e strum forçado (+6)
 DIFF_SPAN = 7
 TAP, STAR_POWER = 104, 116
+DRUM_LANES = ["bumbo", "vermelho", "amarelo", "azul", "verde"]
 SHARED = (TAP, STAR_POWER)      # valem para todas as dificuldades: travadas como "shared"
 LANES = "GRYBO"
 
@@ -205,6 +211,74 @@ def show(folder: Path, instrument: str = "guitar", difficulty: str = "expert") -
     return "\n".join(lines)
 
 
+# ------------------------------------------------------------------ drums
+def _tempo_map(midi: mido.MidiFile):
+    """O mapa de tempo da chart (instante de cada batida) no formato do pipeline."""
+    import numpy as np
+
+    from ai_charter.analysis.tempo import TempoMap
+
+    res, tempos, tick = midi.ticks_per_beat, [(0, 500000)], 0
+    for msg in midi.tracks[0]:
+        tick += msg.time
+        if msg.type == "set_tempo":
+            tempos.append((tick, msg.tempo))
+    tempos.sort(key=lambda t: t[0])
+    last_tick = max(sum(m.time for m in t) for t in midi.tracks)
+    beats, times, now, (t0, us) = [], [], 0.0, tempos[0]
+    events = iter(tempos[1:] + [(float("inf"), 0)])
+    nxt = next(events)
+    for beat in range(last_tick // res + 9):
+        b = beat * res
+        while nxt[0] <= b:   # avança pelas mudanças de tempo até esta batida
+            now += (nxt[0] - t0) / res * us / 1e6
+            t0, us = nxt
+            nxt = next(events)
+        beats.append(now + (b - t0) / res * us / 1e6)
+    return TempoMap(np.array(beats), res)
+
+
+def redo_drums(folder: Path, rules_path: Path | None = None) -> tuple[dict[str, int], list[str], int]:
+    """Refaz a PART DRUMS a partir do stem e grava respeitando as travas.
+
+    Devolve (batidas por peça no Expert, sons do kit encontrados, notas desfeitas por travas)."""
+    import librosa
+
+    from ai_charter.analysis.drums import analyze_kit
+    from ai_charter.config import load_rules
+    from ai_charter.export.midi_writer import _fret_track
+    from ai_charter.pipeline import DRUMS_SR, chart_drums
+
+    stem = next((folder / n for n in ("drums.ogg", "drums_1.ogg", "drums.opus", "drums.wav") if (folder / n).is_file()), None)
+    if stem is None:
+        raise SystemExit("a pasta não tem o stem da bateria (drums.ogg)")
+    rules = load_rules(rules_path)
+    midi = mido.MidiFile(folder / CHART_NAME)
+    tempo = _tempo_map(midi)
+    old = next((t for t in midi.tracks if t.name == "PART DRUMS"), None)
+    # As frases de Star Power continuam onde estavam (as mesmas janelas das outras partes).
+    sp_windows = [(n.start, n.end - n.start) for n in _split(old)[0] if n.pitch == STAR_POWER] if old else []
+    track = chart_drums(stem, tempo, rules, sp_windows)
+    new = _fret_track("PART DRUMS", track, midi.ticks_per_beat, drums=True).build()
+    if old is not None:
+        midi.tracks[midi.tracks.index(old)] = new
+    else:
+        midi.tracks.append(new)
+    with tempfile.TemporaryDirectory() as tmp:
+        revised = Path(tmp) / "drums.mid"
+        midi.save(revised)
+        undone = apply(folder, revised)
+    y, sr = librosa.load(stem, sr=DRUMS_SR, mono=True)
+    sounds = [f"{s.piece}{'+' + s.also if s.also else ''} ({s.pitch:.0f} Hz, {s.hits} golpes)"
+              for s in analyze_kit(y, sr, rules.drum_detection).sounds]
+    counts: dict[str, int] = {}
+    for note in track.notes.get("expert", []):
+        for lane in note.lanes:
+            name = DRUM_LANES[lane] + (" (prato)" if 64 + lane in note.flags else "")
+            counts[name] = counts.get(name, 0) + 1
+    return counts, sounds, undone
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ai-charter-revise",
                                      description="Atende pedidos de revisão do editor sem mexer nos compassos editados à mão.")
@@ -216,11 +290,21 @@ def main(argv: list[str] | None = None) -> None:
     p_apply = sub.add_parser("apply", help="grava uma versão revisada, devolvendo os compassos travados")
     p_apply.add_argument("folder", type=Path)
     p_apply.add_argument("revised", type=Path)
+    p_drums = sub.add_parser("drums", help="refaz a bateria a partir do stem (drums.ogg), respeitando as travas")
+    p_drums.add_argument("folder", type=Path)
+    p_drums.add_argument("--rules", type=Path, help="arquivo .toml com regras de charting personalizadas")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # no Windows o padrão (cp1252) embaralha os acentos
     if args.command == "show":
         print(show(args.folder, args.instrument, args.difficulty))
+    elif args.command == "drums":
+        counts, sounds, undone = redo_drums(args.folder, args.rules)
+        print("Sons do kit encontrados: " + "; ".join(sounds))
+        print("Bateria Expert: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+        print(f"notes.mid atualizado (a versão anterior está em {BEFORE_AI_NAME}).")
+        if undone:
+            print(f"{undone} nota(s) em compassos travados foram mantidas como estavam.")
     else:
         undone = apply(args.folder, args.revised)
         print(f"notes.mid atualizado (a versão anterior está em {BEFORE_AI_NAME}).")

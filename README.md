@@ -160,7 +160,7 @@ ai_charter/
 │   ├── tempo.py        detecta as batidas e monta o mapa de tempo (segundos <-> ticks)
 │   ├── pitched.py      notas de guitarra/baixo/teclado: ataque, altura, acorde, duração
 │   ├── chords.py       reconhecimento de acordes (C, Am, G5...) pelo chroma
-│   ├── drums.py        bumbo, caixa, chimbal e crash por faixas de frequência
+│   ├── drums.py        bateria: descobre os sons do kit e separa bumbo, caixa, tons e pratos
 │   ├── vocals.py       notas cantadas (afinação com pYIN, cortes por consoante/afinação)
 │   └── sections.py     seções da música (modo prática) e trecho de preview
 ├── charting/           transformar notas detectadas em chart jogável
@@ -191,6 +191,12 @@ Ideias principais:
 - **Lanes pelo contorno**: o jogo não tem como mostrar a nota exata, então a chart segue o
   *desenho* da melodia — nota mais aguda vai mais para a direita, mais grave para a esquerda,
   nota repetida fica na mesma lane.
+- **Bateria**: como os conversores de bateria para MIDI, primeiro descobre **quais sons o kit
+  da gravação tem** (grupos de golpes com o mesmo espectro: o bumbo, a caixa, cada tom, os pratos)
+  e só depois marca quando cada um toca. Cada som recebe nome pelo que ele é: a altura nos graves
+  (bumbo abaixo de ~95 Hz; um surdo de ~105 Hz que ressoa é tom, não bumbo), o ruído das esteiras
+  (caixa x tom) e quanto os agudos ainda soam 150-300 ms depois (chimbal x condução x ataque).
+  Sons que sempre tocam juntos (bumbo + chimbal) viram as duas peças.
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
   mínima entre notas e o grid permitido.
@@ -288,6 +294,13 @@ ai-charter-revise apply "output/Phoenix - Lasso" revisada.mid     # grava respei
 O `apply` guarda a versão anterior em `notes.before-ai.mid`, conta quantas notas desfez nos
 trechos travados e arquiva o pedido como `ai_request.done.json`.
 
+Para refazer só a bateria de uma música já gerada (por exemplo, depois de uma melhoria no
+transcritor), a partir do `drums.ogg` da pasta, mantendo o mapa de tempo, o Star Power e as travas:
+
+```bash
+ai-charter-revise drums "output/Phoenix - Lasso"
+```
+
 ## Testes
 
 ```bash
@@ -299,6 +312,8 @@ Os testes geram duas músicas sintéticas com notas conhecidas e conferem se a c
 
 - **música 1** (`tests/synth.py`): melodia, baixo e bateria — ritmo, contorno das lanes,
   acordes, peças da bateria;
+- **bateria** (`tests/test_drums.py`): um kit com tons e pratos, e um surdo tocando o ritmo junto
+  com o bumbo, que não pode virar bumbo;
 - **música 2** (`tests/song2.py`, "Estrada"): violão, guitarra (riff e solo por cima do
   violão), baixo, bateria e uma voz sintetizada cantando uma letra original — qual guitarra
   é escolhida em cada trecho, o solo nota a nota, os acordes do violão, os power chords do riff
@@ -311,7 +326,9 @@ Os testes geram duas músicas sintéticas com notas conhecidas e conferem se a c
   desenvolvimento não consegue baixá-lo); erros de transcrição em canto são esperados.
 - **Várias guitarras** só são separadas quando você fornece os stems; o Demucs junta todas
   as guitarras num stem só.
-- **Bateria**: tons (azul/verde sem prato) e prato de condução ainda não são detectados separadamente.
+- **Bateria**: chimbal logo depois de um prato de ataque costuma ser mascarado por ele; chimbal
+  aberto e condução podem se confundir. As regras de `[drum_detection]` mudaram: arquivos de
+  regras personalizados com as chaves antigas (`kick_band`, `dominance`...) precisam ser atualizados.
 - **Fórmula de compasso** assumida como 4/4.
 - O arquivo é uma pasta (ou `.zip`); o formato `.sng` ainda não é gerado.
 - Uma interface web (upload pelo navegador, como o autochart.eu) pode ser construída por cima do

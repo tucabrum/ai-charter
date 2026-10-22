@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ai_charter.analysis.drums import CRASH, HIHAT, KICK, SNARE
+from ai_charter.analysis.drums import CRASH, HIHAT, KICK, RIDE, SNARE, TOM_HIGH, TOM_LOW, TOM_MID, TOMS
 from ai_charter.charting.common import (
     Candidate, ChartNote, TrackChart, copy_repeats, drum_fills_for, enforce_reduction,
     find_repeats, select_rhythm, star_power_for,
@@ -11,11 +11,12 @@ from ai_charter.config import DrumDifficultyRules
 
 # Lane do .chart para cada peça, e o marcador de prato (Pro Drums) quando houver.
 #   0 = bumbo, 1 = vermelho (caixa), 2 = amarelo, 3 = azul, 4 = verde
-#   66 = amarelo é prato, 67 = azul é prato, 68 = verde é prato
-LANES = {KICK: 0, SNARE: 1, HIHAT: 2, CRASH: 4}
-CYMBAL_FLAGS = {HIHAT: 66, CRASH: 68}
-# Se houver mais mãos que o permitido, quem fica primeiro.
-HAND_PRIORITY = (CRASH, SNARE, HIHAT)
+#   Pratos: chimbal = amarelo, condução = azul, ataque = verde (66/67/68 = "é prato")
+#   Tons:   agudo = amarelo, médio = azul, surdo = verde (sem marcador = tom)
+LANES = {KICK: 0, SNARE: 1, HIHAT: 2, RIDE: 3, CRASH: 4, TOM_HIGH: 2, TOM_MID: 3, TOM_LOW: 4}
+CYMBAL_FLAGS = {HIHAT: 66, RIDE: 67, CRASH: 68}
+# Se houver mais mãos que o permitido (ou duas peças na mesma lane), quem fica primeiro.
+HAND_PRIORITY = (CRASH, SNARE, TOM_HIGH, TOM_MID, TOM_LOW, RIDE, HIHAT)
 
 
 def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRules],
@@ -30,11 +31,12 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
         hits = [c if r.crash or c.piece != CRASH else
                 Candidate(c.tick, c.strength, piece=HIHAT) for c in cands]
 
-        # Escolhe o ritmo separadamente para pé, caixa e pratos.
+        # Escolhe o ritmo separadamente para pé, caixa, tons e pratos.
         groups = {
             "kick": ([h for h in hits if h.piece == KICK], r.kick_min_gap_beats),
             "snare": ([h for h in hits if h.piece == SNARE], r.snare_min_gap_beats),
-            "cymbal": ([h for h in hits if h.piece in (HIHAT, CRASH)], r.hihat_min_gap_beats),
+            "toms": ([h for h in hits if h.piece in TOMS], r.snare_min_gap_beats),
+            "cymbal": ([h for h in hits if h.piece in (HIHAT, RIDE, CRASH)], r.hihat_min_gap_beats),
         }
         chosen = [c for group, gap in groups.values()
                   for c in select_rhythm(group, resolution, gap, r.grid, r.allow_offgrid)]
@@ -51,7 +53,11 @@ def build_drum_track(cands: list[Candidate], rules: dict[str, DrumDifficultyRule
         notes = []
         for tick in sorted(by_tick):
             pieces = by_tick[tick]
-            hands = [p for p in HAND_PRIORITY if p in pieces][: r.max_hands]
+            hands, lanes = [], set()
+            for p in HAND_PRIORITY:   # uma peça por lane (ex.: chimbal e tom agudo são o amarelo)
+                if p in pieces and LANES[p] not in lanes and len(hands) < r.max_hands:
+                    hands.append(p)
+                    lanes.add(LANES[p])
             kept = ([KICK] if KICK in pieces else []) + hands
             notes.append(ChartNote(
                 tick,

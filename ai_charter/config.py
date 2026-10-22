@@ -53,14 +53,20 @@ class PitchedDetection:
 
 @dataclass
 class DrumDetection:
-    kick_band: list[float]
-    snare_band: list[float]
-    snare_snap_band: list[float]
-    hihat_band: list[float]
+    onset_delta: float
+    min_level: float
+    max_sounds: int
+    sound_similarity: float
+    explained_error: float
+    min_hits: int
+    min_share: float
     threshold: float
-    dominance: float
+    kick_max_hz: float
+    floor_tom_max_hz: float
+    tom_min_ring: float
+    snare_min_wires: float
+    ride_sustain_ratio: float
     crash_sustain_ratio: float
-    crash_min_strength: float
 
 
 @dataclass

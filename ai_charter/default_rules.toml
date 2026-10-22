@@ -87,14 +87,22 @@ accent_min_beats = 2.0
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
 # ---------------------------------------------------------------------------
 [drum_detection]
-kick_band = [30.0, 120.0]
-snare_band = [150.0, 400.0]
-snare_snap_band = [1500.0, 5000.0]
-hihat_band = [7000.0, 16000.0]
-threshold = 0.15             # força mínima (0-1) para aceitar uma batida
-dominance = 1.0              # bumbo: graves ≥ dominance × corpo da caixa (e vice-versa)
-crash_sustain_ratio = 0.3    # prato que mantém essa fração do volume após ~0,1 s vira crash
-crash_min_strength = 0.6
+# Como os conversores de bateria para MIDI: primeiro descobre os sons do kit da gravação
+# (grupos de golpes com o mesmo espectro), dá nome a cada um e depois marca quando cada som toca.
+onset_delta = 0.07           # sensibilidade dos ataques (menor = acha batidas mais fracas)
+min_level = 0.03             # ignora ataques com menos som novo que isso × os 5% mais fortes
+max_sounds = 12              # quantos sons diferentes procurar no kit
+sound_similarity = 0.9      # quão parecidos (0-1) dois golpes precisam ser para serem o mesmo som
+explained_error = 0.35      # um golpe já está explicado se os sons achados o reproduzem com esse erro
+min_hits = 3                 # um som do kit precisa aparecer sozinho em pelo menos N golpes
+min_share = 0.3              # fração do ataque (nas bandas do som) que ele precisa explicar
+threshold = 0.15             # força mínima (0-1) relativa a um golpe típico do mesmo som
+kick_max_hz = 95.0           # bumbo: altura (pico nos graves) até aqui; acima é tom
+floor_tom_max_hz = 130.0     # tom abaixo disso é o surdo (verde); acima, tons de rack
+tom_min_ring = 0.25          # tom ressoa: mantém essa fração do volume ~80 ms depois
+snare_min_wires = 0.4        # caixa: ruído das esteiras (2-8 kHz) ≥ isso × o corpo (80-600 Hz)
+ride_sustain_ratio = 0.15    # prato que ainda soa um pouco ~150-300 ms depois é condução
+crash_sustain_ratio = 0.4    # prato que ainda soa muito ~150-300 ms depois é ataque (crash)
 
 # ---------------------------------------------------------------------------
 # Várias guitarras (ex.: violão + guitarra solo): qual vira a chart, compasso a compasso
