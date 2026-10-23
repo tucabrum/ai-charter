@@ -25,7 +25,11 @@ Passos:
      capotraste) e com o dobro ou a metade das batidas do detector.
   3. Guia: cada nota detectada recebe a altura e o formato de acorde da nota da
      partitura mais próxima (até uma semicolcheia de distância). Se pouca coisa
-     confere, a referência é ignorada e o log avisa. A bateria é corrigida depois de
+     confere, a referência é ignorada e o log avisa. Com várias pistas no mesmo
+     instrumento (solo, base...), cada compasso usa a que mais confere com o áudio.
+     A fidelidade (--reference-fidelity) diz se a partitura também dá o RITMO: só
+     corrige (corrigir), substitui os compassos em que confere (completar, o padrão)
+     ou vale onde tiver notas (seguir). A bateria é corrigida depois de
      pronta (a transcrição dela não muda): cada nota da pista fica com as peças que a
      partitura toca ali (mapa General MIDI), mantendo o bumbo e o número de mãos.
 """
@@ -53,6 +57,9 @@ GUIDED = (*PITCHED, "drums")              # instrumentos que a referência guia 
 DRUM_MATCH_BEATS = 0.125                  # bateria: golpes mais densos, tolerância menor (fusa)
 MATCH_BEATS = 0.25                        # distância máxima entre a nota detectada e a da partitura
 MIN_MATCHED = 0.3                         # abaixo disso a referência não confere: é ignorada
+FIDELITY = ("corrigir", "completar", "seguir")   # quanto a partitura manda nas notas (ver Guide)
+DEFAULT_FIDELITY = "completar"
+BAR_MATCH = 0.5                           # completar: parte das notas detectadas do compasso que confere
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
 WARP_COST = 0.2                           # alinhamento: custo de cada passo fora da diagonal
 UNMATCHED_COST = 0.5                      # alinhamento: passo da partitura depois do fim da gravação
@@ -624,27 +631,115 @@ def chord_voices(pitches: tuple[int, ...], length_beats: float, cfg) -> int:
     return max(1, min(voices, len(pitches)))
 
 
+def _nearest(events: list, ticks: np.ndarray, tick: int, tolerance: float):
+    """O evento mais próximo de `tick` (até `tolerance` ticks), ou None."""
+    if not len(ticks):
+        return None
+    i = int(np.searchsorted(ticks, tick))
+    best = min((j for j in (i - 1, i) if 0 <= j < len(ticks)), key=lambda j: abs(ticks[j] - tick))
+    return events[best] if abs(ticks[best] - tick) <= tolerance else None
+
+
+def _by_bar(items: list, bar: int) -> dict[int, list]:
+    out: dict[int, list] = {}
+    for item in items:
+        out.setdefault(item.tick // bar, []).append(item)
+    return out
+
+
 @dataclass
 class Guide:
-    """Corrige as notas detectadas de um instrumento com as da partitura."""
+    """Corrige as notas detectadas de um instrumento com as da partitura.
+
+    `events` são as notas da partitura (uma lista) ou, com várias pistas no mesmo instrumento (solo,
+    base...), as notas de cada pista ({nome: lista}). Aí cada compasso usa a pista que mais confere
+    com o que foi detectado ali, em vez de somar todas.
+
+    `fidelity` diz quanto a partitura manda (FIDELITY):
+      corrigir  - as notas são as detectadas; a partitura só corrige altura e acorde;
+      completar - nos compassos em que a detecção confere com a partitura (BAR_MATCH), as notas
+                  passam a ser as da partitura (o ritmo dela, sem as falhas e sobras da detecção);
+                  nos outros, fica a detecção corrigida;
+      seguir    - onde a partitura tem notas, valem as dela; onde ela pausa, a chart também pausa.
+                  A detecção só fica antes e depois do trecho que a partitura cobre."""
     instrument: str
-    events: list[RefEvent]
+    events: list[RefEvent] | dict[str, list[RefEvent]]
     resolution: int
     cfg: object                       # PitchedDetection do instrumento
+    fidelity: str = "corrigir"
     stats: dict = field(default_factory=dict)
 
-    def nearest(self, tick: int, ticks: np.ndarray) -> RefEvent | None:
-        if not len(ticks):
-            return None
-        i = int(np.searchsorted(ticks, tick))
-        best = min((j for j in (i - 1, i) if 0 <= j < len(ticks)), key=lambda j: abs(ticks[j] - tick))
-        return self.events[best] if abs(ticks[best] - tick) <= MATCH_BEATS * self.resolution else None
+    def __post_init__(self):
+        self.tracks = self.events if isinstance(self.events, dict) else {"": self.events}
+        self.tracks = {name: events for name, events in self.tracks.items() if events} or {"": []}
 
-    def __call__(self, cands: list, source: str = "", log=print) -> list:
+    def choose_tracks(self, cands: list) -> tuple[list[RefEvent], dict[str, int]]:
+        """As notas da partitura, compasso a compasso, da pista que mais confere com a detecção ali.
+        Conta o ataque (até MATCH_BEATS) e, mais ainda, a mesma nota (sem olhar a oitava); notas a
+        mais na pista pesam contra (um solo por cima da base não ganha da base)."""
+        if len(self.tracks) == 1:
+            (events,) = self.tracks.values()
+            return events, {}
+        bar, tolerance = 4 * self.resolution, MATCH_BEATS * self.resolution
+        detected = _by_bar(cands, bar)
+        per_track = {name: _by_bar(events, bar) for name, events in self.tracks.items()}
+        last_bar = max((e.tick // bar for events in self.tracks.values() for e in events), default=-1)
+        chosen, previous, count = [], None, {}
+        for b in range(last_bar + 1):
+            options = [name for name in self.tracks if per_track[name].get(b)]
+            if not options:
+                continue
+            found = detected.get(b, [])
+
+            def score(name: str) -> float:
+                events = per_track[name][b]
+                ticks = np.array([e.tick for e in events])
+                total = 0.0
+                for c in found:
+                    event = _nearest(events, ticks, c.tick, tolerance)
+                    if event is not None:
+                        total += 1 + (round(c.pitch) % 12 in {p % 12 for p in event.pitches})
+                return total / (len(found) + len(events)) + (0.05 if name == previous else 0.0)
+
+            if found:
+                name = max(options, key=score)
+            else:   # nada detectado no compasso: continua na mesma pista, se ela toca ali
+                name = previous if previous in options else options[0]
+            chosen.extend(per_track[name][b])
+            count[name] = count.get(name, 0) + 1
+            previous = name
+        return chosen, count
+
+    def _apply(self, c, event: RefEvent) -> bool:
+        """Dá a `c` a altura e o acorde do evento da partitura. Retorna se algo mudou."""
         from ai_charter.analysis.chords import CHORDS
 
-        ticks = np.array([e.tick for e in self.events])
-        matches = [self.nearest(c.tick, ticks) for c in cands]
+        voices = chord_voices(event.pitches, (event.end_tick - event.tick) / self.resolution, self.cfg)
+        pitch = float(event.pitches[0])
+        changed = round(c.pitch) != round(pitch) or c.voices != voices
+        c.pitch, c.voices = pitch, voices
+        root = event.pitches[0] % 12
+        classes = {p % 12 for p in event.pitches}
+        kind = ("note" if voices == 1 else "5" if classes <= {root, (root + 7) % 12}
+                else "m" if (root + 3) % 12 in classes and (root + 4) % 12 not in classes else "")
+        c.chord = CHORDS.index((root, kind))
+        return changed
+
+    def _from_score(self, events: list[RefEvent], strength: float) -> list:
+        from ai_charter.charting.common import Candidate
+
+        out = []
+        for event in events:
+            c = Candidate(event.tick, strength, end_tick=event.end_tick)
+            self._apply(c, event)
+            out.append(c)
+        return out
+
+    def __call__(self, cands: list, source: str = "", log=print) -> list:
+        events, track_count = self.choose_tracks(cands)
+        ticks = np.array([e.tick for e in events])
+        tolerance = MATCH_BEATS * self.resolution
+        matches = [_nearest(events, ticks, c.tick, tolerance) for c in cands]
         matched = sum(m is not None for m in matches)
         share = matched / len(cands) if cands else 0.0
         label = f"    {self.instrument}" + (f" ({source})" if source else "")
@@ -652,23 +747,42 @@ class Guide:
             log(f"{label}: a referência confere com só {share:.0%} das notas detectadas, ignorada")
             self.stats = {"matched": matched, "notes": len(cands), "changed": 0, "applied": False}
             return cands
-        changed = 0
-        for c, event in zip(cands, matches):
-            if event is None:
-                continue
-            voices = chord_voices(event.pitches, (event.end_tick - event.tick) / self.resolution, self.cfg)
-            pitch = float(event.pitches[0])
-            if round(c.pitch) != round(pitch) or c.voices != voices:
-                changed += 1
-            c.pitch, c.voices = pitch, voices
-            root = event.pitches[0] % 12
-            classes = {p % 12 for p in event.pitches}
-            kind = ("note" if voices == 1 else "5" if classes <= {root, (root + 7) % 12}
-                    else "m" if (root + 3) % 12 in classes and (root + 4) % 12 not in classes else "")
-            c.chord = CHORDS.index((root, kind))
-        log(f"{label}: referência confere com {share:.0%} das notas detectadas; {changed} corrigidas")
-        self.stats = {"matched": matched, "notes": len(cands), "changed": changed, "applied": True}
+        changed = sum(self._apply(c, event) for c, event in zip(cands, matches) if event is not None)
+        line = f"{label}: referência confere com {share:.0%} das notas detectadas; {changed} corrigidas"
+        if track_count:
+            line += "; pistas por compasso: " + ", ".join(
+                f"{name} ({n})" for name, n in sorted(track_count.items(), key=lambda kv: -kv[1]))
+        self.stats = {"matched": matched, "notes": len(cands), "changed": changed, "applied": True,
+                      "tracks": track_count, "bars_from_score": 0}
+        if self.fidelity != "corrigir" and events:
+            cands, bars = self._replace_bars(cands, matches, events)
+            self.stats["bars_from_score"] = bars
+            line += f"; {bars} compasso(s) com o ritmo da partitura ({self.fidelity})"
+        log(line)
         return cands
+
+    def _replace_bars(self, cands: list, matches: list, events: list[RefEvent]) -> tuple[list, int]:
+        """Troca as notas detectadas pelas da partitura nos compassos que a fidelidade pede."""
+        bar = 4 * self.resolution
+        detected, from_score = _by_bar(cands, bar), _by_bar(events, bar)
+        matched_in = {}
+        for c, event in zip(cands, matches):
+            matched_in[c.tick // bar] = matched_in.get(c.tick // bar, 0) + (event is not None)
+        strength = float(np.median([c.strength for c in cands])) if cands else 1.0
+        first, last = events[0].tick // bar, events[-1].tick // bar
+        out, replaced = [], 0
+        for b in sorted(set(detected) | set(from_score)):
+            found, score = detected.get(b, []), from_score.get(b, [])
+            if self.fidelity == "seguir":
+                use_score = first <= b <= last
+            else:   # completar
+                use_score = bool(found and score) and matched_in.get(b, 0) >= BAR_MATCH * len(found)
+            if use_score:
+                out.extend(self._from_score(score, strength))
+                replaced += bool(score)
+            else:
+                out.extend(found)
+        return sorted(out, key=lambda c: c.tick), replaced
 
 
 # Bateria: peça de cada nota do mapa General MIDI (canal 10).
@@ -767,9 +881,17 @@ class DrumGuide:
         return track
 
 
+def short_name(track: RefTrack) -> str:
+    """Nome curto da pista para o log: "Monte Money | Lead Guitar | Gibson" -> "1 Lead Guitar"."""
+    parts = [p.strip() for p in track.name.split("|") if p.strip()]
+    return f"{track.index} {parts[1] if len(parts) > 1 else (parts[0] if parts else '')}".strip()
+
+
 def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: int, tempo, rules,
-                log=print) -> dict[str, "Guide | DrumGuide"]:
+                log=print, fidelity: str = DEFAULT_FIDELITY) -> dict[str, "Guide | DrumGuide"]:
     """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums)."""
+    if fidelity not in FIDELITY:
+        raise ValueError(f"fidelidade inválida: {fidelity!r} (use {', '.join(FIDELITY)})")
     score = read_score(path)
     mapping = default_mapping(score) if mapping is None else mapping
     by_index = {t.index: t for t in score.tracks}
@@ -788,9 +910,9 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
     guides = {}
     for instrument in PITCHED:
         tracks = [by_index[i] for i, inst in mapping.items() if inst == instrument]
-        if tracks:
-            guides[instrument] = Guide(instrument, events_in_ticks(tracks, alignment, tempo.resolution),
-                                       tempo.resolution, rules.detection[instrument])
+        if tracks:   # com várias pistas no instrumento, o guia escolhe uma por compasso
+            events = {short_name(t): events_in_ticks([t], alignment, tempo.resolution) for t in tracks}
+            guides[instrument] = Guide(instrument, events, tempo.resolution, rules.detection[instrument], fidelity)
     drum_tracks = [by_index[i] for i, inst in mapping.items() if inst == "drums"]
     if drum_tracks:
         guides["drums"] = DrumGuide(drum_events_in_ticks(drum_tracks, alignment, tempo.resolution),

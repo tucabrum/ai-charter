@@ -121,8 +121,51 @@ def test_parse_mapping():
         parse_mapping("1=flauta")
 
 
-def make_guide(events, resolution=192):
-    return Guide("guitar", events, resolution, load_rules().detection["guitar"])
+def make_guide(events, resolution=192, fidelity="corrigir"):
+    return Guide("guitar", events, resolution, load_rules().detection["guitar"], fidelity)
+
+
+def eighths(first_bar, bars, pitch, res=192):
+    """Colcheias regulares (a partitura) de `bars` compassos a partir de `first_bar`."""
+    return [RefEvent(t, t + res // 2, (pitch,)) for t in range(first_bar * 4 * res, (first_bar + bars) * 4 * res, res // 2)]
+
+
+@pytest.mark.parametrize("fidelity, bar0, bar1", [
+    ("corrigir", 6, 4),     # as notas são as detectadas (só a altura muda)
+    ("completar", 8, 4),    # compasso 1 confere (5 de 6): ganha as 8 colcheias; o 2 (1 de 4) fica como estava
+    ("seguir", 8, 1),       # a partitura vale nos dois (no 2, uma semibreve)
+])
+def test_fidelity_levels(fidelity, bar0, bar1):
+    res, bar = 192, 4 * 192
+    # Compasso 1: 5 colcheias detectadas (faltam 3) e uma sobra fora da grade.
+    # Compasso 2: a partitura tem uma semibreve; só 1 das 4 notas detectadas confere com ela.
+    detected = [Candidate(t, 1, end_tick=t + 90, pitch=44) for t in (0, 96, 192, 384, 576)] + [Candidate(530, 1, pitch=50)]
+    detected += [Candidate(bar + t, 1, end_tick=bar + t + 40, pitch=44) for t in (0, 250, 450, 650)]
+    lines = []
+    score = eighths(0, 1, 45, res) + [RefEvent(bar, 2 * bar, (45,))]
+    out = make_guide(score, res, fidelity)(detected, log=lines.append)
+    in_bar = [sum(c.tick // bar == b for c in out) for b in (0, 1)]
+    assert in_bar == [bar0, bar1]
+    if fidelity != "corrigir":
+        from_score = [c for c in out if c.tick < bar] if fidelity == "completar" else out
+        assert all(c.pitch == 45 and c.end_tick - c.tick in (96, bar) for c in from_score)
+        assert f"({fidelity})" in lines[0]
+
+
+def test_guide_picks_the_score_track_that_matches_each_bar():
+    """Base (colcheias em Mi) e solo (semínimas pontuadas em Lá): a detecção segue a base no compasso 1
+    e o solo no 2; somar as duas pistas embaralharia o compasso."""
+    res, bar = 192, 4 * 192
+    tracks = {"3 Base": eighths(0, 2, 40, res), "1 Solo": [RefEvent(t, t + 288, (57,)) for t in range(0, 2 * bar, 288)]}
+    detected = [Candidate(t, 1, pitch=40) for t in range(0, bar, 96)]
+    detected += [Candidate(t, 1, pitch=57) for t in range(bar + 96, 2 * bar, 288)]   # 864, 1152, 1440
+    lines = []
+    guide = make_guide(tracks, res, "seguir")
+    out = guide(detected, log=lines.append)
+    assert guide.stats["tracks"] == {"3 Base": 1, "1 Solo": 1}
+    assert {round(c.pitch) for c in out if c.tick < bar} == {40}
+    assert {round(c.pitch) for c in out if c.tick >= bar} == {57}
+    assert "pistas por compasso: " in lines[0]
 
 
 def test_guide_corrects_pitch_and_chords():

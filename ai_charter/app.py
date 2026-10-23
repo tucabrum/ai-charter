@@ -112,6 +112,7 @@ class Request:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
+    reference_fidelity: str = "completar"
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -176,6 +177,10 @@ def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
     return path, mapping
 
 
+# Quanto a partitura manda nas notas (reference.Guide); o primeiro é o padrão.
+FIDELITY_CHOICES = ("completar", "corrigir", "seguir")
+
+
 def parse_request(data: dict, settings: dict) -> Request:
     """Valida o formulário da página (os mesmos cuidados da CLI)."""
     instruments = tuple(data.get("instruments") or ())
@@ -197,6 +202,7 @@ def parse_request(data: dict, settings: dict) -> Request:
         input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
+        reference_fidelity=_choice(data, "reference_fidelity", FIDELITY_CHOICES),
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -235,7 +241,8 @@ def run_request(req: Request, log) -> Path:
         opts = Options(
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
             rules_path=req.rules_path, genre=req.genre, reference=req.reference,
-            reference_tracks=req.reference_tracks, instruments=req.instruments, tempo_mode=req.tempo_mode,
+            reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
+            instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
             cifra=cifra, cifra_lyrics=req.lyrics_from_cifra,
@@ -258,6 +265,7 @@ class AddRequest:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
+    reference_fidelity: str = "completar"
     lyrics: Path | None = None
     lyrics_text: str = ""
     cifra_text: str = ""             # cifra colada (Cifra Club)
@@ -283,6 +291,7 @@ def parse_add_request(data: dict) -> AddRequest:
     return AddRequest(
         folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
+        reference_fidelity=_choice(data, "reference_fidelity", FIDELITY_CHOICES),
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")), cifra_text=str(data.get("cifra_text") or "").strip(),
@@ -310,7 +319,8 @@ def run_add_request(req: AddRequest, log) -> Path:
         lyrics.write_text(lyrics_text(read_cifra(cifra)), encoding="utf-8")
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
                      rules_path=req.rules_path, genre=req.genre, reference=req.reference,
-                     reference_tracks=req.reference_tracks, replace_existing=req.replace, log=log)
+                     reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
+                     replace_existing=req.replace, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder

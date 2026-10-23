@@ -72,6 +72,8 @@
   .ref-tracks table { margin-top: 6px; }
   .ref-tracks td, .ref-tracks th { padding: 3px 6px; }
   .ref-tracks select { padding: 2px 6px; }
+  .ref-fidelity { display: block; margin-top: 6px; }
+  .ref-fidelity select { max-width: 100%; }
   .ref-error { color: var(--red); font-size: 12px; }
   .genre-hint button { padding: 1px 8px; margin-left: 6px; font-size: 12px; }
   #addForm { max-width: 640px; }
@@ -114,7 +116,7 @@
         <div class="field reference">
           <span>Partitura de referência (MIDI ou Guitar Pro, opcional)</span>
           <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="form">Procurar…</button></div>
-          <p class="help">Guia a transcrição: as notas continuam vindo do áudio, e a partitura corrige a altura e os acordes de cada nota que bate com ela (na bateria, a peça de cada golpe). Guia guitarra, baixo, teclado e bateria.</p>
+          <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura <select name="reference_fidelity"><option value="completar" selected>Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option><option value="seguir">Seguir: as notas da partitura onde ela tiver notas</option></select></label>
           <div class="ref-tracks"></div>
         </div>
         <div class="field">
@@ -209,7 +211,7 @@
       <div class="field reference">
         <span>Partitura de referência (MIDI ou Guitar Pro, opcional)</span>
         <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="addForm">Procurar…</button></div>
-        <p class="help">Guia a transcrição: as notas continuam vindo do áudio, e a partitura corrige a altura e os acordes de cada nota que bate com ela (na bateria, a peça de cada golpe). Guia guitarra, baixo, teclado e bateria.</p>
+        <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura <select name="reference_fidelity"><option value="completar" selected>Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option><option value="seguir">Seguir: as notas da partitura onde ela tiver notas</option></select></label>
         <div class="ref-tracks"></div>
       </div>
       <div class="field">
@@ -418,12 +420,13 @@ async function loadReference(owner) {
 function referenceBody(owner) {
   const reference = owner.elements.reference.value.trim();
   if (!reference) return { reference: "" };
-  if (!owner.refTracks) return { reference, reference_tracks: null };
+  const reference_fidelity = owner.elements.reference_fidelity.value;
+  if (!owner.refTracks) return { reference, reference_fidelity, reference_tracks: null };
   const mapping = {};
   for (const select of owner.querySelectorAll(".ref-tracks select[data-track]")) {
     if (select.value) mapping[select.dataset.track] = select.value;
   }
-  return { reference, reference_tracks: mapping };
+  return { reference, reference_fidelity, reference_tracks: mapping };
 }
 
 for (const owner of [form, $("#addForm")]) {
