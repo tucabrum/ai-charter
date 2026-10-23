@@ -271,7 +271,7 @@ def _spread(times: list[float], start: float, end: float, count: int) -> list[fl
     return list(np.linspace(start, start + (end - start) * (count - 1) / max(count, 1), count))
 
 
-VOCAL_GRID = 4          # divisões da batida para a voz (semicolcheias)
+VOCAL_GRID = 8          # divisões da batida para a voz (fusas): a voz não é tão presa ao grid
 MELISMA_SECONDS = 0.1   # nota nova dentro da sílaba, depois disso, vira "+" (melisma)
 SNAP_BEFORE = 0.1       # o início da sílaba procura uma nota cantada desde um pouco antes da consoante...
 SNAP_AFTER = 0.12       # ...até um pouco depois da vogal

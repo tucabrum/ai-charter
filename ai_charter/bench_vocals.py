@@ -189,10 +189,10 @@ def evaluate(folder: Path, cache: Path, rules, aligner: str = "ctc") -> dict | N
     result = {"oficial_gafes": gaffes(theirs, [(s.tick, s.end) for s in theirs if s.pitch is not None])}
     for name, tempo in (("oficial", official), ("nosso", detected)):
         if spans is not None:
-            track = build_aligned_track(spans, sung, lines, tempo, rules.general.resolution, rules.vocals)
+            track = build_aligned_track(spans, sung, lines, tempo, tempo.resolution, rules.vocals)
         else:
             segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
-            track = build_vocal_track(sung, segments, lines, tempo, rules.general.resolution,
+            track = build_vocal_track(sung, segments, lines, tempo, tempo.resolution,
                                       rules.general.allow_triplets, rules.vocals)
         ours = our_vocals(track)
         for s in ours:

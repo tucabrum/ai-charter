@@ -5,6 +5,9 @@ português e inglês incluídos). A rede ouve a voz e diz, a cada 20 ms, a chanc
 estar soando; o alinhamento CTC acha o caminho mais provável que passa por TODAS as letras da
 letra, em ordem. Assim cada sílaba cai onde ela é cantada, mesmo sem pausas que separem as frases.
 
+Depois, os trechos mal ouvidos (confiança baixa) são alinhados de novo só entre as linhas bem
+ouvidas vizinhas (realign_gaps).
+
 Entre as linhas pode ir um "*" ("qualquer coisa"), que absorve o que não está na letra (gritos,
 vocal de apoio). O "*" do torchaudio tem probabilidade 1 em todo quadro e engole trechos inteiros
 de letra mal ouvida; aqui ele tem uma probabilidade fixa e baixa (STAR_LOGP).
@@ -25,6 +28,7 @@ FRAME = 0.02              # cada saída da rede cobre 20 ms
 CHUNK_SECONDS = 10.0      # a rede ouve a música em pedaços (com pedaços longos ela "ensurdece" no meio)
 CONTEXT_SECONDS = 1.5     # com um pouco de contexto dos lados
 STAR_LOGP: float | None = None   # log-probabilidade do "*" entre as linhas (None = sem "*")
+ANCHOR_SCORE = 0.3       # linha com confiança abaixo disso é alinhada de novo (realign_gaps)
 VOWELS = set("aeiouy")
 
 _model = None
@@ -94,7 +98,47 @@ def emissions(y: np.ndarray, sr: int) -> np.ndarray:
 
 def align_syllables(y: np.ndarray, sr: int, lines: list[list[str]]) -> list[list[SyllableSpan | None]]:
     """Início e fim de cada sílaba (None se ela não tem letra que o modelo conheça, ex.: "...")."""
-    return align_emissions(emissions(y, sr), lines)
+    spans = align_emissions(emissions(y, sr), lines)
+    return realign_gaps(spans, lines, lambda a, b: emissions(y[int(a * sr):int(b * sr)], sr), len(y) / sr)
+
+
+def line_score(spans: list[SyllableSpan | None]) -> float:
+    found = [s for s in spans if s is not None]
+    return float(np.mean([s.score for s in found])) if found else 1.0
+
+
+def realign_gaps(spans: list[list[SyllableSpan | None]], lines: list[list[str]], emit, duration: float,
+                 anchor: float = ANCHOR_SCORE) -> list[list[SyllableSpan | None]]:
+    """Segunda passada: as linhas bem ouvidas (confiança >= `anchor`) viram âncoras, e cada trecho de
+    linhas mal ouvidas entre duas âncoras é alinhado de novo, só com o áudio entre elas.
+
+    A rede ouve de novo aquele trecho, com os pedaços começando nele; às vezes ela entende o que não
+    tinha entendido no meio da música inteira. Fica o resultado com a maior confiança.
+    `emit(início, fim)`: emissões do áudio entre os dois instantes (s).
+    """
+    out = [list(sp) for sp in spans]
+    good = [line_score(sp) >= anchor for sp in spans]
+    li = 0
+    while li < len(lines):
+        if good[li]:
+            li += 1
+            continue
+        j = li
+        while j < len(lines) and not good[j]:
+            j += 1
+        before = [s for s in out[li - 1] if s is not None] if li > 0 else []
+        after = [s for s in out[j] if s is not None] if j < len(lines) else []
+        t0 = before[-1].end if before else 0.0
+        t1 = after[0].start if after else duration
+        if t1 - t0 >= 0.5:
+            new = align_emissions(emit(t0, t1), lines[li:j])
+            if np.mean([line_score(sp) for sp in new]) > np.mean([line_score(out[k]) for k in range(li, j)]):
+                for k, sp in zip(range(li, j), new):
+                    out[k] = [None if s is None else
+                              SyllableSpan(s.start + t0, s.end + t0, s.score, None if s.vowel is None else s.vowel + t0)
+                              for s in sp]
+        li = j
+    return out
 
 
 def align_emissions(em: np.ndarray, lines: list[list[str]],

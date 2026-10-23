@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from ai_charter.analysis.align import FRAME, SyllableSpan, align_emissions, romanize
+from ai_charter.analysis.align import FRAME, SyllableSpan, align_emissions, realign_gaps, romanize
 from ai_charter.analysis.tempo import TempoMap
 from ai_charter.analysis.vocals import SungNote
 from ai_charter.charting.vocals import build_aligned_track
@@ -44,6 +44,25 @@ def test_align_emissions_skips_syllables_without_letters():
     assert spans[0][0] is None and spans[0][1] is not None
 
 
+def test_realign_gaps_redoes_only_the_badly_heard_stretch_between_anchors():
+    lines = [["oi"], ["ca-", "sa"], ["sol"]]
+    spans = [[SyllableSpan(1.0, 1.2, 0.9, 1.1)],                                     # âncora
+             [SyllableSpan(1.3, 1.32, 0.05, 1.31), SyllableSpan(1.34, 1.36, 0.05, 1.35)],   # mal ouvida
+             [SyllableSpan(5.0, 5.2, 0.8, 5.1)]]                                     # âncora
+    asked = []
+
+    def emit(a, b):   # a rede, ouvindo só o trecho entre as âncoras, entende "ca-sa" em +1 s e +2 s
+        asked.append((a, b))
+        return _emissions([("c", 50), ("a", 54), ("s", 100), ("a", 104)], int((b - a) / FRAME))
+
+    out = realign_gaps(spans, lines, emit, 10.0)
+    assert asked == [(1.2, 5.0)]
+    assert out[0] == spans[0] and out[2] == spans[2]
+    (ca, sa) = out[1]
+    assert abs(ca.start - (1.2 + 50 * FRAME)) < 2 * FRAME and abs(sa.vowel - (1.2 + 104 * FRAME)) < 2 * FRAME
+    assert ca.score > 0.5
+
+
 def _span(t, vowel=None):
     return SyllableSpan(t, t + 0.1, 0.9, t if vowel is None else vowel)
 
@@ -76,4 +95,4 @@ def test_aligned_track_line_without_voice_is_spoken():
     rules = load_rules(None)
     tempo = TempoMap(np.arange(0, 64) * 0.5, 192)
     track = build_aligned_track([[_span(2.0), _span(2.3)]], [], [["o-", "lá"]], tempo, 192, rules.vocals)
-    assert not track.notes and [t for t, _ in track.spoken] == [768, 864]   # 2,3 s = 883 ticks -> semicolcheia mais perto
+    assert not track.notes and [t for t, _ in track.spoken] == [768, 888]   # 2,3 s = 883 ticks -> fusa mais perto

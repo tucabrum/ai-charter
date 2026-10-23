@@ -100,10 +100,12 @@ def test_vocal_notes_have_right_timing_and_pitch(song):
                 expected.append((tick, midi_note))
                 tick += eighths * RES // 2
     # Uma nota por sílaba. A voz sintética engana um pouco o alinhamento forçado (feito para voz
-    # de verdade, medido em charts oficiais pelo bench_vocals): aceita 10% fora do lugar ou do tom.
+    # de verdade, medido em charts oficiais pelo bench_vocals) e a voz usa a grade de fusas: aceita
+    # até uma fusa de diferença e 10% de notas fora do lugar ou do tom.
     got = [(t, v[0]) for t, v in notes]
     assert len(got) == len(expected)
-    assert sum(a == b for a, b in zip(got, expected)) >= 0.9 * len(expected), list(zip(got, expected))
+    right = sum(abs(a[0] - b[0]) <= RES // 8 and a[1] == b[1] for a, b in zip(got, expected))
+    assert right >= 0.9 * len(expected), list(zip(got, expected))
 
 
 def test_vocal_phrases_match_lyric_lines(song):
@@ -113,7 +115,7 @@ def test_vocal_phrases_match_lyric_lines(song):
     for section, first in (("verso1", 0), ("verso2", 4)):
         start = bars_of(section)[0] * MEASURE
         for line in range(4):
-            assert phrases[first + line][0] == start + line * 2 * MEASURE
+            assert abs(phrases[first + line][0] - (start + line * 2 * MEASURE)) <= RES // 8   # até uma fusa
 
 
 def test_violao_strums_are_all_charted_as_consistent_chords(song):
