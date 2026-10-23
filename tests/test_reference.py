@@ -254,10 +254,8 @@ def test_pipeline_guided_by_score(tmp_path):
     assert "transposta -1 semitons" in text
     guitar_line = next(line for line in lines if line.startswith("    guitar: referência confere com"))
     assert "100% das notas detectadas" in guitar_line
-    # As 4 notas trocadas na partitura são corrigidas. Com o Beat This!, o mapa de tempo estica a primeira
-    # batida (0 a 1,5 s; a música começa em 1 s) e a chart grava a 2ª nota (1,25 s) em 1,125 s, a meio
-    # caminho entre duas notas da partitura: ela pode ganhar a altura da vizinha.
-    assert int(guitar_line.split("; ")[1].split()[0]) in (4, 5)
+    # As 4 notas trocadas na partitura são corrigidas.
+    assert int(guitar_line.split("; ")[1].split()[0]) == 4
     assert "bass: referência confere com 100% das notas detectadas; 0 corrigidas" in text
     drum_line = next(line for line in lines if line.startswith("    drums: referência confere com"))
     assert int(drum_line.split("com ")[1].split("%")[0]) >= 80

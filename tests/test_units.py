@@ -192,6 +192,23 @@ def test_bars_start_on_the_detected_downbeats():
     assert _bars_on_downbeats(beats, np.array([])) is beats
 
 
+def test_bar_fix_ends_before_the_first_attack():
+    import numpy as np
+
+    from ai_charter.analysis.tempo import _anchor_at_zero, _bars_on_downbeats
+
+    period = 0.5
+    beats = _anchor_at_zero(np.arange(0.5, 30, period), period, 30)   # 0 s, 0,5 s, 1 s...
+    downbeats = np.arange(1.0, 30, 4 * period)                         # a música começa num compasso, em 1 s
+    fixed = _bars_on_downbeats(beats, downbeats, first_onset=1.0)
+    assert np.allclose(fixed[:5], [0.0, 0.25, 0.5, 0.75, 1.0])         # o silêncio é que muda
+    assert np.allclose(np.diff(fixed[4:]), period)
+    # Com introdução longa, tira-se uma batida do silêncio em vez de pôr três.
+    downbeats = np.arange(4.5, 30, 4 * period)
+    fixed = _bars_on_downbeats(beats, downbeats, first_onset=4.5)
+    assert np.isclose(fixed[8], 4.5) and np.allclose(np.diff(fixed[:9]), 4.5 / 8)
+
+
 def test_skipped_and_doubled_beats_are_regularized():
     import numpy as np
 

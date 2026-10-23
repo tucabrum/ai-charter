@@ -119,12 +119,16 @@ def _regularize_beats(beats: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
-def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray) -> np.ndarray:
+def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray,
+                       first_onset: float | None = None) -> np.ndarray:
     """Faz os compassos (batidas 0, 4, 8...) começarem nos inícios de compasso detectados.
 
     `beats` já começa em 0 s (_anchor_at_zero). A fase que vale é a mais comum entre todos os inícios
-    de compasso detectados; para chegar nela, tiram-se batidas logo depois do 0 (o primeiro intervalo
-    fica mais longo, numa introdução) ou, se não houver de onde tirar, a primeira é dividida."""
+    de compasso detectados. Para chegar nela, o trecho antes do primeiro ataque (`first_onset`) é
+    redividido em batidas iguais, uma ou mais a menos ou a mais, o que ficar mais perto do andamento:
+    assim a música começa já na grade certa. Se a música começa na primeira batida (ou sem
+    `first_onset`), tiram-se batidas logo depois do 0 ou, se não houver de onde tirar, a primeira é
+    dividida."""
     if not len(downbeats) or len(beats) < 6:
         return beats
     period = float(np.median(np.diff(beats[1:])))
@@ -136,6 +140,12 @@ def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray) -> np.ndarray:
     phase = int(np.bincount(nearest[close] % 4, minlength=4).argmax())
     if phase == 0:
         return beats
+    # Última batida antes do primeiro ataque (ou junto dele): dali para trás, só silêncio.
+    last = int(np.searchsorted(beats, first_onset + period / 4)) - 1 if first_onset is not None else 0
+    if 0 < last < len(beats) - 1:
+        counts = [n for n in (last - phase, last + 4 - phase) if n >= 1]
+        n = min(counts, key=lambda n: abs(np.log(beats[last] / n / period)))
+        return np.concatenate([np.linspace(0.0, beats[last], n + 1), beats[last + 1:]])
     if len(beats) > phase + 1 and beats[phase + 1] - beats[0] > 0:
         return np.delete(beats, np.arange(1, phase + 1))
     extra = 4 - phase
@@ -211,6 +221,8 @@ def estimate_tempo_map(y: np.ndarray, sr: int, resolution: int = 192,
         smoothed = savgol_filter(beats, window_length=window, polyorder=1) if window >= 3 else beats
 
     onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=hop, units="time")
-    smoothed = _align_phase(smoothed, onsets - ONSET_LATENCY, float(period))
+    onsets = onsets - ONSET_LATENCY
+    smoothed = _align_phase(smoothed, onsets, float(period))
     anchored = _anchor_at_zero(smoothed, float(period), duration)
-    return TempoMap(_bars_on_downbeats(anchored, downbeats), resolution)
+    first_onset = float(onsets[0]) if len(onsets) else None
+    return TempoMap(_bars_on_downbeats(anchored, downbeats, first_onset), resolution)

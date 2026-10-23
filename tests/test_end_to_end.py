@@ -42,8 +42,10 @@ def test_guitar_expert_matches_melody(song):
     chart = parse_chart(song.song_dir / "notes.chart")
     expert = notes_by_tick(chart["ExpertSingle"])
     ticks = sorted(expert)
-    # A melodia tem uma nota por colcheia, começando 1 s (= 2 batidas) depois do início.
-    assert ticks == [2 * RES + i * EIGHTH for i in range(len(synth.MELODY))]
+    # A melodia tem uma nota por colcheia, começando 1 s (= 2 batidas) depois do início. Com o Beat This!,
+    # 1 s é início de compasso e vai para a batida 4 (o silêncio antes vira 4 batidas de 0,25 s).
+    assert ticks[0] in (2 * RES, 4 * RES)
+    assert ticks == [ticks[0] + i * EIGHTH for i in range(len(synth.MELODY))]
     # Mesma nota -> mesma lane; nota diferente -> lane diferente.
     lanes = [expert[t][0] for t in ticks]
     for i in range(1, len(lanes)):
@@ -71,12 +73,13 @@ def test_all_difficulties_exist_and_get_easier(song):
 def test_drums_detect_kick_snare_and_cymbals(song):
     chart = parse_chart(song.song_dir / "notes.chart")
     expert = notes_by_tick(chart["ExpertDrums"])
-    beats = range(2 * RES, 2 * RES + 24 * RES, RES)
+    start = min(notes_by_tick(chart["ExpertSingle"]))   # a música começa junto com a guitarra
+    beats = range(start, start + 24 * RES, RES)
     kick_beats = [t for t in beats if 0 in expert.get(t, [])]
     snare_beats = [t for t in beats if 1 in expert.get(t, [])]
     # Bumbo nas batidas pares, caixa nas ímpares (pelo menos 90% de acerto).
-    assert sum((t - 2 * RES) // RES % 2 == 0 for t in kick_beats) >= 0.9 * 12
-    assert sum((t - 2 * RES) // RES % 2 == 1 for t in snare_beats) >= 0.9 * 12
+    assert sum((t - start) // RES % 2 == 0 for t in kick_beats) >= 0.9 * 12
+    assert sum((t - start) // RES % 2 == 1 for t in snare_beats) >= 0.9 * 12
     # Pratos marcados como cymbal (Pro Drums).
     assert any(66 in v for v in expert.values()) and any(68 in v for v in expert.values())
 
