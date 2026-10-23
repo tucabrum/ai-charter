@@ -28,8 +28,8 @@ Passos:
      confere, a referência é ignorada e o log avisa. Com várias pistas no mesmo
      instrumento (solo, base...), cada compasso usa a que mais confere com o áudio.
      A fidelidade (--reference-fidelity) diz se a partitura também dá o RITMO: só
-     corrige (corrigir), substitui os compassos em que confere (completar, o padrão)
-     ou vale onde tiver notas (seguir). A bateria é corrigida depois de
+     corrige (corrigir), substitui os compassos em que confere (completar) ou vale
+     onde tiver notas (seguir, o padrão). A bateria é corrigida depois de
      pronta (a transcrição dela não muda): cada nota da pista fica com as peças que a
      partitura toca ali (mapa General MIDI), mantendo o bumbo e o número de mãos.
 """
@@ -58,7 +58,7 @@ DRUM_MATCH_BEATS = 0.125                  # bateria: golpes mais densos, tolerâ
 MATCH_BEATS = 0.25                        # distância máxima entre a nota detectada e a da partitura
 MIN_MATCHED = 0.3                         # abaixo disso a referência não confere: é ignorada
 FIDELITY = ("corrigir", "completar", "seguir")   # quanto a partitura manda nas notas (ver Guide)
-DEFAULT_FIDELITY = "completar"
+DEFAULT_FIDELITY = "seguir"
 BAR_MATCH = 0.5                           # completar: parte das notas detectadas do compasso que confere
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
 WARP_COST = 0.2                           # alinhamento: custo de cada passo fora da diagonal

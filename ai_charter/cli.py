@@ -36,10 +36,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
     parser.add_argument("--reference-tracks",
                         help="pistas da partitura para cada instrumento, ex.: 2=guitar,4=bass "
                              "(padrão: palpite pelo nome e instrumento da pista)")
-    parser.add_argument("--reference-fidelity", choices=("corrigir", "completar", "seguir"), default="completar",
+    parser.add_argument("--reference-fidelity", choices=("corrigir", "completar", "seguir"), default="seguir",
                         help="quanto a partitura manda nas notas: corrigir (só altura e acordes das notas "
                              "detectadas), completar (o ritmo da partitura nos compassos em que ela confere com "
-                             "o áudio; padrão) ou seguir (as notas da partitura onde ela tiver notas)")
+                             "o áudio) ou seguir (as notas da partitura onde ela tiver notas; padrão)")
     parser.add_argument("--instruments", default=",".join(ALL_INSTRUMENTS),
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",

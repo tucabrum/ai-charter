@@ -158,7 +158,7 @@ def update_song_ini(path: Path, values: dict[str, object]) -> None:
 def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None = None,
             auto_lyrics: bool = False, rules_path: Path | None = None, genre: str | None = None,
             reference: Path | None = None, reference_tracks: dict[int, str] | None = None,
-            reference_fidelity: str = "completar", cifra: Path | None = None,
+            reference_fidelity: str = "seguir", cifra: Path | None = None,
             replace_existing: bool = False, log=print) -> AugmentResult:
     from ai_charter.analysis.transcribe import transcribe_lyrics
     from ai_charter.charting.common import star_power_windows
@@ -328,8 +328,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="cifra (texto do Cifra Club): letra e acordes da música (padrão: cifra.txt da pasta)")
     parser.add_argument("--reference", type=Path, help="partitura (.mid ou Guitar Pro) que guia a transcrição")
     parser.add_argument("--reference-tracks", help="pistas da partitura por instrumento, ex.: 2=guitar,4=bass")
-    parser.add_argument("--reference-fidelity", choices=("corrigir", "completar", "seguir"), default="completar",
-                        help="quanto a partitura manda nas notas (padrão: completar)")
+    parser.add_argument("--reference-fidelity", choices=("corrigir", "completar", "seguir"), default="seguir",
+                        help="quanto a partitura manda nas notas (padrão: seguir)")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
     args = parser.parse_args(argv)
     instruments = tuple(i.strip() for i in args.instruments.split(",") if i.strip())

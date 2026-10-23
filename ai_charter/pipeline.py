@@ -70,7 +70,7 @@ class Options:
     genre: str | None = None       # predefinição de regras (ai_charter/genres/<gênero>.toml)
     reference: Path | None = None  # partitura (MIDI ou Guitar Pro) que guia a transcrição (reference.py)
     reference_tracks: dict[int, str] | None = None   # pista da partitura -> instrumento (None = palpite)
-    reference_fidelity: str = "completar"   # quanto a partitura manda: corrigir, completar ou seguir
+    reference_fidelity: str = "seguir"   # quanto a partitura manda: corrigir, completar ou seguir
     cifra: Path | None = None      # cifra (Cifra Club): letra e vocabulário de acordes (cifra.py)
     cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
     instruments: tuple[str, ...] = ALL_INSTRUMENTS

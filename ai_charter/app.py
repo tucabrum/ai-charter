@@ -112,7 +112,7 @@ class Request:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
-    reference_fidelity: str = "completar"
+    reference_fidelity: str = "seguir"
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -178,7 +178,7 @@ def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
 
 
 # Quanto a partitura manda nas notas (reference.Guide); o primeiro é o padrão.
-FIDELITY_CHOICES = ("completar", "corrigir", "seguir")
+FIDELITY_CHOICES = ("seguir", "completar", "corrigir")
 
 
 def parse_request(data: dict, settings: dict) -> Request:
@@ -265,7 +265,7 @@ class AddRequest:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
-    reference_fidelity: str = "completar"
+    reference_fidelity: str = "seguir"
     lyrics: Path | None = None
     lyrics_text: str = ""
     cifra_text: str = ""             # cifra colada (Cifra Club)
