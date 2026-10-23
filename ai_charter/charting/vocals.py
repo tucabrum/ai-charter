@@ -275,6 +275,39 @@ VOCAL_GRID = 8          # divisões da batida para a voz (fusas): a voz não é 
 MELISMA_SECONDS = 0.1   # nota nova dentro da sílaba, depois disso, vira "+" (melisma)
 SNAP_BEFORE = 0.1       # o início da sílaba procura uma nota cantada desde um pouco antes da consoante...
 SNAP_AFTER = 0.12       # ...até um pouco depois da vogal
+MIN_MELISMA_SECONDS = 0.12   # um "+" precisa durar isso
+WOBBLE_SECONDS = 0.3    # "+" mais curto que isso que volta à altura anterior é oscilação da voz
+SCALE_SNAP = 0.25       # nota fora da escala da música vai para a vizinha da escala se estiver a até 0,5 + isso
+
+# Perfis de Krumhansl: o peso de cada grau numa música em tom maior / menor.
+_MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_MINOR = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+_MAJOR_SCALE, _MINOR_SCALE = (0, 2, 4, 5, 7, 9, 11), (0, 2, 3, 5, 7, 8, 10)
+
+
+def estimate_scale(sung: list[SungNote]) -> set[int] | None:
+    """As 7 classes de altura (0 = Dó) da escala da música, pelo tempo que a voz passa em cada nota."""
+    hist = np.zeros(12)
+    for n in sung:
+        hist[int(round(n.pitch)) % 12] += n.end - n.time
+    if hist.sum() == 0:
+        return None
+    best, scale = -2.0, None
+    for root in range(12):
+        for profile, degrees in ((_MAJOR, _MAJOR_SCALE), (_MINOR, _MINOR_SCALE)):
+            r = float(np.corrcoef(hist, np.roll(profile, root))[0, 1])
+            if r > best:
+                best, scale = r, {(root + d) % 12 for d in degrees}
+    return scale
+
+
+def _snap(pitch: float, scale: set[int] | None) -> float:
+    """Nota fora da escala, perto o bastante de uma da escala, vai para ela."""
+    near = int(round(pitch))
+    if scale is None or SCALE_SNAP <= 0 or near % 12 in scale:
+        return pitch
+    other = near + (1 if pitch > near else -1)
+    return float(other) if other % 12 in scale and abs(pitch - other) <= 0.5 + SCALE_SNAP else pitch
 
 
 def _pitch_in(sung: list[SungNote], start: float, end: float) -> float | None:
@@ -310,6 +343,11 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
     Garante o que o jogo exige: uma sílaba por tick, notas sem sobreposição, frases sem sobreposição.
     """
     step = max(1, resolution // VOCAL_GRID)
+    scale = estimate_scale(sung)
+
+    def fit(pitch: float) -> int:
+        return _fit_pitch(_snap(pitch, scale))
+
     flat = [(li, si) for li, line in enumerate(lines) for si in range(len(line))]
     # Sílabas sem tempo (sem letra que o modelo conheça): logo depois da anterior.
     times: list[tuple[float, float]] = []
@@ -355,14 +393,17 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
                     near = [p for _, _, p, _ in sylls[si + 1:] + sylls[:si][::-1] if p is not None]
                     pitch = near[0] if near else 60.0
                 tick = max(to_tick(start), last_tick + step)
-                pieces = [(tick, _fit_pitch(pitch), line[si])]
-                # Melisma: nota de outra altura que começa depois do começo da sílaba.
+                pieces = [(tick, fit(pitch), line[si])]
+                # Melisma: nota de outra altura que começa depois do começo da sílaba e dura o
+                # bastante (desvios curtos no meio de um sustain são a voz oscilando, não melodia).
                 for n in inside:
                     if n.time >= start + MELISMA_SECONDS and n.time < end \
-                            and abs(_fit_pitch(n.pitch) - pieces[-1][1]) >= 1:
+                            and min(n.end, end) - n.time >= MIN_MELISMA_SECONDS \
+                            and abs(fit(n.pitch) - pieces[-1][1]) >= 1:
                         t = max(to_tick(n.time), pieces[-1][0] + step)
-                        pieces.append((t, _fit_pitch(n.pitch), "+"))
+                        pieces.append((t, fit(n.pitch), "+"))
                 end_tick = max(to_tick(end), pieces[-1][0] + step)
+                pieces = _drop_wobbles(pieces, tempo)
                 for (t, p, text), nxt in zip(pieces, pieces[1:] + [(end_tick, 0, "")]):
                     notes.append(VocalNote(t, nxt[0] - t, p, text))
                 last_tick = pieces[-1][0]
@@ -377,6 +418,20 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
             track.phrases.append((ticks[0], ticks[-1] + step - ticks[0]))
     _no_overlaps(track)
     return track
+
+
+def _drop_wobbles(pieces: list[tuple[int, int, str]], tempo: TempoMap) -> list[tuple[int, int, str]]:
+    """Tira os "+" curtos que saem de uma altura e voltam para ela (pico ou vale num sustain)."""
+    out = list(pieces)
+    i = 1
+    while i < len(out) - 1:
+        t, pitch, _ = out[i]
+        seconds = float(tempo.tick_to_time(out[i + 1][0]) - tempo.tick_to_time(t))
+        if out[i + 1][2] == "+" and out[i - 1][1] == out[i + 1][1] != pitch and seconds < WOBBLE_SECONDS:
+            del out[i:i + 2]      # o desvio e a volta: a nota anterior continua
+        else:
+            i += 1
+    return out
 
 
 def _no_overlaps(track: VocalTrack) -> None:

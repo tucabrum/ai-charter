@@ -2,7 +2,8 @@
 
 import numpy as np
 
-from ai_charter.analysis.align import FRAME, SyllableSpan, align_emissions, realign_gaps, romanize
+from ai_charter.analysis.align import (FRAME, SAMPLE_RATE, SyllableSpan, align_emissions, mute_silence,
+                                      realign_gaps, romanize)
 from ai_charter.analysis.tempo import TempoMap
 from ai_charter.analysis.vocals import SungNote
 from ai_charter.charting.vocals import build_aligned_track
@@ -96,3 +97,34 @@ def test_aligned_track_line_without_voice_is_spoken():
     tempo = TempoMap(np.arange(0, 64) * 0.5, 192)
     track = build_aligned_track([[_span(2.0), _span(2.3)]], [], [["o-", "lá"]], tempo, 192, rules.vocals)
     assert not track.notes and [t for t, _ in track.spoken] == [768, 888]   # 2,3 s = 883 ticks -> fusa mais perto
+
+
+def test_mute_silence_keeps_letters_out_of_a_silent_intro():
+    # A rede não reconheceu "oi" em lugar nenhum (emissões planas): sem a voz, ele cairia em qualquer
+    # ponto; com o silêncio proibido, só pode cair onde a voz soa (a partir de 1 s).
+    em = np.full((100, 28), -3.0, dtype=np.float32)
+    y = np.zeros(2 * SAMPLE_RATE, dtype=np.float32)
+    y[SAMPLE_RATE:] = 0.5 * np.sin(np.arange(SAMPLE_RATE) * 2 * np.pi * 220 / SAMPLE_RATE)
+    (oi,), = align_emissions(mute_silence(em, y), [["oi"]])
+    assert oi.start >= 1.0 - FRAME
+
+
+def test_aligned_track_ignores_a_short_wobble_in_a_sustain():
+    rules = load_rules(None)
+    tempo = TempoMap(np.arange(0, 64) * 0.5, 192)
+    # "lá" sustentado em Dó, com a voz caindo meio tom por 0,15 s e voltando; depois sobe de verdade.
+    sung = [SungNote(1.0, 1.5, 60.0), SungNote(1.5, 1.65, 59.0), SungNote(1.65, 2.2, 60.0), SungNote(2.2, 2.8, 64.0)]
+    track = build_aligned_track([[_span(1.0)]], sung, [["lá"]], tempo, 192, rules.vocals)
+    assert [(n.pitch, n.lyric) for n in track.notes] == [(60, "lá"), (64, "+")]
+
+
+def test_scale_is_estimated_from_the_voice_and_borderline_notes_snap_into_it():
+    from ai_charter.charting.vocals import _snap, estimate_scale
+
+    # Melodia em Dó maior (Dó Ré Mi Fá Sol Lá Si), Dó e Sol mais longos.
+    sung = [SungNote(i, i + (2.0 if p in (60, 67) else 1.0), p) for i, p in enumerate([60, 62, 64, 65, 67, 69, 71, 60, 67])]
+    scale = estimate_scale(sung)
+    assert scale == {0, 2, 4, 5, 7, 9, 11}
+    assert _snap(61.3, scale) == 62.0     # Dó# quase Ré: vai para o Ré
+    assert _snap(61.0, scale) == 61.0     # Dó# bem afinado (nota de passagem): fica
+    assert _snap(63.6, scale) == 63.6     # já arredonda para Mi, que está na escala: não mexe

@@ -2,7 +2,9 @@
 
 Uso:
   ai-charter-bench-vocals demucs-cache "pasta com músicas" D:\\ai-charter-cache [--test --limit 60]
-  ai-charter-bench-vocals run "pasta com músicas" D:\\ai-charter-cache [--test --limit 60] [--report r.json]
+  ai-charter-bench-vocals run "pasta com músicas" D:\\ai-charter-cache --test [--report r.json]
+
+O run avalia as músicas que o demucs-cache já separou (o conjunto não muda quando a biblioteca cresce).
 
 Como no uso real: a voz que o Demucs separou do mix (cache/<pasta>/vocals.ogg) e a letra oficial,
 tirada da própria chart (já dividida em sílabas, como o usuário escreveria com hífens). Os vocais
@@ -10,7 +12,8 @@ são gerados duas vezes, com o mapa de tempo oficial e com o detectado por nós 
 com a chart oficial, sílaba por sílaba, em segundos (os dois mapas de tempo valem igual):
   - colocadas: das sílabas oficiais, quantas aparecem na nossa chart;
   - erro de tempo: distância entre o início da nossa sílaba e o da oficial (mediana e % até 100 ms);
-  - nota: a afinação certa, ignorando a oitava (só sílabas cantadas nas duas);
+  - nota: a afinação certa, ignorando a oitava (só sílabas cantadas nas duas), no começo da sílaba e
+    ao longo das notas oficiais (a cada 50 ms: pega notas que oscilam no meio de um sustain);
   - frases: inícios de frase na sílaba certa (F1) e frases certas no tempo (sobreposição >= 50%);
   - gafes: sílabas no mesmo tick (ou duas numa nota), palavras partidas entre frases e notas sobrepostas.
 """
@@ -112,6 +115,28 @@ def our_vocals(track) -> list[Syllable]:
     return sorted(out, key=lambda s: s.tick)
 
 
+def official_notes(midi: mido.MidiFile) -> list[tuple[int, int, int]]:
+    """(início, fim, altura) das notas cantadas oficiais, "+" incluídos."""
+    track = next((t for t in midi.tracks if t.name == "PART VOCALS"), None)
+    notes, _ = _split(track) if track is not None else ([], [])
+    return sorted((n.start, n.end, n.pitch) for n in notes if MIN_PITCH <= n.pitch <= MAX_PITCH)
+
+
+def pitch_over_time(ours: list[tuple[float, float, int]], theirs: list[tuple[float, float, int]],
+                    step: float = 0.05) -> tuple[int, int]:
+    """Em instantes a cada `step` s dentro das notas oficiais (s), quantos têm a nossa nota soando com a
+    mesma altura (ignorando a oitava). Devolve (certos, total)."""
+    starts = [a for a, _, _ in ours]
+    hit = total = 0
+    for a, b, pitch in theirs:
+        for t in np.arange(a + step / 2, b, step):
+            total += 1
+            k = bisect.bisect_right(starts, t) - 1
+            if k >= 0 and ours[k][1] > t and (ours[k][2] - pitch) % 12 == 0:
+                hit += 1
+    return hit, total
+
+
 def _token(text: str) -> str:
     return re.sub(r"\W", "", text.lower())
 
@@ -179,6 +204,7 @@ def evaluate(folder: Path, cache: Path, rules, aligner: str = "ctc") -> dict | N
         s.time = float(official.tick_to_time(s.tick))
     sung_phrases = sorted({s.phrase for s in theirs})
     their_phrases = [tuple(float(t) for t in official.tick_to_time(np.array(phrases[k]))) for k in sung_phrases]
+    their_notes = [(*(float(x) for x in official.tick_to_time(np.array([a, b]))), p) for a, b, p in official_notes(midi)]
     lines = lyric_lines(theirs)
     mix = librosa.load(out / "mix.ogg", sr=ANALYSIS_SR, mono=True)[0]
     tuning = estimate_tuning(mix, ANALYSIS_SR)
@@ -200,6 +226,9 @@ def evaluate(folder: Path, cache: Path, rules, aligner: str = "ctc") -> dict | N
         our_phrases = [tuple(float(x) for x in tempo.tick_to_time(np.array([t, t + n]))) for t, n in track.phrases]
         result[name] = compare(ours, theirs, our_phrases, their_phrases)
         result[name]["gafes"] = gaffes(ours, [(n.tick, n.tick + n.length) for n in track.notes])
+        result[name]["nota_tempo"], result[name]["amostras"] = pitch_over_time(
+            [(*(float(x) for x in tempo.tick_to_time(np.array([n.tick, n.tick + n.length]))), n.pitch)
+             for n in track.notes], their_notes)
     return result
 
 
@@ -215,6 +244,7 @@ def summary(rows: list[dict]) -> dict[str, float]:
         "erro_mediano_ms": 1000 * float(np.median(errors)) if errors else float("nan"),
         "no_tempo": tot["no_tempo"] / max(1, tot["oficiais"]),
         "nota_certa": tot["nota_certa"] / max(1, tot["com_nota"]),
+        "nota_no_tempo": tot.get("nota_tempo", 0) / max(1, tot.get("amostras", 0)),
         "frases_f1": 2 * p * r / max(1e-9, p + r),
         "frases_certas": tot["frase_certa"] / max(1, tot["frases_tempo"]),
         **{f"gafe_{k}": v for k, v in gaff.items()},
@@ -297,7 +327,8 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("folder", type=Path)
         p.add_argument("cache", type=Path)
         p.add_argument("--test", action="store_true", help="só as músicas do conjunto de teste")
-        p.add_argument("--limit", type=int, help="usa só N músicas (espalhadas pela lista)")
+        p.add_argument("--limit", type=int, help="demucs-cache: usa só N músicas (espalhadas pela lista); "
+                       "run: no máximo N das que já estão no cache")
         if name == "run":
             p.add_argument("--rules", type=Path, help="arquivo .toml com regras personalizadas")
             p.add_argument("--aligner", choices=("ctc", "atual"), default="ctc",
@@ -307,10 +338,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    folders = select_folders(args.folder, args.test, args.limit)
     if args.command == "demucs-cache":
-        demucs_cache(folders, args.cache)
+        demucs_cache(select_folders(args.folder, args.test, args.limit), args.cache)
         return
+    # As músicas avaliadas são as que já têm a voz no cache: músicas novas na biblioteca mudariam a
+    # escolha espalhada do --limit, e os números deixariam de ser comparáveis.
+    folders = [f for f in select_folders(args.folder, args.test, None)
+               if (cache_dir_for(args.cache, f) / "vocals.ogg").is_file()][:args.limit]
 
     from concurrent.futures import ProcessPoolExecutor
 

@@ -79,3 +79,13 @@ def test_our_vocals_reads_notes_and_spoken_text():
     ours = our_vocals(track)
     assert [(s.text, s.phrase) for s in ours] == [("ca-", 0), ("sa", 1), ("oi", 1)]
     assert ours[2].pitch is None
+
+
+def test_pitch_over_time_catches_a_wobble_in_a_sustain():
+    from ai_charter.bench_vocals import pitch_over_time
+
+    theirs = [(0.0, 1.0, 60)]                                 # um sustain de 1 s em Dó
+    steady = [(0.0, 1.0, 72)]                                 # oitava acima: conta como certo
+    wobble = [(0.0, 0.4, 60), (0.4, 0.6, 61), (0.6, 1.0, 60)]  # vale de 0,2 s no meio
+    assert pitch_over_time(steady, theirs) == (20, 20)
+    assert pitch_over_time(wobble, theirs) == (16, 20)

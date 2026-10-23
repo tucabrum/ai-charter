@@ -27,7 +27,8 @@ SAMPLE_RATE = 16000
 FRAME = 0.02              # cada saída da rede cobre 20 ms
 CHUNK_SECONDS = 10.0      # a rede ouve a música em pedaços (com pedaços longos ela "ensurdece" no meio)
 CONTEXT_SECONDS = 1.5     # com um pouco de contexto dos lados
-STAR_LOGP: float | None = None   # log-probabilidade do "*" entre as linhas (None = sem "*")
+STAR_LOGP: float | None = -4.0   # log-probabilidade do "*" entre as linhas (None = sem "*")
+SILENCE_DB = -35.0        # voz abaixo disso (em relação ao pico) é silêncio: nenhuma letra ali
 ANCHOR_SCORE = 0.3       # linha com confiança abaixo disso é alinhada de novo (realign_gaps)
 VOWELS = set("aeiouy")
 
@@ -93,7 +94,26 @@ def emissions(y: np.ndarray, sr: int) -> np.ndarray:
         pad = np.full((n_frames - len(em), em.shape[1]), -30.0, dtype=np.float32)
         pad[:, 0] = 0.0
         em = np.concatenate([em, pad])
-    return em[:n_frames]
+    return mute_silence(em[:n_frames], y)
+
+
+def mute_silence(em: np.ndarray, y: np.ndarray, floor_db: float | None = None) -> np.ndarray:
+    """Onde a voz está em silêncio (`floor_db` abaixo do pico), nenhuma letra pode soar: sem isso,
+    uma letra que a rede não reconheceu pode cair em qualquer ponto de uma introdução muda.
+    `y` a 16 kHz."""
+    floor_db = SILENCE_DB if floor_db is None else floor_db
+    per_frame = int(FRAME * SAMPLE_RATE)
+    n = min(len(em), len(y) // per_frame)
+    if n == 0:
+        return em
+    rms = np.sqrt(np.mean(y[:n * per_frame].reshape(n, per_frame) ** 2, axis=1))
+    db = 20 * np.log10(np.maximum(rms, 1e-10) / max(float(rms.max()), 1e-10))
+    silent = np.zeros(len(em), dtype=bool)
+    silent[:n] = db < floor_db
+    em = em.copy()
+    em[silent, 1:] = -30.0
+    em[silent, 0] = 0.0
+    return em
 
 
 def align_syllables(y: np.ndarray, sr: int, lines: list[list[str]]) -> list[list[SyllableSpan | None]]:
