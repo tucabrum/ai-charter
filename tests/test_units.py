@@ -174,3 +174,28 @@ def test_detects_single_notes_and_chords():
 
     detected = detect_pitched_notes(y, 22050, load_rules().detection["guitar"])
     assert [(n.pitch, n.voices) for n in detected] == [(52, 1), (52, 2), (45, 2), (60, 3), (57, 1)]
+
+
+def test_bars_start_on_the_detected_downbeats():
+    import numpy as np
+
+    from ai_charter.analysis.tempo import _anchor_at_zero, _bars_on_downbeats
+
+    period = 0.5
+    beats = _anchor_at_zero(np.arange(0.3, 30, period), period, 30)   # 0 s, depois 0,3, 0,8...
+    downbeats = np.arange(0.3 + 2 * period, 30, 4 * period)            # compasso começa na 3ª batida
+    fixed = _bars_on_downbeats(beats, downbeats)
+    assert fixed[0] == 0.0
+    bars = fixed[::4][1:]
+    assert all(np.min(np.abs(downbeats - b)) < 1e-9 for b in bars[(bars > 2) & (bars < 28)])
+    assert np.allclose(np.diff(fixed[2:]), period)   # só o primeiro intervalo muda
+    assert _bars_on_downbeats(beats, np.array([])) is beats
+
+
+def test_skipped_and_doubled_beats_are_regularized():
+    import numpy as np
+
+    from ai_charter.analysis.tempo import _regularize_beats
+
+    beats = np.array([0.5, 1.0, 1.5, 2.5, 3.0, 3.02, 3.5, 4.0])   # faltou 2,0; 3,02 é duplicada
+    assert np.allclose(_regularize_beats(beats), [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])

@@ -309,6 +309,11 @@ Ideias principais:
 - **Ticks**: o `.chart` mede o tempo em *ticks* (192 por batida). Detectamos a batida da música e
   convertemos o tempo de cada nota (em segundos) para ticks, encaixando no grid
   (semicolcheias, ou tercinas quando fizer mais sentido).
+- **Batida e compasso**: com o [Beat This!](https://github.com/CPJKU/beat_this) instalado
+  (`pip install -e ".[beats]"`; o modelo, ~78 MB, baixa na primeira vez), ele acha as batidas e os
+  inícios de compasso, e os compassos da chart começam onde a música começa o compasso (a caixa cai
+  no 2 e no 4). Sem ele, vale o detector simples do librosa, que não acha o início do compasso. Em
+  60 músicas do Rock Band: compasso certo em 35 (19 sem ele), andamento certo em 53 (47).
 - **Acordes**: em cada ataque, o programa compara as notas que soam com modelos de acordes
   (maiores, menores, power chords e notas simples, já contando os harmônicos dos instrumentos).
   O mesmo acorde recebe sempre o mesmo formato na chart, e a troca de acorde é corrigida

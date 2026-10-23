@@ -38,3 +38,16 @@ def test_game_metrics_on_a_plain_rock_beat():
     hits.discard((3 * res // 2, "chimbal"))
     hits.add((5 * res // 4, "chimbal"))   # golpe fora do lugar: 5 + 3 semicolcheias
     assert game_metrics(hits, res)["chimbal_buracos"] > 0
+
+
+def test_official_bars_follow_time_signatures():
+    import mido
+
+    from ai_charter.bench import official_bar_times
+
+    midi = mido.MidiFile(type=1, ticks_per_beat=480)
+    midi.tracks.append(mido.MidiTrack([mido.MetaMessage("time_signature", numerator=5, denominator=4, time=0),
+                                       mido.MetaMessage("time_signature", numerator=4, denominator=4, time=5 * 480),
+                                       mido.MetaMessage("end_of_track", time=8 * 480)]))
+    tempo = TempoMap(np.arange(0, 20) * 0.5, 480)
+    assert official_bar_times(midi, tempo)[:3].tolist() == [0.0, 2.5, 4.5]   # 5/4, depois 4/4

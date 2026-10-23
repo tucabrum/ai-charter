@@ -21,6 +21,8 @@ dependencies = [
 separation = ["demucs>=4.0"]
 # Transcrição automática da letra (--auto-lyrics).
 lyrics = ["faster-whisper>=1.0"]
+# Batidas e inícios de compasso com o Beat This! (CPJKU; usa o PyTorch).
+beats = ["beat-this>=1.1", "einops", "soxr", "rotary-embedding-torch"]
 # Partituras do Guitar Pro (.gp3/.gp4/.gp5) como referência (--reference).
 refs = ["pyguitarpro>=0.9"]
 dev = ["pytest>=7"]

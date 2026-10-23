@@ -326,9 +326,29 @@ def match_times(ours: list[tuple[float, str]], theirs: list[tuple[float, str, fl
     return out
 
 
-def grid_score(ours, official, start: float, end: float, window: float = 0.07) -> dict[str, float]:
+def official_bar_times(midi: mido.MidiFile, tempo) -> np.ndarray:
+    """Inícios de compasso da chart oficial, seguindo as fórmulas de compasso (5/4, 3/4, 2/4...)."""
+    res, tick, changes = midi.ticks_per_beat, 0, []
+    for msg in midi.tracks[0]:
+        tick += msg.time
+        if msg.type == "time_signature":
+            changes.append((tick, msg.numerator * 4 / msg.denominator * res))
+    changes = sorted(changes) or [(0, 4 * res)]
+    end = max(sum(m.time for m in t) for t in midi.tracks)
+    bars, t, k = [], 0.0, 0
+    while t <= end:
+        while k + 1 < len(changes) and changes[k + 1][0] <= t:
+            k += 1
+        bars.append(t)
+        t += changes[k][1]
+    return np.asarray(tempo.tick_to_time(np.array(bars)), dtype=float)
+
+
+def grid_score(ours, official, start: float, end: float, window: float = 0.07,
+               official_bars: np.ndarray | None = None) -> dict[str, float]:
     """A nossa grade contra a oficial entre `start` e `end`: batidas e inícios de compasso que caem a
-    até `window` segundos dos oficiais (F1), e a razão entre os andamentos (2 = dobro, 0,5 = metade)."""
+    até `window` segundos dos oficiais (F1), e a razão entre os andamentos (2 = dobro, 0,5 = metade).
+    Sem `official_bars`, os compassos oficiais são contados de 4 em 4 batidas."""
     def f1(a, b):
         a, b = a[(a >= start) & (a <= end)], b[(b >= start) & (b <= end)]
         if not len(a) or not len(b):
@@ -339,7 +359,8 @@ def grid_score(ours, official, start: float, end: float, window: float = 0.07) -
     a, b = np.asarray(ours.beat_times), np.asarray(official.beat_times)
     inside = lambda x: x[(x >= start) & (x <= end)]
     ratio = float(np.median(np.diff(inside(b))) / np.median(np.diff(inside(a)))) if len(inside(a)) > 2 else 0.0
-    return {"batidas": f1(a, b), "compassos": f1(a[::4], b[::4]), "andamento": ratio}
+    bars = b[::4] if official_bars is None else np.asarray(official_bars)
+    return {"batidas": f1(a, b), "compassos": f1(a[::4], bars), "andamento": ratio}
 
 
 def game_metrics(hits: set[tuple[int, str]], res: int) -> dict[str, float]:
@@ -383,7 +404,8 @@ def evaluate_real(folder: Path, cache: Path, rules, tempo_source: str = "nosso")
     ours_t = [(float(tempo.tick_to_time(t)), p) for t, p in ours]
     times = [t for t, _, _ in theirs_t]
     return {"counts": match_times(ours_t, theirs_t),
-            "grade": grid_score(tempo, official, min(times), max(times)),
+            "grade": grid_score(tempo, official, min(times), max(times),
+                                official_bars=official_bar_times(midi, official)),
             "jogo_nosso": game_metrics(ours, tempo.resolution),
             "jogo_oficial": game_metrics(theirs, midi.ticks_per_beat)}
 

@@ -9,6 +9,7 @@ A batida número i fica sempre no tick i * resolution.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import librosa
 import numpy as np
@@ -99,20 +100,98 @@ def _align_phase(beats: np.ndarray, onsets: np.ndarray, period: float) -> np.nda
     return beats + (np.median(residual) if len(residual) else 0.0)
 
 
+def _regularize_beats(beats: np.ndarray) -> np.ndarray:
+    """Preenche batidas que o detector pulou (numa pausa, num corte) e tira as duplicadas, para que a
+    batida i seja mesmo a i-ésima: o ajuste do andamento conta as batidas pela posição na lista, e uma
+    batida faltando faria a grade escorregar uma batida dali em diante."""
+    if len(beats) < 4:
+        return beats
+    period = float(np.median(np.diff(beats)))
+    out = [beats[0]]
+    for b in beats[1:]:
+        gap = b - out[-1]
+        if gap < 0.5 * period:      # batida duplicada
+            continue
+        missing = int(round(gap / period)) - 1
+        if missing > 0:
+            out.extend(out[-1] + gap * np.arange(1, missing + 1) / (missing + 1))
+        out.append(b)
+    return np.asarray(out, dtype=float)
+
+
+def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray) -> np.ndarray:
+    """Faz os compassos (batidas 0, 4, 8...) começarem nos inícios de compasso detectados.
+
+    `beats` já começa em 0 s (_anchor_at_zero). A fase que vale é a mais comum entre todos os inícios
+    de compasso detectados; para chegar nela, tiram-se batidas logo depois do 0 (o primeiro intervalo
+    fica mais longo, numa introdução) ou, se não houver de onde tirar, a primeira é dividida."""
+    if not len(downbeats) or len(beats) < 6:
+        return beats
+    period = float(np.median(np.diff(beats[1:])))
+    idx = np.clip(np.searchsorted(beats, downbeats), 1, len(beats) - 1)
+    nearest = np.where(downbeats - beats[idx - 1] < beats[idx] - downbeats, idx - 1, idx)
+    close = np.abs(beats[nearest] - downbeats) < period / 4
+    if not close.any():
+        return beats
+    phase = int(np.bincount(nearest[close] % 4, minlength=4).argmax())
+    if phase == 0:
+        return beats
+    if len(beats) > phase + 1 and beats[phase + 1] - beats[0] > 0:
+        return np.delete(beats, np.arange(1, phase + 1))
+    extra = 4 - phase
+    fillers = np.linspace(beats[0], beats[1], extra + 2)[1:-1]
+    return np.insert(beats, 1, fillers)
+
+
+_BEAT_THIS = None
+
+
+def _beat_this(y: np.ndarray, sr: int, download: bool):
+    """Batidas e inícios de compasso pelo Beat This! (CPJKU, ISMIR 2024), se instalado. Sem
+    `download`, só usa o modelo se ele já estiver baixado (os testes e o uso offline não travam)."""
+    global _BEAT_THIS
+    try:
+        import torch
+        from beat_this.inference import Audio2Beats
+    except ImportError:
+        return None
+    if _BEAT_THIS is None:
+        ckpt = Path(torch.hub.get_dir()) / "checkpoints" / "beat_this-final0.ckpt"
+        if not download and not ckpt.is_file():
+            return None
+        try:
+            _BEAT_THIS = Audio2Beats(checkpoint_path=str(ckpt) if ckpt.is_file() else "final0",
+                                     device="cpu", dbn=False)
+        except Exception:
+            return None
+    beats, downbeats = _BEAT_THIS(y.astype(np.float32), sr)
+    return np.asarray(beats, dtype=float), np.asarray(downbeats, dtype=float)
+
+
 def estimate_tempo_map(y: np.ndarray, sr: int, resolution: int = 192,
-                       mode: str = "auto") -> TempoMap:
+                       mode: str = "auto", tracker: str = "auto") -> TempoMap:
     """Detecta as batidas da música e monta o mapa de tempo.
 
     mode:
       "auto"     - escolhe sozinho entre constante e variável;
       "constant" - um único BPM para a música toda;
       "variable" - acompanha pequenas variações de andamento (bateria ao vivo).
+
+    tracker:
+      "auto"      - Beat This! se instalado e já baixado; senão, o detector do librosa;
+      "beat_this" - Beat This! (baixa o modelo, ~78 MB, na primeira vez);
+      "librosa"   - o detector simples do librosa (não acha o início do compasso).
     """
     duration = len(y) / sr
     hop = 256
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
-    _, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop)
-    beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop)
+    found = _beat_this(y, sr, download=tracker == "beat_this") if tracker != "librosa" else None
+    if found is not None:
+        beats, downbeats = found
+        beats = _regularize_beats(beats)
+    else:
+        _, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop)
+        beats, downbeats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=hop), np.array([])
 
     if len(beats) < 4:
         # Pouquíssimas batidas detectadas: usa 120 BPM fixo.
@@ -133,4 +212,5 @@ def estimate_tempo_map(y: np.ndarray, sr: int, resolution: int = 192,
 
     onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, hop_length=hop, units="time")
     smoothed = _align_phase(smoothed, onsets - ONSET_LATENCY, float(period))
-    return TempoMap(_anchor_at_zero(smoothed, float(period), duration), resolution)
+    anchored = _anchor_at_zero(smoothed, float(period), duration)
+    return TempoMap(_bars_on_downbeats(anchored, downbeats), resolution)
