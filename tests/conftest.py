@@ -21,3 +21,16 @@ def _rules_only_for_synthetic_drums(monkeypatch):
             return None
 
     monkeypatch.setattr(pipeline, "DrumModel", _NoModel)
+
+
+@pytest.fixture(autouse=True)
+def _no_model_download(monkeypatch):
+    """Sem o modelo de alinhamento da letra no cache, os testes usam o alinhador antigo em vez de
+    baixar 1,26 GB."""
+    from ai_charter.analysis import align
+
+    if not align.model_downloaded():
+        def unavailable(*_args, **_kwargs):
+            raise RuntimeError("modelo MMS_FA não baixado")
+
+        monkeypatch.setattr(align, "align_syllables", unavailable)

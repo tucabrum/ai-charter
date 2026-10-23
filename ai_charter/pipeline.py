@@ -33,7 +33,7 @@ from ai_charter.charting.frets import build_fret_track
 from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
 from ai_charter.charting.lyrics import read_lyrics
 from ai_charter.charting.sanitize import sanitize
-from ai_charter.charting.vocals import VocalTrack, build_vocal_track
+from ai_charter.charting.vocals import VocalTrack, build_aligned_track, build_vocal_track
 from ai_charter.config import Rules, get_genre, load_rules
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
 from ai_charter.drum_model import DrumModel
@@ -172,10 +172,18 @@ def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_win
                  tuning: float = 0.0) -> VocalTrack:
     y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
     sung = detect_sung_notes(y, sr, rules.vocals, tuning)
-    segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
     lines = read_lyrics(lyrics, rules.vocals.language)
-    vocals = build_vocal_track(sung, segments, lines, tempo, rules.general.resolution,
-                               rules.general.allow_triplets, rules.vocals)
+    try:   # alinhamento forçado da letra (precisa do torchaudio e do modelo MMS_FA)
+        from ai_charter.analysis.align import align_syllables
+
+        spans = align_syllables(y, sr, lines)
+    except Exception as err:
+        print(f"    vocals: alinhamento forçado indisponível ({err}); usando o alinhador antigo")
+        segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)
+        vocals = build_vocal_track(sung, segments, lines, tempo, rules.general.resolution,
+                                   rules.general.allow_triplets, rules.vocals)
+    else:
+        vocals = build_aligned_track(spans, sung, lines, tempo, rules.general.resolution, rules.vocals)
     vocals.star_power = star_power_for_phrases(vocals.phrases, sp_windows)
     return vocals
 

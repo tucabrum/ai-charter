@@ -11,6 +11,7 @@ O alinhamento da letra tem dois níveis:
 
 from __future__ import annotations
 
+import bisect
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -270,6 +271,127 @@ def _spread(times: list[float], start: float, end: float, count: int) -> list[fl
     return list(np.linspace(start, start + (end - start) * (count - 1) / max(count, 1), count))
 
 
+VOCAL_GRID = 4          # divisões da batida para a voz (semicolcheias)
+MELISMA_SECONDS = 0.1   # nota nova dentro da sílaba, depois disso, vira "+" (melisma)
+SNAP_BEFORE = 0.1       # o início da sílaba procura uma nota cantada desde um pouco antes da consoante...
+SNAP_AFTER = 0.12       # ...até um pouco depois da vogal
+
+
+def _pitch_in(sung: list[SungNote], start: float, end: float) -> float | None:
+    """Afinação da voz entre start e end: mediana das notas cantadas, pesada pela duração."""
+    parts = [(n.pitch, min(n.end, end) - max(n.time, start)) for n in sung if n.time < end and n.end > start]
+    parts = [(p, d) for p, d in parts if d > 0]
+    if not parts or sum(d for _, d in parts) < 0.3 * (end - start):
+        return None
+    parts.sort()
+    half, acc = sum(d for _, d in parts) / 2, 0.0
+    for pitch, d in parts:
+        acc += d
+        if acc >= half:
+            return pitch
+    return parts[-1][0]
+
+
+def _fit_pitch(pitch: float) -> int:
+    pitch = int(round(pitch))
+    while pitch < MIN_PITCH:
+        pitch += 12
+    while pitch > MAX_PITCH:
+        pitch -= 12
+    return pitch
+
+
+def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[list[str]],
+                        tempo: TempoMap, resolution: int, cfg: VocalRules) -> VocalTrack:
+    """Faixa de vocal a partir do alinhamento forçado (analysis/align.py): cada sílaba começa onde
+    o alinhamento a ouviu, e a afinação vem das notas cantadas (pYIN) dentro dela. Cada linha
+    da letra é uma frase. Notas cantadas que mudam de altura no meio da sílaba viram "+".
+
+    Garante o que o jogo exige: uma sílaba por tick, notas sem sobreposição, frases sem sobreposição.
+    """
+    step = max(1, resolution // VOCAL_GRID)
+    flat = [(li, si) for li, line in enumerate(lines) for si in range(len(line))]
+    # Sílabas sem tempo (sem letra que o modelo conheça): logo depois da anterior.
+    times: list[tuple[float, float]] = []
+    onsets = [n.time for n in sung]
+    for li, si in flat:
+        span = spans[li][si]
+        if span is None:
+            t = times[-1][1] if times else 0.0
+            times.append((t, t + 0.05))
+            continue
+        # A nota começa onde a voz começa a soar afinada: o primeiro início de nota cantada entre a
+        # consoante e um pouco depois da vogal. Sem nenhum, a vogal.
+        vowel = span.vowel if span.vowel is not None else span.start
+        lo = max(span.start - SNAP_BEFORE, times[-1][0] + 0.02 if times else 0.0)
+        k = bisect.bisect_left(onsets, lo)
+        start = onsets[k] if k < len(onsets) and onsets[k] <= vowel + SNAP_AFTER else vowel
+        times.append((start, max(span.end, start)))
+    next_start = [times[k + 1][0] for k in range(len(times) - 1)] + [float("inf")]
+
+    def to_tick(t: float) -> int:
+        return int(round(tempo.time_to_tick(t) / step)) * step
+
+    track = VocalTrack(notes=[], phrases=[])
+    last_tick = -step
+    k = 0
+    for li, line in enumerate(lines):
+        first_k, k = k, k + len(line)
+        # Altura e fim de cada sílaba: as notas cantadas até a próxima sílaba.
+        sylls = []
+        for j in range(first_k, k):
+            start, end = times[j]
+            limit = min(next_start[j], start + 4.0)
+            inside = [n for n in sung if n.time < limit and n.end > start]
+            end = max(end, min(limit, max((n.end for n in inside), default=end)))
+            sylls.append((start, end, _pitch_in(sung, start, end), inside))
+        voiced = [p for _, _, p, _ in sylls if p is not None]
+        if not line:
+            continue
+        if len(voiced) >= cfg.sung_min_ratio * len(line):
+            notes: list[VocalNote] = []
+            for si, (start, end, pitch, inside) in enumerate(sylls):
+                if pitch is None:   # consoante/sussurro no meio do canto: altura da vizinha
+                    near = [p for _, _, p, _ in sylls[si + 1:] + sylls[:si][::-1] if p is not None]
+                    pitch = near[0] if near else 60.0
+                tick = max(to_tick(start), last_tick + step)
+                pieces = [(tick, _fit_pitch(pitch), line[si])]
+                # Melisma: nota de outra altura que começa depois do começo da sílaba.
+                for n in inside:
+                    if n.time >= start + MELISMA_SECONDS and n.time < end \
+                            and abs(_fit_pitch(n.pitch) - pieces[-1][1]) >= 1:
+                        t = max(to_tick(n.time), pieces[-1][0] + step)
+                        pieces.append((t, _fit_pitch(n.pitch), "+"))
+                end_tick = max(to_tick(end), pieces[-1][0] + step)
+                for (t, p, text), nxt in zip(pieces, pieces[1:] + [(end_tick, 0, "")]):
+                    notes.append(VocalNote(t, nxt[0] - t, p, text))
+                last_tick = pieces[-1][0]
+            track.notes += notes
+            track.phrases.append((notes[0].tick, notes[-1].tick + notes[-1].length - notes[0].tick))
+        else:   # linha falada: só a letra, sem nota para cantar
+            ticks = []
+            for start, *_ in sylls:
+                ticks.append(max(to_tick(start), last_tick + step))
+                last_tick = ticks[-1]
+            track.spoken += list(zip(ticks, line))
+            track.phrases.append((ticks[0], ticks[-1] + step - ticks[0]))
+    _no_overlaps(track)
+    return track
+
+
+def _no_overlaps(track: VocalTrack) -> None:
+    """Uma nota não pode invadir a seguinte, nem uma frase a seguinte."""
+    for note, nxt in zip(track.notes, track.notes[1:]):
+        note.length = max(1, min(note.length, nxt.tick - note.tick))
+    track.phrases.sort()
+    fixed = []
+    for (tick, length), nxt in zip(track.phrases, track.phrases[1:] + [(None, None)]):
+        if nxt[0] is not None:
+            length = max(1, min(length, nxt[0] - tick))
+        fixed.append((tick, length))
+    track.phrases = fixed
+
+
 def build_vocal_track(sung: list[SungNote], segments: list[VoiceSegment], lines: list[list[str]],
                       tempo: TempoMap, resolution: int, allow_triplets: bool, cfg: VocalRules) -> VocalTrack:
     spans = align_lines_to_segments(lines, segments)
@@ -301,15 +423,5 @@ def build_vocal_track(sung: list[SungNote], segments: list[VoiceSegment], lines:
             ticks.append(max(tick, ticks[-1] + sixteenth) if ticks else tick)
         track.spoken += list(zip(ticks, line))
         track.phrases.append((ticks[0], ticks[-1] + sixteenth - ticks[0]))
-    # Uma nota não pode invadir a seguinte (linhas vizinhas podem se encostar).
-    for note, nxt in zip(track.notes, track.notes[1:]):
-        note.length = max(1, min(note.length, nxt.tick - note.tick))
-    # Frases também não podem se sobrepor.
-    track.phrases.sort()
-    fixed = []
-    for (tick, length), nxt in zip(track.phrases, track.phrases[1:] + [(None, None)]):
-        if nxt[0] is not None:
-            length = max(1, min(length, nxt[0] - tick))
-        fixed.append((tick, length))
-    track.phrases = fixed
+    _no_overlaps(track)   # linhas vizinhas podem se encostar
     return track

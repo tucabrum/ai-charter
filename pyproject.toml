@@ -35,6 +35,7 @@ ai-charter-critic = "ai_charter.critic:main"
 ai-charter-view = "ai_charter.view:main"
 ai-charter-revise = "ai_charter.revision:main"
 ai-charter-bench = "ai_charter.bench:main"
+ai-charter-bench-vocals = "ai_charter.bench_vocals:main"
 
 [tool.setuptools.packages.find]
 include = ["ai_charter*"]
