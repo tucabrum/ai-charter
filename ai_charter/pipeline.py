@@ -11,6 +11,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 
+from ai_charter.analysis import adtof
 from ai_charter.analysis.drums import HOP as DRUM_HOP
 from ai_charter.analysis.drums import ONSET_LATENCY as DRUM_ONSET_LATENCY
 from ai_charter.analysis.drums import FEATURE_NAMES as DRUM_FEATURES
@@ -35,6 +36,7 @@ from ai_charter.charting.lyrics import read_lyrics
 from ai_charter.charting.sanitize import sanitize
 from ai_charter.charting.vocals import VocalTrack, build_aligned_track, build_vocal_track
 from ai_charter.config import Rules, get_genre, load_rules
+from ai_charter.drum_model import MODEL_PATH as BASIC_DRUM_MODEL
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
 from ai_charter.drum_model import DrumModel
 from ai_charter.export import audio
@@ -203,7 +205,8 @@ def continues_pattern(tick: int, ticks: set[int], resolution: int) -> bool:
     return (before and after) or (before and tick - 2 * step in ticks) or (after and tick + 2 * step in ticks)
 
 
-def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules, model) -> list[Candidate]:
+def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules, model,
+                          adtof_act: np.ndarray | None = None) -> list[Candidate]:
     """Bateria pelo modelo treinado com charts oficiais: retrato acústico de cada ataque + lugar na
     levada -> probabilidade de cada peça; entra o que passa do limiar daquela peça. Para "tom", qual
     tom é vem dos sons do kit da música (o de maior presença no ataque), pela altura de cada um."""
@@ -212,7 +215,10 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     if not len(kit.onsets):
         return []
     ticks = np.asarray(tempo.time_to_tick(kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY), dtype=float)
-    probs = model.predict_song(kit.features, ticks, res)
+    adtof_feats = None
+    if getattr(model, "uses_adtof", False):
+        adtof_feats = adtof.at_times(adtof_act, kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY)
+    probs = model.predict_song(kit.features, ticks, res, adtof_feats)
     seen: dict[tuple[int, str], Candidate] = {}
     for j, raw in enumerate(ticks):
         tick = quantize_tick(raw, res, triplets)
@@ -241,11 +247,19 @@ def which_tom(kit, j: int, floor_tom_max_hz: float) -> str:
     return DRUM_TOM_LOW if pitch < floor_tom_max_hz else DRUM_TOM_MID
 
 
-def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows) -> TrackChart:
+def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows, mix: Path | None = None,
+                adtof_act: np.ndarray | None = None) -> TrackChart:
+    """A pista de bateria a partir do stem. `mix` (a música inteira) ou `adtof_act` (as saídas do
+    ADTOF já calculadas) alimentam o modelo com ADTOF; sem eles, vale o modelo básico."""
     y, sr = librosa.load(stem, sr=DRUMS_SR, mono=True)
     model = DrumModel.load() if rules.drum_detection.use_model else None
+    if model is not None and getattr(model, "uses_adtof", False) and adtof_act is None:
+        if mix is not None:
+            adtof_act = adtof.activations(librosa.load(mix, sr=adtof.SR, mono=False)[0], adtof.SR)
+        if adtof_act is None:
+            model = DrumModel.load(BASIC_DRUM_MODEL)
     if model is not None:
-        return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model), rules.drums,
+        return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model, adtof_act), rules.drums,
                                 tempo.resolution, sp_windows, rules.general.drum_fill_every_measures)
     hits = detect_drum_hits(y, sr, rules.drum_detection)
     res, triplets = tempo.resolution, rules.general.allow_triplets
@@ -337,7 +351,7 @@ def run(opts: Options, log=print) -> Result:
                 log(f"    {instrument}: stem quase silencioso ({energy:.3f}), pulando")
                 continue
             if instrument == "drums":
-                track = chart_drums(stem[0], tempo, rules, sp_windows)
+                track = chart_drums(stem[0], tempo, rules, sp_windows, mix=mix_wav)
                 if "drums" in guides:   # a partitura corrige as peças da pista pronta (reference.py)
                     track = guides["drums"](track, log)
             else:

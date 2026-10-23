@@ -303,6 +303,41 @@ def demucs_cache(folders: list[Path], cache: Path) -> None:
         print(f"[{i}/{len(folders)}] {folder.name}: {time.time() - start:.0f}s", flush=True)
 
 
+def _adtof_one(args):
+    folder, cache = args
+    from ai_charter.analysis import adtof
+
+    out = cache_dir_for(cache, folder) / "adtof_mix.npy"
+    if out.is_file():
+        return folder, None
+    try:
+        import torch
+
+        torch.set_num_threads(2)
+        mix = song_mix(folder)
+        if mix is None:
+            return folder, "sem áudio"
+        act = adtof.activations(mix, MIX_SR)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.save(out, act)
+        return folder, None
+    except Exception as err:   # uma música com arquivo estranho não para a coleta
+        return folder, str(err)
+
+
+def adtof_cache(folders: list[Path], cache: Path, workers: int = 1) -> None:
+    """Saídas do ADTOF no mix de cada música (cache/<pasta>/adtof_mix.npy), para treinar e avaliar."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    jobs = [(f, cache) for f in folders]
+    results = map(_adtof_one, jobs) if workers <= 1 else ProcessPoolExecutor(workers).map(_adtof_one, jobs, chunksize=1)
+    for i, (folder, err) in enumerate(results, 1):
+        if err:
+            print(f"[{i}/{len(folders)}] {folder.name}: erro ({err})", flush=True)
+        elif i % 50 == 0 or i == len(folders):
+            print(f"[{i}/{len(folders)}] {folder.name}", flush=True)
+
+
 def match_times(ours: list[tuple[float, str]], theirs: list[tuple[float, str, float]]) -> dict[str, list[int]]:
     """Como `match`, mas em segundos: cada golpe oficial tem a sua tolerância (1/32 de nota no tempo
     dele). É o jeito de comparar quando a nossa grade (BPM detectado) não é a da chart oficial."""
@@ -397,7 +432,9 @@ def evaluate_real(folder: Path, cache: Path, rules, tempo_source: str = "nosso")
     else:
         mix = librosa.load(out / "mix.ogg", sr=ANALYSIS_SR, mono=True)[0]
         tempo = estimate_tempo_map(mix, ANALYSIS_SR, rules.general.resolution, "auto")
-    ours = our_hits(chart_drums(out / "drums.ogg", tempo, rules, []))
+    act_path = out / "adtof_mix.npy"
+    ours = our_hits(chart_drums(out / "drums.ogg", tempo, rules, [], mix=out / "mix.ogg",
+                                adtof_act=np.load(act_path) if act_path.is_file() else None))
     eighth = midi.ticks_per_beat / 8
     theirs_t = [(float(official.tick_to_time(t)), p,
                  float(official.tick_to_time(t + eighth) - official.tick_to_time(t))) for t, p in theirs]
@@ -438,13 +475,36 @@ def _epochs(rows: int) -> int:
     return int(np.clip(round(70_000 * 512 / max(1, rows)), 8, 60))
 
 
-def train_drums(data: Path, folds: int = 3) -> None:
+def _adtof_for_songs(names, starts, ends, ticks, cache: Path, root: Path):
+    """Chances do ADTOF (no mix) em cada ataque das músicas da coleta; None nas sem cache."""
+    from ai_charter.analysis import adtof
+
+    index = {f"{f.parent.name}/{f.name}": f for f in song_folders(root)}
+    out = np.zeros((len(ticks), len(adtof.CLASSES)), dtype=np.float32)
+    have = np.zeros(len(names), dtype=bool)
+    for i, (name, s, e) in enumerate(zip(names, starts, ends)):
+        folder = index.get(name)
+        act_path = cache_dir_for(cache, folder) / "adtof_mix.npy" if folder else None
+        if act_path is None or not act_path.is_file():
+            continue
+        midi = mido.MidiFile(folder / "notes.mid")
+        tempo = _tempo_map(midi)
+        times = tempo.tick_to_time(ticks[s:e] * midi.ticks_per_beat / 192)
+        out[s:e] = adtof.at_times(np.load(act_path), np.asarray(times))
+        have[i] = True
+    return out, have
+
+
+def train_drums(data: Path, folds: int = 3, adtof_cache: Path | None = None, songs_root: Path | None = None) -> None:
     """Treina as duas etapas do modelo de bateria (drum_model.py).
 
     A etapa da levada aprende com o que a etapa do som acha de músicas que ela NÃO viu no treino
     (validação cruzada em `folds` partes): se aprendesse com as respostas da etapa do som para as
     próprias músicas de treino (quase sempre certas), confiaria demais nela e não aprenderia a
-    corrigir os erros que aparecem numa música nova."""
+    corrigir os erros que aparecem numa música nova.
+
+    Com `adtof_cache` (e `songs_root`, a pasta das músicas), o modelo também recebe as chances do
+    ADTOF no mix (bench adtof-cache) e vai para drum_model_adtof.json; músicas sem cache ficam de fora."""
     from ai_charter import drum_model as dm
 
     d = np.load(data)
@@ -455,15 +515,20 @@ def train_drums(data: Path, folds: int = 3) -> None:
     del songs
     ticks, y = d["ticks"], _outputs(d["y"])
     feats = d["features"]
-    x1 = np.empty((len(ticks), len(dm.INPUT_NAMES)), dtype=np.float32)
+    adtof_feats, have = None, np.ones(len(names), dtype=bool)
+    if adtof_cache is not None:
+        adtof_feats, have = _adtof_for_songs(names, starts, ends, ticks, adtof_cache, songs_root)
+        print(f"ADTOF: {have.sum()} de {len(names)} músicas com cache", flush=True)
+    input_names = dm.INPUT_NAMES_ADTOF if adtof_feats is not None else dm.INPUT_NAMES
+    x1 = np.empty((len(ticks), len(input_names)), dtype=np.float32)
     for s, e in zip(starts, ends):
-        x1[s:e] = dm.model_inputs(feats[s:e], ticks[s:e], 192)
-    del feats
+        x1[s:e] = dm.model_inputs(feats[s:e], ticks[s:e], 192, None if adtof_feats is None else adtof_feats[s:e])
+    del feats, adtof_feats
     song_of = np.repeat(np.arange(len(names)), ends - starts)
     crc = np.array([zlib.crc32(n.encode("utf-8")) for n in names])
-    test = np.array([is_test(n) for n in names])[song_of]
-    val = (crc % 10 == 3)[song_of] & ~test
-    fit = ~test & ~val
+    test = np.array([is_test(n) for n in names])[song_of] & have[song_of]
+    val = (crc % 10 == 3)[song_of] & ~test & have[song_of]
+    fit = ~test & ~val & have[song_of]
     fold = (crc % folds)[song_of]
     print(f"treino {len(set(song_of[fit]))} músicas, validação {len(set(song_of[val]))}, "
           f"teste {len(set(song_of[test]))}; {fit.sum()} ataques de treino", flush=True)
@@ -504,9 +569,11 @@ def train_drums(data: Path, folds: int = 3) -> None:
         f_sound = _f1(pt1[:, k] >= thresholds1[k], y[test_rows, k] > 0)
         report[piece] = round(_f1(pt[:, k] >= thresholds[k], y[test_rows, k] > 0), 3)
         print(f"{piece:10s} {f_sound:7.3f} {report[piece]:8.3f}")
+    path = dm.ADTOF_MODEL_PATH if input_names == dm.INPUT_NAMES_ADTOF else dm.MODEL_PATH
     dm.save(sound, np.array(thresholds), {"teste_f1_por_ataque": report,
-                                          "musicas_treino": int(len(set(song_of[fit])))}, groove=groove)
-    print(f"modelo salvo em {dm.MODEL_PATH}")
+                                          "musicas_treino": int(len(set(song_of[fit])))},
+            path=path, groove=groove, features=input_names)
+    print(f"modelo salvo em {path}")
 
 
 def _f1(pred: np.ndarray, true: np.ndarray) -> float:
@@ -536,6 +603,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="com --cache: mapa de tempo detectado no mix (padrão) ou o da chart oficial")
     t = sub.add_parser("train-drums", help="treina o modelo de bateria (ai_charter/drum_model.json)")
     t.add_argument("data", type=Path)
+    t.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: treina o modelo com ADTOF")
+    t.add_argument("--songs", type=Path, help="com --adtof-cache: a pasta das músicas usada na coleta")
     m = sub.add_parser("demucs-cache", help="mix de cada música -> Demucs -> bateria separada, guardada em cache")
     m.add_argument("folder", type=Path)
     m.add_argument("cache", type=Path)
@@ -543,6 +612,12 @@ def main(argv: list[str] | None = None) -> None:
     m.add_argument("--test", action="store_true", help="só as músicas do conjunto de teste")
     m.add_argument("--limit", type=int, help="usa só N músicas (espalhadas pela lista)")
     m.add_argument("--rules", type=Path)
+    a = sub.add_parser("adtof-cache", help="saídas do ADTOF no mix de cada música, guardadas em cache")
+    a.add_argument("folder", type=Path)
+    a.add_argument("cache", type=Path)
+    a.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
+    a.add_argument("--workers", type=int, default=1, help="músicas analisadas ao mesmo tempo")
+    a.add_argument("--rules", type=Path)
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -550,15 +625,20 @@ def main(argv: list[str] | None = None) -> None:
     from ai_charter.config import load_rules
 
     if args.command == "train-drums":
-        train_drums(args.data)
+        train_drums(args.data, adtof_cache=args.adtof_cache, songs_root=args.songs)
         return
     rules = load_rules(args.rules)
     folders = song_folders(args.folder, args.charter)
     if args.command == "collect":
         collect(folders, args.out, rules, workers=args.workers)
         return
+    if args.command == "adtof-cache":
+        adtof_cache(folders, args.cache, workers=args.workers)
+        return
     if args.test:
         folders = [f for f in folders if is_test(f.name)]
+    if getattr(args, "cache", None) and args.command == "drums":   # sempre as mesmas: as que estão no cache
+        folders = [f for f in folders if (cache_dir_for(args.cache, f) / "drums.ogg").is_file()]
     if args.limit and args.limit < len(folders):
         folders = [folders[i] for i in np.linspace(0, len(folders) - 1, args.limit).astype(int)]
     if args.command == "demucs-cache":

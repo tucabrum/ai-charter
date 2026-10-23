@@ -23,15 +23,20 @@ from pathlib import Path
 
 import numpy as np
 
+from ai_charter.analysis import adtof
 from ai_charter.analysis.drums import CRASH, FEATURE_NAMES, HIHAT, KICK, RIDE, SNARE, TOM
 
 MODEL_PATH = Path(__file__).with_name("drum_model.json")
+# Com o ADTOF instalado: o mesmo modelo, mais as chances que o ADTOF dá para cada golpe
+ADTOF_MODEL_PATH = Path(__file__).with_name("drum_model_adtof.json")
 OUTPUTS = (KICK, SNARE, HIHAT, RIDE, CRASH, TOM)
 CONTEXT_NAMES = [f"posicao_{i}" for i in range(16)] + ["fora_da_grade", "vizinho_1/16", "vizinho_1/8",
                                                        "batida_forte", "compasso_denso"]
 
 
 INPUT_NAMES = FEATURE_NAMES + [f"rel_{n}" for n in FEATURE_NAMES] + CONTEXT_NAMES
+ADTOF_NAMES = [f"adtof_{c}" for c in adtof.CLASSES]
+INPUT_NAMES_ADTOF = INPUT_NAMES + ADTOF_NAMES
 
 # Etapa da levada: semicolcheias em volta do ataque (meio compasso de cada lado em detalhe, mais o
 # mesmo lugar no compasso anterior e no seguinte) e, em cada uma, a chance de cada peça + "houve ataque"
@@ -49,9 +54,12 @@ def song_relative(features: np.ndarray) -> np.ndarray:
     return ((features - mid) / (hi - lo + 1e-6)).astype(np.float32)
 
 
-def model_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int) -> np.ndarray:
-    """Entrada do modelo para os ataques de UMA música: retrato, retrato relativo e lugar na levada."""
-    return np.hstack([features, song_relative(features), context_features(ticks * 192 / resolution, 192)])
+def model_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int,
+                 adtof_feats: np.ndarray | None = None) -> np.ndarray:
+    """Entrada do modelo para os ataques de UMA música: retrato, retrato relativo, lugar na levada e,
+    se houver, as chances do ADTOF (adtof.at_times) para cada ataque."""
+    parts = [features, song_relative(features), context_features(ticks * 192 / resolution, 192)]
+    return np.hstack(parts + ([adtof_feats] if adtof_feats is not None else []))
 
 
 def context_features(ticks: np.ndarray, resolution: int) -> np.ndarray:
@@ -119,14 +127,22 @@ class DrumModel:
         self.groove = _arrays(params["groove"]) if params.get("groove") else None
         self.thresholds = np.array(params["thresholds"], dtype=np.float32)
         self.info = params.get("info", {})
+        self.uses_adtof = params.get("features") == INPUT_NAMES_ADTOF
         self.w1, self.w2 = self.sound["w1"], self.sound["w2"]
 
     @classmethod
-    def load(cls, path: Path = MODEL_PATH) -> "DrumModel | None":
+    def load(cls, path: Path | None = None) -> "DrumModel | None":
+        """O modelo em `path`; sem `path`, o com ADTOF se ele estiver instalado, senão o básico."""
+        if path is None:
+            if adtof.available() and ADTOF_MODEL_PATH.is_file():
+                model = cls.load(ADTOF_MODEL_PATH)
+                if model is not None:
+                    return model
+            path = MODEL_PATH
         if not path.is_file():
             return None
         params = json.loads(path.read_text(encoding="utf-8"))
-        if params.get("features") != INPUT_NAMES or params.get("outputs") != list(OUTPUTS):
+        if params.get("features") not in (INPUT_NAMES, INPUT_NAMES_ADTOF) or params.get("outputs") != list(OUTPUTS):
             return None   # modelo de outra versão do retrato: melhor não usar
         if params.get("groove") and params["groove"].get("features") != GROOVE_NAMES:
             return None
@@ -136,9 +152,12 @@ class DrumModel:
         """Só a etapa do som."""
         return mlp(self.sound, x)
 
-    def predict_song(self, features: np.ndarray, ticks: np.ndarray, resolution: int) -> np.ndarray:
+    def predict_song(self, features: np.ndarray, ticks: np.ndarray, resolution: int,
+                     adtof_feats: np.ndarray | None = None) -> np.ndarray:
         """Os ataques de uma música inteira: etapa do som e, por cima, a da levada."""
-        probs = self.predict(model_inputs(features, ticks, resolution))
+        if self.uses_adtof and adtof_feats is None:
+            raise ValueError("este modelo precisa das chances do ADTOF para cada ataque")
+        probs = self.predict(model_inputs(features, ticks, resolution, adtof_feats if self.uses_adtof else None))
         if self.groove is None or not len(probs):
             return probs
         return mlp(self.groove, groove_inputs(probs, ticks, resolution))
@@ -202,9 +221,9 @@ def _jsonable(params: dict) -> dict:
 
 
 def save(params: dict, thresholds: np.ndarray, info: dict, path: Path = MODEL_PATH,
-         groove: dict | None = None) -> None:
+         groove: dict | None = None, features: list[str] = INPUT_NAMES) -> None:
     out = _jsonable(params)
-    out.update(thresholds=np.asarray(thresholds).round(3).tolist(), features=INPUT_NAMES,
+    out.update(thresholds=np.asarray(thresholds).round(3).tolist(), features=features,
                outputs=list(OUTPUTS), info=info)
     if groove is not None:
         out["groove"] = {**_jsonable(groove), "features": GROOVE_NAMES}

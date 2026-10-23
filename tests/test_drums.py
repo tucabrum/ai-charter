@@ -95,7 +95,7 @@ def test_model_sees_ticks_in_the_tempo_map_grid(kit_song):
     class Spy:
         thresholds = np.ones(len(OUTPUTS))
 
-        def predict_song(self, features, ticks, resolution):
+        def predict_song(self, features, ticks, resolution, adtof_feats=None):
             seen.update(ticks=ticks, resolution=resolution)
             return np.zeros((len(ticks), len(OUTPUTS)))
 
@@ -152,15 +152,21 @@ def test_tempo_map_from_midi():
     assert tempo.time_to_tick(1.25) == pytest.approx(576)
 
 
-def test_shipped_drum_model_loads_and_matches_the_features():
+@pytest.mark.parametrize("which", ["basico", "adtof"])
+def test_shipped_drum_models_load_and_match_the_features(which):
     from ai_charter.analysis.drums import FEATURE_NAMES
-    from ai_charter.drum_model import INPUT_NAMES, OUTPUTS, DrumModel, model_inputs
+    from ai_charter.drum_model import (ADTOF_MODEL_PATH, INPUT_NAMES, INPUT_NAMES_ADTOF, MODEL_PATH, OUTPUTS,
+                                       DrumModel)
 
-    model = DrumModel.load()
-    assert model is not None, "ai_charter/drum_model.json não carregou (treine com ai-charter-bench train-drums)"
-    assert model.w1.shape[0] == len(INPUT_NAMES) and model.w2.shape[1] == len(OUTPUTS)
-    features = np.random.default_rng(0).normal(size=(20, len(FEATURE_NAMES))).astype(np.float32)
-    p = model.predict(model_inputs(features, np.arange(20) * 48.0, 192))
+    path, names = (MODEL_PATH, INPUT_NAMES) if which == "basico" else (ADTOF_MODEL_PATH, INPUT_NAMES_ADTOF)
+    model = DrumModel.load(path)
+    assert model is not None, f"{path.name} não carregou (treine com ai-charter-bench train-drums)"
+    assert model.w1.shape[0] == len(names) and model.w2.shape[1] == len(OUTPUTS)
+    assert model.uses_adtof == (which == "adtof")
+    rng = np.random.default_rng(0)
+    features = rng.normal(size=(20, len(FEATURE_NAMES))).astype(np.float32)
+    adtof_feats = rng.uniform(size=(20, 5)).astype(np.float32) if model.uses_adtof else None
+    p = model.predict_song(features, np.arange(20) * 48.0, 192, adtof_feats)
     assert p.shape == (20, len(OUTPUTS)) and np.all((p >= 0) & (p <= 1))
 
 
@@ -193,3 +199,31 @@ def test_model_from_another_feature_version_is_ignored(tmp_path):
     path = tmp_path / "velho.json"
     path.write_text(json.dumps(params), encoding="utf-8")
     assert DrumModel.load(path) is None
+
+
+def test_adtof_chances_are_read_around_each_hit():
+    from ai_charter.analysis.adtof import at_times
+
+    act = np.zeros((300, 5), dtype=np.float32)
+    act[100, 1] = 0.9      # caixa em 1,00 s
+    act[203, 0] = 0.8      # bumbo 30 ms depois de 2,00 s
+    feats = at_times(act, np.array([1.0, 2.0, 2.5]))
+    assert feats[0, 1] == pytest.approx(0.9) and feats[1, 0] == pytest.approx(0.8)
+    assert not feats[2].any()
+
+
+def test_model_with_adtof_inputs_requires_them():
+    from ai_charter.drum_model import INPUT_NAMES_ADTOF, OUTPUTS, DrumModel, GROOVE_NAMES
+
+    rng = np.random.default_rng(0)
+    layer = lambda n, m: {"mean": [0.0] * n, "std": [1.0] * n, "w1": rng.normal(size=(n, 4)).tolist(),
+                          "b1": [0.0] * 4, "w2": rng.normal(size=(4, m)).tolist(), "b2": [0.0] * m}
+    model = DrumModel({**layer(len(INPUT_NAMES_ADTOF), len(OUTPUTS)), "thresholds": [0.5] * len(OUTPUTS),
+                       "features": INPUT_NAMES_ADTOF, "groove": layer(len(GROOVE_NAMES), len(OUTPUTS))})
+    feats = rng.normal(size=(10, 46)).astype(np.float32)   # o retrato acústico (FEATURE_NAMES)
+    ticks = np.arange(10) * 96.0
+    assert model.uses_adtof
+    with pytest.raises(ValueError):
+        model.predict_song(feats, ticks, 192)
+    p = model.predict_song(feats, ticks, 192, np.zeros((10, 5), dtype=np.float32))
+    assert p.shape == (10, len(OUTPUTS))

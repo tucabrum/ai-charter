@@ -346,6 +346,12 @@ Ideias principais:
   charter que ouve o groove inteiro. Um golpe ambíguo no meio de uma linha de chimbal vira
   chimbal, não caixa. Sem o arquivo do modelo, ou com `use_model = false` em `[drum_detection]`,
   valem só as regras.
+- **ADTOF** (opcional, `pip install -e ".[adtof]"`): o transcritor de bateria do ADTOF (Zehren et
+  al., treinado com milhares de charts de jogos de ritmo) lê o mix inteiro e dá, para cada golpe, a
+  chance de bumbo, caixa, tom, chimbal e prato. Com ele instalado, o charting usa
+  `drum_model_adtof.json`, que recebe essas chances junto com o retrato acústico (o kit da música
+  continua decidindo qual tom e qual prato). No uso real (bateria do Demucs, BPM detectado, 61
+  músicas de teste) o F1 vai de 0,67 a 0,74. O ADTOF é de uso não comercial (CC BY-NC-SA).
   Sons que sempre tocam juntos (bumbo + chimbal) viram as duas peças.
 - **Dificuldades**: as notas recebem uma prioridade (força do ataque + importância da posição no
   compasso). Em cada dificuldade escolhemos primeiro as mais importantes, respeitando a distância
@@ -471,6 +477,11 @@ Com `--workers N` a coleta analisa N músicas ao mesmo tempo, e `--charter Harmo
 charts oficiais (as do próprio ai-charter e do autochart nunca entram). O treino das duas etapas
 usa validação cruzada: a etapa da levada aprende com o que a etapa do som acha de músicas que ela
 não viu, para aprender a corrigir os erros de uma música nova.
+
+Para o modelo com ADTOF: `ai-charter-bench adtof-cache "pasta" cache/ --workers 6` guarda as saídas
+do ADTOF no mix de cada música, e `train-drums exemplos.npz --adtof-cache cache/ --songs "pasta"`
+treina `drum_model_adtof.json`. `drums "pasta" --cache cache/ --test` mede como no uso real, com a
+bateria que o Demucs separou do mix (`demucs-cache`) e o BPM detectado.
 
 Treinado com 1481 músicas da Harmonix e medido em 60 das 422 de teste, com vazamento: F1 geral
 0,69 (0,63 com o modelo anterior, só com a etapa do som; 0,46 só com as regras); bumbo 0,92,
