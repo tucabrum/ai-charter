@@ -69,3 +69,11 @@ def at_times(act: np.ndarray, times: np.ndarray, radius: int = 3) -> np.ndarray:
     for d in range(-radius, radius + 1):
         out = np.maximum(out, act[np.clip(frames + d, 0, len(act) - 1)])
     return out
+
+
+def hit_times(act: np.ndarray) -> np.ndarray:
+    """Os instantes (s) em que o ADTOF ouve um golpe de qualquer peça, com os limiares dele."""
+    from adtof_pytorch import FRAME_RNN_THRESHOLDS, LABELS_5, PeakPicker
+
+    picked = PeakPicker(thresholds=FRAME_RNN_THRESHOLDS, fps=FPS).pick(act[None], labels=LABELS_5)[0]
+    return np.unique(np.concatenate([np.asarray(t, dtype=float) for t in picked.values()] + [np.zeros(0)]))

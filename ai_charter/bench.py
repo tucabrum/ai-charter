@@ -176,8 +176,9 @@ def is_test(name: str) -> bool:
     return key in HOLDOUT or zlib.crc32(key.encode("utf-8")) % 5 == 0
 
 
-def _collect_one(folder: Path, rules, bleed: tuple[float, float]):
-    """Ataques de uma música: (retrato, ticks em 192/batida, gabarito, golpes perdidos, golpes)."""
+def _collect_one(folder: Path, rules, bleed: tuple[float, float], adtof_cache: Path | None = None):
+    """Ataques de uma música: (retrato, ticks em 192/batida, gabarito, golpes perdidos, golpes).
+    Com `adtof_cache`, os golpes que o ADTOF ouviu no mix entram também como ataques."""
     from ai_charter.analysis.drums import ONSET_LATENCY, HOP, analyze_kit
     from ai_charter.pipeline import DRUMS_SR
 
@@ -190,7 +191,12 @@ def _collect_one(folder: Path, rules, bleed: tuple[float, float]):
     others = other_audio(folder, DRUMS_SR, len(y))
     if others is not None:
         y = y + gain * others
-    kit = analyze_kit(y, DRUMS_SR, rules.drum_detection)
+    extra = None
+    if adtof_cache is not None and (cache_dir_for(adtof_cache, folder) / "adtof_mix.npy").is_file():
+        from ai_charter.analysis import adtof
+
+        extra = adtof.hit_times(np.load(cache_dir_for(adtof_cache, folder) / "adtof_mix.npy"))
+    kit = analyze_kit(y, DRUMS_SR, rules.drum_detection, extra)
     tempo, res = _tempo_map(midi), midi.ticks_per_beat
     ticks = np.asarray(tempo.time_to_tick(kit.onsets * HOP / DRUMS_SR - ONSET_LATENCY), dtype=float)
     labels = np.zeros((len(ticks), len(PIECES)), dtype=np.float32)
@@ -205,14 +211,15 @@ def _collect_one(folder: Path, rules, bleed: tuple[float, float]):
 
 
 def _collect_safe(args):
-    folder, rules, bleed = args
+    folder, rules, bleed, adtof_cache = args
     try:
-        return folder, _collect_one(folder, rules, bleed), None
+        return folder, _collect_one(folder, rules, bleed, adtof_cache), None
     except Exception as err:   # uma música com arquivo estranho não para a coleta
         return folder, None, str(err)
 
 
-def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = (0.05, 0.4), workers: int = 1) -> None:
+def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = (0.05, 0.4), workers: int = 1,
+            adtof_cache: Path | None = None) -> None:
     """Para cada ataque: retrato acústico, tick e as peças da chart oficial.
 
     A bateria do Rock Band é limpa (gravada à parte); a que o ai-charter recebe é separada do mix e
@@ -222,7 +229,7 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
     from concurrent.futures import ProcessPoolExecutor
 
     feats, ticks_all, ys, songs, missed, total = [], [], [], [], 0, 0
-    jobs = [(f, rules, bleed) for f in folders]
+    jobs = [(f, rules, bleed, adtof_cache) for f in folders]
     results = (map(_collect_safe, jobs) if workers <= 1
                else ProcessPoolExecutor(workers).map(_collect_safe, jobs, chunksize=1))
     for i, (folder, res, err) in enumerate(results, 1):
@@ -597,6 +604,7 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--rules", type=Path)
     c.add_argument("--workers", type=int, default=1, help="músicas analisadas ao mesmo tempo")
     c.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
+    c.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: golpes do ADTOF entram como ataques")
     p.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     p.add_argument("--cache", type=Path, help="como no uso real: a bateria que o Demucs separou do mix (demucs-cache)")
     p.add_argument("--tempo", choices=("nosso", "oficial"), default="nosso",
@@ -630,7 +638,7 @@ def main(argv: list[str] | None = None) -> None:
     rules = load_rules(args.rules)
     folders = song_folders(args.folder, args.charter)
     if args.command == "collect":
-        collect(folders, args.out, rules, workers=args.workers)
+        collect(folders, args.out, rules, workers=args.workers, adtof_cache=args.adtof_cache)
         return
     if args.command == "adtof-cache":
         adtof_cache(folders, args.cache, workers=args.workers)

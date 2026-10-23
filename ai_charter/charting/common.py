@@ -55,6 +55,31 @@ def quantize_tick(tick: float, resolution: int, allow_triplets: bool) -> int:
     return int(round(q))
 
 
+def quantize_runs(ticks, resolution: int, allow_triplets: bool) -> list[int]:
+    """Como quantize_tick, mas golpes colados (mais perto que 3/4 de semicolcheia, como um pedal
+    duplo ou um rufo) vão juntos para a grade mais fina que melhor os encaixa: fusa ou tercina de
+    semicolcheia. Na grade comum dois deles cairiam no mesmo tick e virariam uma nota só."""
+    ticks = np.asarray(ticks, dtype=float)
+    out = [quantize_tick(t, resolution, allow_triplets) for t in ticks]
+    order = np.argsort(ticks, kind="stable")
+    close = resolution / 4 * 0.75
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and ticks[order[j + 1]] - ticks[order[j]] < close:
+            j += 1
+        if j > i:
+            run = ticks[order[i:j + 1]]
+            grids = [resolution / 8] + ([resolution / 6] if allow_triplets else [])
+            best = min(grids, key=lambda g: float(np.mean(np.abs(run - np.round(run / g) * g))))
+            q = (np.round(run / best) * best).round().astype(int)
+            if len(set(q.tolist())) == len(q):   # só se cada golpe ficar com o seu tick
+                for k, idx in enumerate(order[i:j + 1]):
+                    out[idx] = int(q[k])
+        i = j + 1
+    return out
+
+
 def position_weight(tick: int, resolution: int) -> float:
     """Quão "importante" é uma posição rítmica (início do compasso > batida > contratempo)."""
     if tick % (resolution * 4) == 0:

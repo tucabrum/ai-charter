@@ -227,3 +227,14 @@ def test_model_with_adtof_inputs_requires_them():
         model.predict_song(feats, ticks, 192)
     p = model.predict_song(feats, ticks, 192, np.zeros((10, 5), dtype=np.float32))
     assert p.shape == (10, len(OUTPUTS))
+
+
+def test_extra_onsets_join_the_detected_ones():
+    from ai_charter.analysis.drums import HOP, MERGE_FRAMES, ONSET_LATENCY, _with_extra_onsets
+
+    onsets = np.array([100, 200, 300])
+    near, far = (200 + 2) * HOP / SR - ONSET_LATENCY, 250 * HOP / SR - ONSET_LATENCY
+    merged, extra = _with_extra_onsets(onsets, np.array([near, far]), SR, 1000)
+    assert merged.tolist() == [100, 200, 250, 300] and extra.tolist() == [False, False, True, False]
+    assert _with_extra_onsets(onsets, None, SR, 1000)[0] is onsets
+    assert MERGE_FRAMES >= 2

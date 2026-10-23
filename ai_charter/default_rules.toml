@@ -93,6 +93,7 @@ allowed_chords = []
 # Como os conversores de bateria para MIDI: primeiro descobre os sons do kit da gravação
 # (grupos de golpes com o mesmo espectro), dá nome a cada um e depois marca quando cada som toca.
 use_model = true             # usa o modelo treinado com charts oficiais (ai_charter/drum_model.json), se existir
+adtof_kick_trust = 0.0       # com o ADTOF: bumbo que ele ouve com pelo menos essa chance entra (0 = só o modelo decide)
 onset_delta = 0.07           # sensibilidade dos ataques (menor = acha batidas mais fracas)
 min_level = 0.03             # ignora ataques com menos som novo que isso × os 5% mais fortes
 max_sounds = 12              # quantos sons diferentes procurar no kit
@@ -210,8 +211,8 @@ min_reduction = 0.25
 #   min_reduction:   como na guitarra
 # ---------------------------------------------------------------------------
 [drums.expert]
-kick_min_gap_beats = 0.25
-snare_min_gap_beats = 0.25
+kick_min_gap_beats = 0.12     # pedal duplo e rufos em fusa (como nas charts oficiais)
+snare_min_gap_beats = 0.12
 hihat_min_gap_beats = 0.25
 crash = true
 max_hands = 2

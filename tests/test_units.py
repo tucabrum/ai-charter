@@ -216,3 +216,16 @@ def test_skipped_and_doubled_beats_are_regularized():
 
     beats = np.array([0.5, 1.0, 1.5, 2.5, 3.0, 3.02, 3.5, 4.0])   # faltou 2,0; 3,02 é duplicada
     assert np.allclose(_regularize_beats(beats), [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
+
+
+def test_fast_runs_get_a_finer_grid():
+    from ai_charter.charting.common import quantize_runs
+
+    res = 192
+    # pedal duplo em fusas (24 ticks) depois de uma semicolcheia comum
+    raw = [0, 48, 72 + 3, 96 - 2, 120 + 1, 192]
+    assert quantize_runs(raw, res, True) == [0, 48, 72, 96, 120, 192]
+    # tercinas de semicolcheia (32 ticks)
+    assert quantize_runs([0, 33, 63, 97], res, True) == [0, 32, 64, 96]
+    # golpes espaçados ficam na grade comum
+    assert quantize_runs([1, 47, 97], res, True) == [0, 48, 96]

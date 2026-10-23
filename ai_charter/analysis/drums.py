@@ -349,10 +349,31 @@ class KitAnalysis:
     features: np.ndarray     # [ataque, FEATURE_NAMES]: o retrato acústico do ataque (para o modelo)
 
 
-def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
-    """Descobre os sons do kit da gravação e quanto cada um aparece em cada ataque."""
+def _with_extra_onsets(onsets: np.ndarray, extra_times, sr: int, n_frames: int) -> tuple[np.ndarray, np.ndarray]:
+    """Junta aos ataques detectados os de outra fonte (ex.: golpes do ADTOF, em segundos) que não
+    estão a menos de MERGE_FRAMES de nenhum. Devolve os ataques em ordem e quais vieram de fora."""
+    extra = np.zeros(len(onsets), dtype=bool)
+    if extra_times is None or not len(extra_times):
+        return onsets, extra
+    frames = np.round((np.asarray(extra_times, dtype=float) + ONSET_LATENCY) * sr / HOP).astype(int)
+    frames = np.unique(frames[(frames >= -PRE.start) & (frames < n_frames - CYMBAL_TAIL.stop)])
+    if len(onsets):
+        nearest = np.abs(onsets[None, :] - frames[:, None]).min(axis=1) if len(frames) else frames
+        frames = frames[nearest > MERGE_FRAMES]
+    merged = np.concatenate([onsets, frames]).astype(int)
+    flags = np.concatenate([extra, np.ones(len(frames), dtype=bool)])
+    order = np.argsort(merged, kind="stable")
+    return merged[order], flags[order]
+
+
+def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection, extra_times=None) -> KitAnalysis:
+    """Descobre os sons do kit da gravação e quanto cada um aparece em cada ataque.
+
+    `extra_times` (segundos): golpes vistos por outra fonte (o ADTOF, no mix) que o detector de
+    ataques não marcou, como um chimbal junto do bumbo; entram como ataques também."""
     S = np.abs(librosa.stft(y, n_fft=SHORT_FFT, hop_length=HOP))
     onsets = _onsets(S, librosa.fft_frequencies(sr=sr, n_fft=SHORT_FFT), cfg.onset_delta)
+    onsets, extra = _with_extra_onsets(onsets, extra_times, sr, S.shape[1])
     if len(onsets) < 4:
         empty = np.zeros((0, len(onsets)))
         zero = np.zeros(len(onsets))
@@ -384,7 +405,7 @@ def analyze_kit(y: np.ndarray, sr: int, cfg: DrumDetection) -> KitAnalysis:
     mid_pre, mid_new = (at(Ls[mid], s).sum(axis=0) for s in (SHORT_PRE, SHORT_ATTACK))
     air_ratio = np.maximum(hi_new - CARRY * hi_pre, 0.0) / np.maximum(mid_new - CARRY * mid_pre, 1e-9)
     # Ataques quase sem som novo (ex.: o fim de um prato) não ensinam nada.
-    loud = V.sum(axis=0) >= cfg.min_level * np.percentile(V.sum(axis=0), 95)
+    loud = (V.sum(axis=0) >= cfg.min_level * np.percentile(V.sum(axis=0), 95)) | extra
     onsets, V, fresh, left, tail, rattle, air_ratio = (onsets[loud], V[:, loud], fresh[:, loud], left[:, loud],
                                                        tail[loud], rattle[loud], air_ratio[loud])
     found = _discover_sounds(V, cfg)

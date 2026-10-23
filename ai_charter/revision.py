@@ -260,7 +260,13 @@ def redo_drums(folder: Path, rules_path: Path | None = None) -> tuple[dict[str, 
     old = next((t for t in midi.tracks if t.name == "PART DRUMS"), None)
     # As frases de Star Power continuam onde estavam (as mesmas janelas das outras partes).
     sp_windows = [(n.start, n.end - n.start) for n in _split(old)[0] if n.pitch == STAR_POWER] if old else []
-    track = chart_drums(stem, tempo, rules, sp_windows)
+    # A música inteira (todos os áudios da pasta) alimenta o ADTOF, se ele estiver instalado
+    from ai_charter.analysis import adtof
+    from ai_charter.bench import MIX_SR, song_mix
+
+    mix = song_mix(folder) if adtof.available() else None
+    adtof_act = adtof.activations(mix, MIX_SR) if mix is not None else None
+    track = chart_drums(stem, tempo, rules, sp_windows, adtof_act=adtof_act)
     new = _fret_track("PART DRUMS", track, midi.ticks_per_beat, drums=True).build()
     if old is not None:
         midi.tracks[midi.tracks.index(old)] = new

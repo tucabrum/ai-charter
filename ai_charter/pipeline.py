@@ -26,7 +26,7 @@ from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
 from ai_charter.analysis.transcribe import transcribe_lyrics
 from ai_charter.analysis.vocals import detect_sung_notes, detect_voice_segments
 from ai_charter.charting.common import (
-    Candidate, TrackChart, dedupe, quantize_tick, star_power_for_phrases, star_power_windows,
+    Candidate, TrackChart, dedupe, quantize_runs, quantize_tick, star_power_for_phrases, star_power_windows,
 )
 from ai_charter.charting.chords import label_chords
 from ai_charter.charting.drums import build_drum_track
@@ -212,17 +212,27 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     levada -> probabilidade de cada peça; entra o que passa do limiar daquela peça. Para "tom", qual
     tom é vem dos sons do kit da música (o de maior presença no ataque), pela altura de cada um."""
     res, triplets = tempo.resolution, rules.general.allow_triplets   # a grade do mapa de tempo (480 nas charts do Rock Band)
-    kit = analyze_kit(y, sr, rules.drum_detection)
+    uses_adtof = getattr(model, "uses_adtof", False)
+    # Com o ADTOF, os golpes que ele ouve e o detector não marcou (ex.: chimbal junto do bumbo) entram também
+    extra = adtof.hit_times(adtof_act) if uses_adtof else None
+    kit = analyze_kit(y, sr, rules.drum_detection, extra)
     if not len(kit.onsets):
         return []
     ticks = np.asarray(tempo.time_to_tick(kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY), dtype=float)
     adtof_feats = None
-    if getattr(model, "uses_adtof", False):
+    if uses_adtof:
         adtof_feats = adtof.at_times(adtof_act, kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY)
     probs = model.predict_song(kit.features, ticks, res, adtof_feats)
+    trust = rules.drum_detection.adtof_kick_trust
+    if uses_adtof and trust > 0:   # pedal duplo rápido: o modelo duvida, o ADTOF ouve
+        k = MODEL_OUTPUTS.index("kick")
+        sure = adtof_feats[:, adtof.CLASSES.index("bumbo")] >= trust
+        probs[sure, k] = np.maximum(probs[sure, k], model.thresholds[k])
     seen: dict[tuple[int, str], Candidate] = {}
-    for j, raw in enumerate(ticks):
-        tick = quantize_tick(raw, res, triplets)
+    hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota
+    quantized = dict(zip(hit.tolist(), quantize_runs(ticks[hit], res, triplets)))
+    for j in hit:
+        tick = quantized[int(j)]
         for k, piece in enumerate(MODEL_OUTPUTS):
             if probs[j, k] < model.thresholds[k]:
                 continue
