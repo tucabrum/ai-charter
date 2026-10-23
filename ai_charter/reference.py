@@ -54,6 +54,8 @@ DRUM_MATCH_BEATS = 0.125                  # bateria: golpes mais densos, tolerâ
 MATCH_BEATS = 0.25                        # distância máxima entre a nota detectada e a da partitura
 MIN_MATCHED = 0.3                         # abaixo disso a referência não confere: é ignorada
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
+WARP_COST = 0.2                           # alinhamento: custo de cada passo fora da diagonal
+UNMATCHED_COST = 0.5                      # alinhamento: passo da partitura depois do fim da gravação
 
 NAME_HINTS = (   # (instrumento, padrão no nome da pista), na ordem em que são testados
     ("drums", r"drum|bateria|percuss|kit"),
@@ -516,12 +518,35 @@ def _normalize(chroma: np.ndarray) -> np.ndarray:
 def align_chroma(ref: np.ndarray, audio: np.ndarray) -> tuple[np.ndarray, float]:
     """Caminho (passo da partitura, batida da gravação) por DTW e o custo médio por passo.
 
-    A partitura pode cobrir só um trecho da gravação (introdução ou final a mais no áudio)."""
+    A partitura pode cobrir só um trecho da gravação (introdução ou final a mais no áudio). As duas
+    já estão em batidas, então o caminho esperado é a diagonal: sair dela (esticar ou encolher um
+    trecho) custa WARP_COST, e o custo devolvido conta isso. Sem esse custo, o chroma (que muda
+    devagar) deixa o DTW espremer a música inteira em poucos compassos quase sem pagar nada."""
     import librosa
 
-    D, path = librosa.sequence.dtw(X=_normalize(ref), Y=_normalize(audio), metric="cosine", subseq=True)
+    C = 1 - _normalize(ref).T @ _normalize(audio)   # distância de cosseno
+    # Com subseq, o librosa procura a sequência MENOR dentro da maior: se a partitura fosse mais longa,
+    # ele procuraria a gravação inteira num pedaço dela. A gravação ganha batidas neutras no fim
+    # (partitura que passa do fim do áudio) para continuar sendo a maior.
+    n, m = C.shape
+    C = np.hstack([C, np.full((n, n - m + 1 if n >= m else 1), UNMATCHED_COST)])
+    D, path = librosa.sequence.dtw(C=C, subseq=True, weights_add=np.array([0.0, WARP_COST, WARP_COST]))
     path = path[::-1]
-    return path, float(D[-1, path[-1, 1]] / len(path))
+    cost = float(D[path[-1, 0], path[-1, 1]] / len(path))
+    return path[path[:, 1] < m], cost
+
+
+def regular_grid(beat_times: np.ndarray) -> np.ndarray:
+    """As batidas do mapa de tempo com o começo refeito no período normal.
+
+    O mapa começa em 0 s e põe os compassos nos inícios detectados (analysis/tempo.py), então a
+    primeira batida costuma ser mais longa (ou mais curta) que as outras. O alinhamento anda de
+    batida em batida: com ela esticada, a partitura não poderia começar no meio dela."""
+    if len(beat_times) < 4:
+        return beat_times
+    period = float(np.median(np.diff(beat_times[1:])))
+    before = beat_times[1] - period * np.arange(int(beat_times[1] / period + 0.25), 0, -1)
+    return np.concatenate([np.maximum(before, 0.0), beat_times[1:]])
 
 
 def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_times: np.ndarray) -> Alignment:
@@ -529,7 +554,8 @@ def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_tim
     pitched = [t for t in tracks if not t.drums and t.notes]
     if not pitched:
         raise ValueError("a partitura não tem pistas com notas (além da bateria) para alinhar")
-    audio = audio_chroma(y, sr, beat_times)
+    grid = regular_grid(beat_times)
+    audio = audio_chroma(y, sr, grid)
     best = None
     for factor in (1.0, 2.0, 0.5):
         step = 1 / factor   # passos de partitura por batida da gravação
@@ -537,12 +563,17 @@ def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_tim
         ref = score_chroma(pitched, step, n_steps)
         for transpose in range(12):
             path, cost = align_chroma(np.roll(ref, transpose, axis=0), audio)
-            if best is None or cost < best[0]:
+            if len(path) and (best is None or cost < best[0]):
                 best = (cost, factor, transpose, path, step)
+    if best is None:
+        raise ValueError("a partitura não se alinha com nenhum trecho da gravação")
     cost, factor, transpose, path, step = best
     steps, beats = path[:, 0], path[:, 1].astype(float)
     ref_beats = np.unique(steps)
     audio_beats = np.array([beats[steps == k].mean() for k in ref_beats])
+    # batida da grade -> instante -> batida (fracionária) do mapa de tempo
+    audio_beats = np.interp(np.interp(audio_beats, np.arange(len(grid)), grid),
+                            beat_times, np.arange(len(beat_times)))
     audio_beats = np.maximum.accumulate(audio_beats)
     return Alignment(ref_beats * step, audio_beats, transpose if transpose <= 6 else transpose - 12, factor, cost)
 

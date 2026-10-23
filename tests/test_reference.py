@@ -154,6 +154,34 @@ def test_alignment_maps_score_beats():
     assert a.to_audio_beat(-2) is None and a.to_audio_beat(10) is None
 
 
+def beat_this_grid(total: float) -> np.ndarray:
+    """Mapa de tempo como o do Beat This! na música sintética: começa em 0 s e o compasso começa
+    em 1,5 s, então a primeira batida (0 a 1,5 s) é esticada e a música começa no meio dela (1 s)."""
+    return np.concatenate([[0.0], np.arange(synth.START + synth.BEAT, total + 1, synth.BEAT)])
+
+
+@pytest.mark.parametrize("outro", [0, 8])
+def test_alignment_on_beat_this_grid(tmp_path, outro):
+    """Com `outro` batidas a mais no fim, a partitura fica mais longa que a gravação: antes o DTW do
+    librosa invertia os papéis (procurava a gravação inteira num pedaço da partitura) e a referência
+    deixava de conferir em tudo."""
+    import soundfile as sf
+    from ai_charter.reference import align
+
+    mix, sr = sf.read(synth.render(tmp_path)["mix"])
+    y = mix.mean(axis=1) if mix.ndim > 1 else mix
+    beats = len(synth.MELODY) // 2
+    score = read_score(write_midi(tmp_path / "ref.mid", [
+        ("Guitarra", 29, 0, [(n + 1, 0.5) for n in synth.MELODY] + [(49, 0.5), (53, 0.5)] * outro),
+        ("Baixo", 33, 1, [(n + 1, 1.0) for n in synth.BASS[:beats]] + [(37, 1.0)] * outro)]))
+    a = align(score, score.tracks, y, sr, beat_this_grid(len(y) / sr))
+    assert (a.factor, a.transpose) == (1.0, -1)
+    # a partitura começa em 1 s: 2/3 da primeira batida do mapa; daí em diante, batida a batida
+    assert a.to_audio_beat(0) == pytest.approx(2 / 3, abs=0.05)
+    for beat in (1, 4, 10, 20):
+        assert a.to_audio_beat(beat) == pytest.approx(beat, abs=0.05)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="precisa do ffmpeg")
 def test_pipeline_guided_by_score(tmp_path):
     """A partitura começa sem o silêncio do áudio, está meio tom acima e tem 4 notas diferentes:
@@ -181,7 +209,12 @@ def test_pipeline_guided_by_score(tmp_path):
                          instruments=("guitar", "bass", "drums"), reference=ref), log=lines.append)
     text = "\n".join(lines)
     assert "transposta -1 semitons" in text
-    assert "guitar: referência confere com 100% das notas detectadas; 4 corrigidas" in text
+    guitar_line = next(line for line in lines if line.startswith("    guitar: referência confere com"))
+    assert "100% das notas detectadas" in guitar_line
+    # As 4 notas trocadas na partitura são corrigidas. Com o Beat This!, o mapa de tempo estica a primeira
+    # batida (0 a 1,5 s; a música começa em 1 s) e a chart grava a 2ª nota (1,25 s) em 1,125 s, a meio
+    # caminho entre duas notas da partitura: ela pode ganhar a altura da vizinha.
+    assert int(guitar_line.split("; ")[1].split()[0]) in (4, 5)
     assert "bass: referência confere com 100% das notas detectadas; 0 corrigidas" in text
     drum_line = next(line for line in lines if line.startswith("    drums: referência confere com"))
     assert int(drum_line.split("com ")[1].split("%")[0]) >= 80
