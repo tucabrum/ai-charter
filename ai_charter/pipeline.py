@@ -70,7 +70,7 @@ class Options:
     genre: str | None = None       # predefinição de regras (ai_charter/genres/<gênero>.toml)
     reference: Path | None = None  # partitura (MIDI ou Guitar Pro) que guia a transcrição (reference.py)
     reference_tracks: dict[int, str] | None = None   # pista da partitura -> instrumento (None = palpite)
-    reference_fidelity: str = "seguir"   # quanto a partitura manda: corrigir, completar ou seguir
+    reference_fidelity: str | dict[str, str] = "seguir"   # corrigir, completar ou seguir (ou um por instrumento)
     cifra: Path | None = None      # cifra (Cifra Club): letra e vocabulário de acordes (cifra.py)
     cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
@@ -369,7 +369,7 @@ def run(opts: Options, log=print) -> Result:
             if instrument == "drums":
                 track = chart_drums(stem[0], tempo, rules, sp_windows, mix=mix_wav)
                 if "drums" in guides:   # a partitura corrige as peças da pista pronta (reference.py)
-                    track = guides["drums"](track, log)
+                    track = guides["drums"](track, log, sp_windows)
             else:
                 track, chosen = chart_pitched(stem, instrument, tempo, rules, sp_windows, log, tuning,
                                               guide=guides.get(instrument))

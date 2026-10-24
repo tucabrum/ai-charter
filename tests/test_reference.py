@@ -113,6 +113,19 @@ def test_broken_guitar_pro_files_are_explained(tmp_path):
         read_score(tmp_path / "x.pdf")
 
 
+def test_parse_fidelity():
+    from ai_charter.reference import fidelity_for, parse_fidelity
+
+    assert parse_fidelity("completar") == "completar"
+    per = parse_fidelity("corrigir, drums=seguir")   # corrigir para os outros, seguir na bateria
+    assert per == {"guitar": "corrigir", "bass": "corrigir", "keys": "corrigir", "drums": "seguir"}
+    assert fidelity_for(per, "drums") == "seguir" and fidelity_for("completar", "bass") == "completar"
+    assert parse_fidelity("guitar=completar")["bass"] == "seguir"   # o padrão nos que não foram citados
+    for bad in ("inventar", "vocals=seguir", "drums=talvez"):
+        with pytest.raises(ValueError):
+            parse_fidelity(bad)
+
+
 def test_parse_mapping():
     assert parse_mapping("2=guitar, 4=bass") == {2: "guitar", 4: "bass"}
     with pytest.raises(ValueError):
@@ -453,6 +466,28 @@ def test_drum_guide_fixes_pieces_but_keeps_rhythm_kick_and_hands():
         ((0, 2), ()), ((3,), (67,)), ((0, 1), ()), ((4,), (68,)), ((4,), (68,))]
     assert (track.notes["easy"][0].lanes, track.notes["easy"][0].flags) == ((2,), ())
     assert "80% das batidas; 3 corrigidas no Expert" in lines[0]
+
+
+def test_drum_guide_following_the_score_brings_back_missed_hits():
+    """A transcrição só ouviu bumbo e caixa; a partitura tem condução em colcheias por cima. Seguindo a
+    partitura, a condução volta (e o bumbo junto dela); fora do trecho da partitura, fica a transcrição."""
+    from ai_charter.charting.common import ChartNote, TrackChart
+    from ai_charter.reference import DrumEvent, DrumGuide
+
+    res, bar = 192, 4 * 192
+    detected = [ChartNote(t, (0,) if (t // res) % 2 == 0 else (1,)) for t in range(0, 2 * bar, res)]
+    detected.append(ChartNote(3 * bar, (1,)))   # depois do fim da partitura
+    track = TrackChart(notes={"expert": detected})
+    events = [DrumEvent(t, frozenset({"ride"} | ({"kick"} if t % (2 * res) == 0 else {"snare"} if t % res == 0 else set())))
+              for t in range(0, 2 * bar, res // 2)]
+    lines = []
+    out = DrumGuide(events, res, "seguir", load_rules())(track, log=lines.append, sp_windows=[])
+    expert = {n.tick: (n.lanes, n.flags) for n in out.notes["expert"]}
+    assert expert[0] == ((0, 3), (67,)) and expert[res] == ((1, 3), (67,)) and expert[res // 2] == ((3,), (67,))
+    assert sum(3 in lanes for lanes, _ in expert.values()) == 16
+    assert expert[3 * bar] == ((1,), ())
+    assert set(out.notes) == {"expert", "hard", "medium", "easy"}
+    assert "2 compasso(s) com os golpes da partitura (seguir)" in lines[0]
 
 
 def test_drum_guide_ignored_when_it_does_not_match():

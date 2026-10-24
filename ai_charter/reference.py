@@ -27,7 +27,8 @@ Passos:
      partitura mais próxima (até uma semicolcheia de distância). Se pouca coisa
      confere, a referência é ignorada e o log avisa. Com várias pistas no mesmo
      instrumento (solo, base...), cada compasso usa a que mais confere com o áudio.
-     A fidelidade (--reference-fidelity) diz se a partitura também dá o RITMO: só
+     A fidelidade (--reference-fidelity, uma para todos ou uma por instrumento)
+     diz se a partitura também dá o RITMO: só
      corrige (corrigir), substitui os compassos em que confere (completar) ou vale
      onde tiver notas (seguir, o padrão). A bateria é corrigida depois de
      pronta (a transcrição dela não muda): cada nota da pista fica com as peças que a
@@ -471,6 +472,33 @@ def parse_mapping(text: str) -> dict[int, str]:
     return mapping
 
 
+Fidelity = str | dict[str, str]   # uma para todos, ou por instrumento ({"drums": "seguir", ...})
+
+
+def parse_fidelity(text: str) -> Fidelity:
+    """ "seguir" -> "seguir"; "guitar=completar,drums=seguir" -> por instrumento; "corrigir,drums=seguir"
+    -> corrigir para os outros instrumentos e seguir na bateria."""
+    default, per = DEFAULT_FIDELITY, {}
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        instrument, sep, level = (s.strip() for s in part.partition("="))
+        level = level if sep else instrument
+        if level not in FIDELITY or (sep and instrument not in GUIDED):
+            raise ValueError(f"fidelidade inválida em --reference-fidelity: {part!r} (use {', '.join(FIDELITY)}, "
+                             f"ou instrumento=nível com instrumento em {', '.join(GUIDED)})")
+        if sep:
+            per[instrument] = level
+        else:
+            default = level
+    return {i: per.get(i, default) for i in GUIDED} if per else default
+
+
+def fidelity_for(fidelity: Fidelity, instrument: str) -> str:
+    level = fidelity.get(instrument, DEFAULT_FIDELITY) if isinstance(fidelity, dict) else fidelity
+    if level not in FIDELITY:
+        raise ValueError(f"fidelidade inválida para {instrument}: {level!r} (use {', '.join(FIDELITY)})")
+    return level
+
+
 # ---------------------------------------------------------------------------
 # Alinhamento com a gravação
 # ---------------------------------------------------------------------------
@@ -818,13 +846,19 @@ def drum_events_in_ticks(tracks: list[RefTrack], alignment: Alignment, resolutio
 
 @dataclass
 class DrumGuide:
-    """Corrige as PEÇAS da pista de bateria pronta com as da partitura.
+    """Guia a pista de bateria pronta com a partitura, conforme a fidelidade (ver Guide).
 
-    Não muda a transcrição (nem o ritmo): cada nota da pista que cai num golpe da partitura
-    fica com as peças das mãos que a partitura toca ali, com o mesmo número de mãos (o limite
-    de cada dificuldade) e o mesmo bumbo da pista."""
+    corrigir: não muda a transcrição (nem o ritmo): cada nota da pista que cai num golpe da
+    partitura fica com as peças das mãos que a partitura toca ali, com o mesmo número de mãos (o
+    limite de cada dificuldade) e o mesmo bumbo da pista.
+    completar / seguir: os golpes da partitura (todas as peças) substituem os da transcrição nos
+    compassos que a fidelidade pede, e a pista é remontada (build_drum_track), com as dificuldades
+    menores reduzidas como numa transcrição. Sem isso, um golpe que o transcritor não ouviu (a
+    condução baixinha, o bumbo junto do prato) não voltava."""
     events: list[DrumEvent]
     resolution: int
+    fidelity: str = "corrigir"
+    rules: object = None              # Rules (para remontar a pista)
     stats: dict = field(default_factory=dict)
 
     def _nearest(self, tick: int, ticks: np.ndarray) -> DrumEvent | None:
@@ -834,7 +868,7 @@ class DrumGuide:
         best = min((j for j in (i - 1, i) if 0 <= j < len(ticks)), key=lambda j: abs(ticks[j] - tick))
         return self.events[best] if abs(ticks[best] - tick) <= DRUM_MATCH_BEATS * self.resolution else None
 
-    def __call__(self, track, log=print):
+    def __call__(self, track, log=print, sp_windows=None):
         from ai_charter.charting.drums import CYMBAL_FLAGS, HAND_PRIORITY, LANES
 
         ticks = np.array([e.tick for e in self.events])
@@ -845,6 +879,8 @@ class DrumGuide:
             log(f"    drums: a referência confere com só {share:.0%} das batidas, ignorada")
             self.stats = {"matched": matched, "notes": len(expert), "changed": 0, "applied": False}
             return track
+        if self.fidelity != "corrigir" and self.rules is not None and sp_windows is not None and self.events:
+            return self._rebuild(track, ticks, share, matched, sp_windows, log)
         cymbal_of = {flag: piece for piece, flag in CYMBAL_FLAGS.items()}
         tom_of = {2: "tom_high", 3: "tom_mid", 4: "tom_low"}
         changed = 0
@@ -880,6 +916,55 @@ class DrumGuide:
         self.stats = {"matched": matched, "notes": len(expert), "changed": changed, "applied": True}
         return track
 
+    def _rebuild(self, track, ticks: np.ndarray, share: float, matched: int, sp_windows, log):
+        """Golpes da partitura nos compassos que a fidelidade pede, os da transcrição (Expert) nos
+        outros, e a pista remontada a partir deles."""
+        from ai_charter.charting.common import Candidate
+        from ai_charter.charting.drums import CYMBAL_FLAGS, LANES, build_drum_track
+
+        cymbal_on = {LANES[piece]: (piece, flag) for piece, flag in CYMBAL_FLAGS.items()}   # 2 chimbal, 3 condução...
+        tom_of = {2: "tom_high", 3: "tom_mid", 4: "tom_low"}
+
+        def pieces_of(note) -> list[str]:
+            """As peças de uma nota da pista (lane + marca de prato)."""
+            out = []
+            for lane in note.lanes:
+                if lane in (0, 1):
+                    out.append("kick" if lane == 0 else "snare")
+                else:
+                    piece, flag = cymbal_on[lane]
+                    out.append(piece if flag in note.flags else tom_of[lane])
+            return out
+
+        bar = 4 * self.resolution
+        expert = track.notes.get("expert", [])
+        detected, from_score = _by_bar(expert, bar), _by_bar(self.events, bar)
+        matched_in: dict[int, int] = {}
+        for note in expert:
+            b = note.tick // bar
+            matched_in[b] = matched_in.get(b, 0) + (self._nearest(note.tick, ticks) is not None)
+        first, last = self.events[0].tick // bar, self.events[-1].tick // bar
+        cands, replaced = [], 0
+        for b in sorted(set(detected) | set(from_score)):
+            found, score = detected.get(b, []), from_score.get(b, [])
+            if self.fidelity == "seguir":
+                use_score = first <= b <= last
+            else:   # completar
+                use_score = bool(found and score) and matched_in.get(b, 0) >= BAR_MATCH * len(found)
+            if use_score:
+                cands += [Candidate(e.tick, 1.0, piece=p) for e in score for p in sorted(e.pieces)]
+                replaced += bool(score)
+            else:
+                cands += [Candidate(n.tick, 1.0, piece=p) for n in found for p in pieces_of(n)]
+        cands.sort(key=lambda c: c.tick)
+        rebuilt = build_drum_track(cands, self.rules.drums, self.resolution, sp_windows,
+                                   self.rules.general.drum_fill_every_measures)
+        log(f"    drums: referência confere com {share:.0%} das batidas; {replaced} compasso(s) com os golpes "
+            f"da partitura ({self.fidelity})")
+        self.stats = {"matched": matched, "notes": len(expert), "changed": 0, "applied": True,
+                      "bars_from_score": replaced}
+        return rebuilt
+
 
 def short_name(track: RefTrack) -> str:
     """Nome curto da pista para o log: "Monte Money | Lead Guitar | Gibson" -> "1 Lead Guitar"."""
@@ -888,10 +973,10 @@ def short_name(track: RefTrack) -> str:
 
 
 def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: int, tempo, rules,
-                log=print, fidelity: str = DEFAULT_FIDELITY) -> dict[str, "Guide | DrumGuide"]:
-    """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums)."""
-    if fidelity not in FIDELITY:
-        raise ValueError(f"fidelidade inválida: {fidelity!r} (use {', '.join(FIDELITY)})")
+                log=print, fidelity: Fidelity = DEFAULT_FIDELITY) -> dict[str, "Guide | DrumGuide"]:
+    """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums).
+    `fidelity`: uma para todos os instrumentos ou uma por instrumento (ver parse_fidelity)."""
+    levels = {instrument: fidelity_for(fidelity, instrument) for instrument in GUIDED}
     score = read_score(path)
     mapping = default_mapping(score) if mapping is None else mapping
     by_index = {t.index: t for t in score.tracks}
@@ -912,11 +997,12 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
         tracks = [by_index[i] for i, inst in mapping.items() if inst == instrument]
         if tracks:   # com várias pistas no instrumento, o guia escolhe uma por compasso
             events = {short_name(t): events_in_ticks([t], alignment, tempo.resolution) for t in tracks}
-            guides[instrument] = Guide(instrument, events, tempo.resolution, rules.detection[instrument], fidelity)
+            guides[instrument] = Guide(instrument, events, tempo.resolution, rules.detection[instrument],
+                                       levels[instrument])
     drum_tracks = [by_index[i] for i, inst in mapping.items() if inst == "drums"]
     if drum_tracks:
         guides["drums"] = DrumGuide(drum_events_in_ticks(drum_tracks, alignment, tempo.resolution),
-                                    tempo.resolution)
+                                    tempo.resolution, levels["drums"], rules)
     others = sorted({inst for inst in mapping.values() if inst not in GUIDED})
     if others:
         log(f"    {', '.join(others)}: a referência ainda não guia esse(s) instrumento(s)")

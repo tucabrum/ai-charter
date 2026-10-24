@@ -132,7 +132,7 @@ class Request:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
-    reference_fidelity: str = "seguir"
+    reference_fidelity: str | dict[str, str] = "seguir"
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -201,6 +201,21 @@ def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
 FIDELITY_CHOICES = ("seguir", "completar", "corrigir")
 
 
+def _fidelity(data: dict) -> str | dict[str, str]:
+    """A fidelidade à partitura: um nível para todos ou um por instrumento ({"drums": "seguir"})."""
+    from ai_charter.reference import GUIDED
+
+    raw = data.get("reference_fidelity")
+    if not isinstance(raw, dict):
+        return _choice(data, "reference_fidelity", FIDELITY_CHOICES)
+    out = {}
+    for instrument, level in raw.items():
+        if instrument not in GUIDED or level not in FIDELITY_CHOICES:
+            raise BadRequest(f"fidelidade inválida: {instrument}={level}")
+        out[instrument] = level
+    return out
+
+
 def parse_request(data: dict, settings: dict) -> Request:
     """Valida o formulário da página (os mesmos cuidados da CLI)."""
     instruments = tuple(data.get("instruments") or ())
@@ -222,7 +237,7 @@ def parse_request(data: dict, settings: dict) -> Request:
         input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
-        reference_fidelity=_choice(data, "reference_fidelity", FIDELITY_CHOICES),
+        reference_fidelity=_fidelity(data),
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -285,7 +300,7 @@ class AddRequest:
     genre: str | None = None
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
-    reference_fidelity: str = "seguir"
+    reference_fidelity: str | dict[str, str] = "seguir"
     lyrics: Path | None = None
     lyrics_text: str = ""
     cifra_text: str = ""             # cifra colada (Cifra Club)
@@ -311,7 +326,7 @@ def parse_add_request(data: dict) -> AddRequest:
     return AddRequest(
         folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
-        reference_fidelity=_choice(data, "reference_fidelity", FIDELITY_CHOICES),
+        reference_fidelity=_fidelity(data),
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")), cifra_text=str(data.get("cifra_text") or "").strip(),

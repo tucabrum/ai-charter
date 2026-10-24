@@ -235,6 +235,13 @@ def test_reference_tracks_and_mapping(server, music, tmp_path):
     assert req.reference == ref and req.reference_tracks == {2: "guitar"}
     assert parse_request({"input": str(music), "instruments": ["guitar"], "reference": str(ref)},
                          app.settings).reference_tracks is None   # sem tabela: palpite
+    # fidelidade: uma para todos (padrão: seguir) ou uma por instrumento
+    base_req = {"input": str(music), "instruments": ["guitar"], "reference": str(ref)}
+    assert parse_request(base_req, app.settings).reference_fidelity == "seguir"
+    assert parse_request({**base_req, "reference_fidelity": {"drums": "seguir", "guitar": "corrigir"}},
+                         app.settings).reference_fidelity == {"drums": "seguir", "guitar": "corrigir"}
+    with pytest.raises(BadRequest):
+        parse_request({**base_req, "reference_fidelity": {"guitar": "inventar"}}, app.settings)
     for tracks, message in (({"7": "guitar"}, "pista da partitura inválida"), ({"1": "flauta"}, "inválida")):
         with pytest.raises(urllib.error.HTTPError) as err:
             post(base + "api/jobs", {"input": str(music), "instruments": ["guitar"], "reference": str(ref),

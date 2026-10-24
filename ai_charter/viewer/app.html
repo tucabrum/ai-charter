@@ -145,7 +145,7 @@
         <div class="field reference">
           <span>Partitura de referência (MIDI ou Guitar Pro, opcional)</span>
           <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="form">Procurar…</button></div>
-          <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
+          <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura (todas as pistas; dá para mudar por pista na tabela) <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
           <div class="ref-tracks"></div>
         </div>
         <div class="field">
@@ -240,7 +240,7 @@
       <div class="field reference">
         <span>Partitura de referência (MIDI ou Guitar Pro, opcional)</span>
         <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="addForm">Procurar…</button></div>
-        <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
+        <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura (todas as pistas; dá para mudar por pista na tabela) <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
         <div class="ref-tracks"></div>
       </div>
       <div class="field">
@@ -479,6 +479,22 @@ form.elements.input.addEventListener("change", suggestFromTags);
 
 // ---- partitura de referência ----
 const REF_CHOICES = { "": "Não usar", guitar: "Guitarra", bass: "Baixo", keys: "Teclado", drums: "Bateria", vocals: "Vocais" };
+const FIDELITY_LABELS = { seguir: "Seguir", completar: "Completar", corrigir: "Corrigir" };
+
+// A fidelidade vale por instrumento da chart: pistas que viram o mesmo instrumento (base e solo) andam juntas.
+function syncFidelity(owner, changed) {
+  const rows = [...owner.querySelectorAll(".ref-tracks tr[data-row]")];
+  const instrumentOf = row => row.querySelector("select[data-track]").value;
+  const levels = {};
+  if (changed) levels[instrumentOf(changed)] = changed.querySelector("select[data-fidelity]").value;
+  for (const row of rows) {
+    const instrument = instrumentOf(row), select = row.querySelector("select[data-fidelity]");
+    select.disabled = !owner.refGuided.has(instrument);
+    if (select.disabled) continue;
+    if (instrument in levels) select.value = levels[instrument];
+    else levels[instrument] = select.value;
+  }
+}
 
 async function loadReference(owner) {
   const box = $(".ref-tracks", owner), file = owner.elements.reference.value.trim();
@@ -490,11 +506,20 @@ async function loadReference(owner) {
     const ref = await api("api/reference?file=" + encodeURIComponent(file));
     const guided = new Set(ref.guided);
     owner.refTracks = ref.tracks;
-    box.innerHTML = `<table><thead><tr><th>#</th><th>Pista</th><th>Notas</th><th>Usar para</th></tr></thead><tbody>${
-      ref.tracks.map(t => `<tr><td>${t.index}</td><td>${esc(t.name)}</td><td>${t.notes}</td><td><select data-track="${t.index}"${t.notes ? "" : " disabled"}>${
+    owner.refGuided = guided;
+    const level = owner.elements.reference_fidelity.value;
+    box.innerHTML = `<table><thead><tr><th>#</th><th>Pista</th><th>Notas</th><th>Usar para</th><th>Fidelidade</th></tr></thead><tbody>${
+      ref.tracks.map(t => `<tr data-row><td>${t.index}</td><td>${esc(t.name)}</td><td>${t.notes}</td><td><select data-track="${t.index}"${t.notes ? "" : " disabled"}>${
         Object.entries(REF_CHOICES).map(([v, label]) =>
           `<option value="${v}"${(ref.mapping[t.index] || "") === v ? " selected" : ""}>${label}${v && !guided.has(v) ? " (ainda não guia)" : ""}</option>`).join("")
+      }</select></td><td><select data-fidelity="${t.index}">${
+        Object.entries(FIDELITY_LABELS).map(([v, label]) => `<option value="${v}"${v === level ? " selected" : ""}>${label}</option>`).join("")
       }</select></td></tr>`).join("")}</tbody></table>`;
+    for (const row of box.querySelectorAll("tr[data-row]")) {
+      row.querySelector("select[data-fidelity]").addEventListener("change", () => syncFidelity(owner, row));
+      row.querySelector("select[data-track]").addEventListener("change", () => syncFidelity(owner));
+    }
+    syncFidelity(owner);
   } catch (e) {
     box.innerHTML = `<p class="ref-error">${esc(e.message)}</p>`;
   }
@@ -503,11 +528,12 @@ async function loadReference(owner) {
 function referenceBody(owner) {
   const reference = owner.elements.reference.value.trim();
   if (!reference) return { reference: "" };
-  const reference_fidelity = owner.elements.reference_fidelity.value;
-  if (!owner.refTracks) return { reference, reference_fidelity, reference_tracks: null };
-  const mapping = {};
-  for (const select of owner.querySelectorAll(".ref-tracks select[data-track]")) {
-    if (select.value) mapping[select.dataset.track] = select.value;
+  if (!owner.refTracks) return { reference, reference_fidelity: owner.elements.reference_fidelity.value, reference_tracks: null };
+  const mapping = {}, reference_fidelity = {};
+  for (const row of owner.querySelectorAll(".ref-tracks tr[data-row]")) {
+    const track = row.querySelector("select[data-track]"), level = row.querySelector("select[data-fidelity]");
+    if (track.value) mapping[track.dataset.track] = track.value;
+    if (track.value && !level.disabled) reference_fidelity[track.value] = level.value;
   }
   return { reference, reference_fidelity, reference_tracks: mapping };
 }
@@ -515,6 +541,9 @@ function referenceBody(owner) {
 for (const owner of [form, $("#addForm")]) {
   owner.elements.reference.addEventListener("picked", () => loadReference(owner));
   owner.elements.reference.addEventListener("change", e => { e.stopPropagation(); loadReference(owner); });
+  owner.elements.reference_fidelity.addEventListener("change", e => {   // o geral vale para todas as pistas
+    for (const select of owner.querySelectorAll(".ref-tracks select[data-fidelity]")) select.value = e.target.value;
+  });
 }
 
 // ---- cifra ----
