@@ -176,21 +176,32 @@ def is_test(name: str) -> bool:
     return key in HOLDOUT or zlib.crc32(key.encode("utf-8")) % 5 == 0
 
 
-def _collect_one(folder: Path, rules, bleed: tuple[float, float], adtof_cache: Path | None = None):
+def _collect_one(folder: Path, rules, bleed: tuple[float, float], adtof_cache: Path | None = None,
+                 demucs_cache: Path | None = None):
     """Ataques de uma música: (retrato, ticks em 192/batida, gabarito, golpes perdidos, golpes).
-    Com `adtof_cache`, os golpes que o ADTOF ouviu no mix entram também como ataques."""
+    Com `adtof_cache`, os golpes que o ADTOF ouviu no mix entram também como ataques. Com
+    `demucs_cache`, a bateria é a que o Demucs separou do mix (demucs-cache), como no uso real,
+    em vez da bateria limpa do jogo com vazamento simulado."""
     from ai_charter.analysis.drums import ONSET_LATENCY, HOP, analyze_kit
     from ai_charter.pipeline import DRUMS_SR
 
     midi = mido.MidiFile(folder / "notes.mid")
     theirs = official_hits(midi)
-    y = drum_audio(folder, DRUMS_SR) if theirs else None
-    if y is None:
-        return None
-    gain = np.random.default_rng(zlib.crc32(folder.name.encode("utf-8"))).uniform(*bleed)
-    others = other_audio(folder, DRUMS_SR, len(y))
-    if others is not None:
-        y = y + gain * others
+    if demucs_cache is not None:
+        import librosa
+
+        separated = cache_dir_for(demucs_cache, folder) / "drums.ogg"
+        if not theirs or not separated.is_file():
+            return None
+        y, gain = librosa.load(separated, sr=DRUMS_SR, mono=True)[0], 0.0
+    else:
+        y = drum_audio(folder, DRUMS_SR) if theirs else None
+        if y is None:
+            return None
+        gain = np.random.default_rng(zlib.crc32(folder.name.encode("utf-8"))).uniform(*bleed)
+        others = other_audio(folder, DRUMS_SR, len(y))
+        if others is not None:
+            y = y + gain * others
     extra = None
     if adtof_cache is not None and (cache_dir_for(adtof_cache, folder) / "adtof_mix.npy").is_file():
         from ai_charter.analysis import adtof
@@ -211,15 +222,15 @@ def _collect_one(folder: Path, rules, bleed: tuple[float, float], adtof_cache: P
 
 
 def _collect_safe(args):
-    folder, rules, bleed, adtof_cache = args
+    folder, rules, bleed, adtof_cache, demucs_cache = args
     try:
-        return folder, _collect_one(folder, rules, bleed, adtof_cache), None
+        return folder, _collect_one(folder, rules, bleed, adtof_cache, demucs_cache), None
     except Exception as err:   # uma música com arquivo estranho não para a coleta
         return folder, None, str(err)
 
 
 def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = (0.05, 0.4), workers: int = 1,
-            adtof_cache: Path | None = None) -> None:
+            adtof_cache: Path | None = None, demucs_cache: Path | None = None) -> None:
     """Para cada ataque: retrato acústico, tick e as peças da chart oficial.
 
     A bateria do Rock Band é limpa (gravada à parte); a que o ai-charter recebe é separada do mix e
@@ -229,7 +240,8 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
     from concurrent.futures import ProcessPoolExecutor
 
     feats, ticks_all, ys, songs, missed, total = [], [], [], [], 0, 0
-    jobs = [(f, rules, bleed, adtof_cache) for f in folders]
+    jobs = [(f, rules, bleed, adtof_cache, demucs_cache) for f in folders]
+    tag = " [demucs]" if demucs_cache else ""   # outra versão da mesma música: grupo próprio, mesmo lado da divisão
     results = (map(_collect_safe, jobs) if workers <= 1
                else ProcessPoolExecutor(workers).map(_collect_safe, jobs, chunksize=1))
     for i, (folder, res, err) in enumerate(results, 1):
@@ -243,7 +255,7 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
         ys.append(y)
         missed += m
         total += n
-        songs += [f"{folder.parent.name}/{folder.name}"] * len(t)   # duas cópias da mesma música não se misturam
+        songs += [f"{folder.parent.name}/{folder.name}{tag}"] * len(t)   # duas cópias da mesma música não se misturam
         if i % 25 == 0 or i == len(folders):
             print(f"[{i}/{len(folders)}] {folder.name}: {len(t)} ataques (vazamento {gain:.2f})", flush=True)
     np.savez_compressed(out, features=np.vstack(feats), ticks=np.concatenate(ticks_all), y=np.vstack(ys),
@@ -490,7 +502,7 @@ def _adtof_for_songs(names, starts, ends, ticks, cache: Path, root: Path):
     out = np.zeros((len(ticks), len(adtof.CLASSES)), dtype=np.float32)
     have = np.zeros(len(names), dtype=bool)
     for i, (name, s, e) in enumerate(zip(names, starts, ends)):
-        folder = index.get(name)
+        folder = index.get(name.removesuffix(" [demucs]"))
         act_path = cache_dir_for(cache, folder) / "adtof_mix.npy" if folder else None
         if act_path is None or not act_path.is_file():
             continue
@@ -502,7 +514,14 @@ def _adtof_for_songs(names, starts, ends, ticks, cache: Path, root: Path):
     return out, have
 
 
-def train_drums(data: Path, folds: int = 3, adtof_cache: Path | None = None, songs_root: Path | None = None) -> None:
+def _load_collections(paths) -> dict[str, np.ndarray]:
+    """Uma coleta (.npz) ou várias juntadas, na mesma forma."""
+    paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
+    parts = [np.load(p) for p in paths]
+    return {k: np.concatenate([d[k] for d in parts]) for k in ("features", "ticks", "y", "songs")}
+
+
+def train_drums(data, folds: int = 3, adtof_cache: Path | None = None, songs_root: Path | None = None) -> None:
     """Treina as duas etapas do modelo de bateria (drum_model.py).
 
     A etapa da levada aprende com o que a etapa do som acha de músicas que ela NÃO viu no treino
@@ -514,7 +533,7 @@ def train_drums(data: Path, folds: int = 3, adtof_cache: Path | None = None, son
     ADTOF no mix (bench adtof-cache) e vai para drum_model_adtof.json; músicas sem cache ficam de fora."""
     from ai_charter import drum_model as dm
 
-    d = np.load(data)
+    d = _load_collections(data)
     songs = d["songs"]
     cut = np.flatnonzero(songs[1:] != songs[:-1]) + 1    # os ataques de cada música vêm juntos
     starts, ends = np.concatenate([[0], cut]), np.concatenate([cut, [len(songs)]])
@@ -605,12 +624,13 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--workers", type=int, default=1, help="músicas analisadas ao mesmo tempo")
     c.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     c.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: golpes do ADTOF entram como ataques")
+    c.add_argument("--demucs-cache", type=Path, help="pasta do demucs-cache: usa a bateria separada pelo Demucs")
     p.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     p.add_argument("--cache", type=Path, help="como no uso real: a bateria que o Demucs separou do mix (demucs-cache)")
     p.add_argument("--tempo", choices=("nosso", "oficial"), default="nosso",
                    help="com --cache: mapa de tempo detectado no mix (padrão) ou o da chart oficial")
     t = sub.add_parser("train-drums", help="treina o modelo de bateria (ai_charter/drum_model.json)")
-    t.add_argument("data", type=Path)
+    t.add_argument("data", type=Path, nargs="+", help="uma ou mais coletas (juntadas)")
     t.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: treina o modelo com ADTOF")
     t.add_argument("--songs", type=Path, help="com --adtof-cache: a pasta das músicas usada na coleta")
     m = sub.add_parser("demucs-cache", help="mix de cada música -> Demucs -> bateria separada, guardada em cache")
@@ -618,6 +638,7 @@ def main(argv: list[str] | None = None) -> None:
     m.add_argument("cache", type=Path)
     m.add_argument("--charter", help="só charts desse charter (ex.: Harmonix)")
     m.add_argument("--test", action="store_true", help="só as músicas do conjunto de teste")
+    m.add_argument("--train", action="store_true", help="só as músicas de treino (fora do teste)")
     m.add_argument("--limit", type=int, help="usa só N músicas (espalhadas pela lista)")
     m.add_argument("--rules", type=Path)
     a = sub.add_parser("adtof-cache", help="saídas do ADTOF no mix de cada música, guardadas em cache")
@@ -638,13 +659,18 @@ def main(argv: list[str] | None = None) -> None:
     rules = load_rules(args.rules)
     folders = song_folders(args.folder, args.charter)
     if args.command == "collect":
-        collect(folders, args.out, rules, workers=args.workers, adtof_cache=args.adtof_cache)
+        if args.demucs_cache:
+            folders = [f for f in folders if (cache_dir_for(args.demucs_cache, f) / "drums.ogg").is_file()]
+        collect(folders, args.out, rules, workers=args.workers, adtof_cache=args.adtof_cache,
+                demucs_cache=args.demucs_cache)
         return
     if args.command == "adtof-cache":
         adtof_cache(folders, args.cache, workers=args.workers)
         return
     if args.test:
         folders = [f for f in folders if is_test(f.name)]
+    if getattr(args, "train", False):
+        folders = [f for f in folders if not is_test(f.name)]
     if getattr(args, "cache", None) and args.command == "drums":   # sempre as mesmas: as que estão no cache
         folders = [f for f in folders if (cache_dir_for(args.cache, f) / "drums.ogg").is_file()]
     if args.limit and args.limit < len(folders):

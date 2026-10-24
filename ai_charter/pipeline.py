@@ -226,7 +226,11 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     trust = rules.drum_detection.adtof_kick_trust
     if uses_adtof and trust > 0:   # pedal duplo rápido: o modelo duvida, o ADTOF ouve
         k = MODEL_OUTPUTS.index("kick")
-        sure = adtof_feats[:, adtof.CLASSES.index("bumbo")] >= trust
+        times = kit.onsets * DRUM_HOP / sr
+        confirmed = times[probs[:, k] >= model.thresholds[k]]
+        # Só colado (< 100 ms) a um bumbo que o modelo já confirmou: uma rajada, não um bumbo solto
+        near = np.array([len(confirmed) > 0 and np.min(np.abs(confirmed - t)) < 0.1 for t in times], dtype=bool)
+        sure = (adtof_feats[:, adtof.CLASSES.index("bumbo")] >= trust) & near
         probs[sure, k] = np.maximum(probs[sure, k], model.thresholds[k])
     seen: dict[tuple[int, str], Candidate] = {}
     hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota
