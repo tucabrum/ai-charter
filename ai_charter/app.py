@@ -15,6 +15,11 @@ Sobe um servidor local (só nesta máquina) que entrega a página da interface
   GET  /api/reference?file=  pistas de uma partitura (MIDI ou Guitar Pro) e o palpite de cada uma
   POST /api/jobs         põe uma geração na fila (uma de cada vez: o Demucs é pesado)
   POST /api/add          põe na fila o acréscimo de instrumentos a uma chart (augment.py)
+  POST /api/batch/scan   separa os arquivos de um lote e casa partituras, letras e cifras (batch.py)
+  POST /api/batch        põe na fila as músicas de um lote, na ordem dada
+  POST /api/batch/<id>/cancel  tira da fila as músicas do lote que ainda não começaram
+  POST /api/jobs/<id>/cancel   tira uma geração da fila ou para a que está rodando
+  POST /api/queue        pausa (a geração atual termina) ou retoma a fila
   POST /api/editor       abre uma pasta de música no editor (o mesmo do ai-charter-view)
   POST /api/pick         janela do Windows para escolher arquivo ou pasta
   POST /api/settings     grava a biblioteca e a pasta de saída (~/.ai-charter/app.json)
@@ -58,11 +63,23 @@ PICK_TYPES = {
     "lyrics": [("Letra", "*.txt"), ("Todos", "*.*")],
     "rules": [("Regras", "*.toml"), ("Todos", "*.*")],
     "score": [("Partitura", "*.mid *.midi *.kar *.gp3 *.gp4 *.gp5 *.gpx *.gp"), ("Todos", "*.*")],
+    "batch": [("Músicas, partituras, letras e cifras",
+               "*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.mid *.midi *.kar *.gp3 *.gp4 *.gp5 *.gpx *.gp *.txt"),
+              ("Todos", "*.*")],
 }
+PICK_MANY = ("batch",)   # tipos em que a janela aceita vários arquivos
 
 
 class BadRequest(ValueError):
     """Pedido inválido: a mensagem vai para a página."""
+
+
+class AlreadyExists(RuntimeError):
+    """A música já tem chart e o pedido não manda substituir: a geração é pulada."""
+
+
+class Canceled(Exception):
+    """A geração foi parada pela página (levantada no próximo log da geração)."""
 
 
 # ---------------------------------------------------------------------------
@@ -88,15 +105,18 @@ def save_settings(settings: dict, path: Path = SETTINGS_PATH) -> None:
 class Job:
     id: str
     title: str
-    status: str = "waiting"   # waiting, running, done, error
+    status: str = "waiting"   # waiting, running, done, error, skipped (já existia), canceled
     lines: list[str] = field(default_factory=list)
     song_dir: str | None = None
     error: str | None = None
     editor_url: str | None = None
+    batch: str | None = None  # lote de que a geração faz parte
+    stop: bool = False        # pedido para parar (a geração para no próximo passo)
 
     def summary(self) -> dict:
         info = asdict(self)
         info["lines"] = len(self.lines)
+        del info["stop"]
         return info
 
 
@@ -222,7 +242,7 @@ def run_request(req: Request, log) -> Path:
     artist = req.artist or tags.get("artist") or "Unknown Artist"
     song_dir = req.output_dir / _safe_name(f"{artist} - {title}")
     if not req.overwrite and any((song_dir / n).exists() for n in ("notes.mid", "notes.chart")):
-        raise RuntimeError(f"já existe uma chart em {song_dir}. Marque \"substituir a chart existente\" "
+        raise AlreadyExists(f"já existe uma chart em {song_dir}. Marque \"substituir a chart existente\" "
                            "para gerar de novo por cima dela, ou use Acrescentar para gerar só "
                            "as partes que faltam.")
     old, backup = song_dir / view.CHART_NAME, song_dir / view.BACKUP_NAME
@@ -354,24 +374,63 @@ class Jobs:
         self.editors = editors
         self.items: dict[str, Job] = {}
         self._queue: queue.Queue = queue.Queue()
+        self._resume = threading.Event()   # limpo = fila pausada (a geração atual termina)
+        self._resume.set()
         threading.Thread(target=self._work, daemon=True).start()
 
-    def submit(self, req: Request) -> Job:
-        return self.submit_task(req.title or req.input.stem, partial(self.runner, req), req.open_editor)
+    @property
+    def paused(self) -> bool:
+        return not self._resume.is_set()
 
-    def submit_task(self, title: str, task, open_editor: bool = False) -> Job:
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+    def submit(self, req: Request, batch: str | None = None, label: str | None = None) -> Job:
+        return self.submit_task(label or req.title or req.input.stem, partial(self.runner, req),
+                                req.open_editor, batch)
+
+    def submit_task(self, title: str, task, open_editor: bool = False, batch: str | None = None) -> Job:
         """Põe na fila uma tarefa task(log) que devolve a pasta da música."""
-        job = Job(id=uuid.uuid4().hex[:8], title=title)
+        job = Job(id=uuid.uuid4().hex[:8], title=title, batch=batch)
         self.items[job.id] = job
         self._queue.put((job, task, open_editor))
         return job
 
+    def cancel(self, job_id: str) -> Job:
+        """Tira da fila (se ainda não começou) ou pede para parar a geração."""
+        job = self.items.get(job_id)
+        if job is None:
+            raise BadRequest("geração não encontrada")
+        if job.status == "waiting":
+            job.status = "canceled"
+        elif job.status == "running":
+            job.stop = True
+        return job
+
+    def cancel_batch(self, batch: str) -> list[Job]:
+        """Tira da fila as gerações do lote que ainda não começaram."""
+        jobs = [j for j in self.items.values() if j.batch == batch]
+        if not jobs:
+            raise BadRequest("lote não encontrado")
+        for job in jobs:
+            if job.status == "waiting":
+                job.status = "canceled"
+        return jobs
+
     def _work(self) -> None:
         while True:
             job, task, open_editor = self._queue.get()
+            self._resume.wait()
+            if job.status == "canceled":
+                continue
             job.status = "running"
 
             def log(line, job=job):
+                if job.stop:
+                    raise Canceled()
                 print(line)
                 job.lines.append(str(line))
 
@@ -382,6 +441,12 @@ class Jobs:
                 if open_editor and self.editors is not None:
                     job.editor_url = self.editors.open(song_dir, browser=True)
                 job.status = "done"
+            except Canceled:
+                job.lines.append("Parada pelo usuário.")
+                job.status = "canceled"
+            except AlreadyExists as exc:
+                job.error = str(exc)
+                job.status = "skipped"
             except (RuntimeError, ValueError, OSError) as exc:
                 job.error = str(exc)
                 job.status = "error"
@@ -472,7 +537,7 @@ class Dialogs:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
-    def ask(self, kind: str, start: str | None = None) -> str | None:
+    def ask(self, kind: str, start: str | None = None) -> str | list[str] | None:
         if kind not in (*PICK_TYPES, "folder"):
             raise BadRequest(f"tipo inválido: {kind}")
         with self._lock:
@@ -503,6 +568,10 @@ class Dialogs:
                 start = start if start and Path(start).exists() else None
                 if kind == "folder":
                     path = filedialog.askdirectory(parent=root, initialdir=start)
+                elif kind in PICK_MANY:   # vários arquivos: devolve a lista
+                    paths = filedialog.askopenfilenames(parent=root, initialdir=start, filetypes=PICK_TYPES[kind])
+                    reply.put([str(Path(p)) for p in paths] or None)
+                    continue
                 else:
                     path = filedialog.askopenfilename(parent=root, initialdir=start, filetypes=PICK_TYPES[kind])
                 reply.put(str(Path(path)) if path else None)
@@ -532,8 +601,36 @@ class App:
             "formats": FORMATS, "tempo_modes": TEMPO_MODES,
             "genres": [{"id": g.id, "name": g.name, "description": g.description} for g in list_genres()],
             "ffmpeg": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
-            "jobs": [j.summary() for j in self.jobs.items.values()],
+            "jobs": [j.summary() for j in self.jobs.items.values()], "paused": self.jobs.paused,
         }
+
+    def submit_batch(self, data: dict) -> dict:
+        """Valida todas as músicas do lote e só então põe todas na fila, na ordem dada."""
+        from ai_charter.batch import item_form
+
+        items, common = data.get("items"), data.get("common") or {}
+        if not isinstance(items, list) or not items:
+            raise BadRequest("o lote não tem músicas")
+        requests, rows = [], {}
+        for n, item in enumerate(items):
+            try:
+                req = parse_request(item_form(dict(item), dict(common)), self.settings)
+                requests.append((req, str(item.get("label") or "").strip() or None))
+            except (BadRequest, OSError, KeyError, TypeError) as exc:
+                rows[n] = str(exc)
+        if rows:
+            raise BatchError(rows)
+        batch = uuid.uuid4().hex[:8]
+        return {"batch": batch, "jobs": [self.jobs.submit(req, batch, label).summary() for req, label in requests]}
+
+
+class BatchError(BadRequest):
+    """Músicas do lote com pedido inválido (índice da linha -> mensagem)."""
+
+    def __init__(self, rows: dict[int, str]):
+        self.rows = rows
+        first = min(rows)
+        super().__init__(f"{len(rows)} música(s) com problema; a {first + 1}ª: {rows[first]}")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -620,6 +717,29 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/jobs":
                 job = self.app.jobs.submit(parse_request(data, self.app.settings))
                 return self._json(job.summary())
+            if path == "/api/batch/scan":
+                from ai_charter.batch import scan
+                paths = [Path(str(p).strip().strip('"')) for p in data.get("paths") or [] if str(p).strip()]
+                missing = [str(p) for p in paths if not p.exists()]
+                if missing:
+                    raise BadRequest("não encontrado: " + ", ".join(missing))
+                return self._json(scan(paths).to_dict())
+            if path == "/api/batch":
+                return self._json(self.app.submit_batch(data))
+            if path.startswith("/api/batch/") and path.endswith("/cancel"):
+                jobs = self.app.jobs.cancel_batch(path[len("/api/batch/"):-len("/cancel")])
+                return self._json({"jobs": [j.summary() for j in jobs]})
+            if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+                return self._json(self.app.jobs.cancel(path[len("/api/jobs/"):-len("/cancel")]).summary())
+            if path == "/api/queue":
+                action = data.get("action")
+                if action not in ("pause", "resume"):
+                    raise BadRequest(f"ação inválida: {action}")
+                if action == "pause":
+                    self.app.jobs.pause()
+                else:
+                    self.app.jobs.resume()
+                return self._json({"paused": self.app.jobs.paused})
             if path == "/api/add":
                 req = parse_add_request(data)
                 job = self.app.jobs.submit_task(f"{req.folder.name} (+ {', '.join(req.instruments)})",
@@ -635,6 +755,8 @@ class _Handler(BaseHTTPRequestHandler):
                         self.app.settings[key] = str(data[key] or "").strip().strip('"')
                 save_settings(self.app.settings, self.app.settings_path)
                 return self._json(self.app.settings)
+        except BatchError as exc:
+            return self._json({"error": str(exc), "rows": exc.rows}, 400)
         except (BadRequest, ValueError, RuntimeError) as exc:
             return self._json({"error": str(exc)}, 400)
         self._send(b"not found", "text/plain", 404)

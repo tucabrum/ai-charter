@@ -77,6 +77,34 @@
   .ref-error { color: var(--red); font-size: 12px; }
   .genre-hint button { padding: 1px 8px; margin-left: 6px; font-size: 12px; }
   #addForm { max-width: 640px; }
+  .badge.skipped, .badge.canceled { color: var(--yellow); border-color: var(--yellow); }
+  .job .head button { padding: 2px 10px; }
+  .batch-sources { margin: 8px 0; }
+  .batch-sources span { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; padding: 1px 4px 1px 8px; margin: 2px 4px 2px 0; border-radius: 10px; background: var(--panel-2); color: var(--muted); max-width: 100%; }
+  .batch-sources span b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .batch-sources button, .pairs button.x { padding: 0 6px; border: 0; background: none; color: var(--muted); }
+  .batch-common { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0 14px; }
+  .pairs-wrap { overflow-x: auto; }
+  .pairs td { padding: 4px 6px; }
+  .pairs select { max-width: 190px; padding: 2px 6px; }
+  .pairs td.file { white-space: nowrap; }
+  .pairs td.song { min-width: 180px; }
+  .pairs td.song small { display: block; color: var(--muted); }
+  .pairs tr.low td { background: rgba(245, 209, 66, .07); }
+  .pairs tr.bad td { background: rgba(239, 74, 74, .12); }
+  .pairs .row-error { color: var(--red); font-size: 12px; }
+  .pairs .inst label { margin-right: 6px; font-size: 12px; }
+  .conf { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 4px; vertical-align: middle; }
+  .conf.alta { background: var(--green); } .conf.media { background: var(--yellow); } .conf.baixa { background: var(--red); }
+  .unmatched { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .batch-run { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .batch-run .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .batch-run .head b { margin-right: auto; }
+  .batch-run ol { margin: 0; padding-left: 22px; }
+  .batch-run li { padding: 2px 0; }
+  .batch-run li .err { color: var(--red); font-size: 12px; display: block; }
+  .batch-run li button { padding: 0 8px; margin-left: 6px; font-size: 12px; }
+  .batch-done { color: var(--green); margin-top: 6px; }
   .lib-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   .lib-tools input { flex: 1; min-width: 200px; }
 </style>
@@ -87,6 +115,7 @@
   <nav>
     <button data-tab="create" class="on">Nova chart</button>
     <button data-tab="add">Acrescentar</button>
+    <button data-tab="batch">Lote</button>
     <button data-tab="library">Biblioteca</button>
   </nav>
   <div id="warn"></div>
@@ -247,6 +276,60 @@
     </form>
   </section>
 
+  <section class="tab" id="tab-batch">
+    <form class="card" id="batchForm" autocomplete="off" style="margin-bottom: 16px">
+      <h2>Várias músicas de uma vez</h2>
+      <p class="help" style="margin: -4px 0 10px">Junte as músicas, as partituras (MIDI ou Guitar Pro), as letras e as cifras (.txt), misturadas ou em pastas separadas. Cada partitura, letra e cifra é casada com a música de nome mais parecido; revise os pares antes de gerar.</p>
+      <div class="row">
+        <button type="button" id="batchFiles">Escolher arquivos…</button>
+        <button type="button" id="batchFolder">Escolher pasta…</button>
+        <input type="text" id="batchPath" placeholder="ou cole o caminho de um arquivo ou pasta e tecle Enter" style="flex: 1; min-width: 220px">
+      </div>
+      <div class="batch-sources" id="batchSources"></div>
+      <div id="batchStatus" class="help"></div>
+      <div id="batchPlan" hidden>
+        <div class="batch-common">
+          <div class="field"><span>Instrumentos (para todas)</span><div id="batchInstruments"></div></div>
+          <div class="field"><span>Gênero (para todas)</span>
+            <select name="genre" id="batchGenre"><option value="@tag">O da tag de cada música</option><option value="">Padrão (regras gerais)</option></select></div>
+          <div class="field"><span>Fidelidade à partitura</span><select name="reference_fidelity" id="batchFidelity"><option value="seguir" selected>Seguir</option><option value="completar">Completar</option><option value="corrigir">Corrigir</option></select></div>
+          <div class="field"><span>Pasta de saída</span>
+            <div class="row"><input type="text" name="output" placeholder="output"><button type="button" data-pick="folder" data-for="output" data-form="batchForm">Procurar…</button></div></div>
+        </div>
+        <details>
+          <summary>Opções avançadas (para todas)</summary>
+          <div class="batch-common">
+            <div class="field"><span>Mapa de tempo</span><select name="tempo"><option value="auto">Automático</option><option value="constant">Constante</option><option value="variable">Variável</option></select></div>
+            <div class="field"><span>Separação dos stems</span><select name="separator"><option value="demucs">Demucs (IA, melhor)</option><option value="none">Sem IA (só filtros, para testar)</option></select></div>
+            <div class="field"><span>Formato</span><select name="format"><option value="mid">notes.mid (com vocais)</option><option value="chart">notes.chart (sem vocais)</option></select></div>
+          </div>
+          <label class="check"><input type="checkbox" name="zip"> Criar também um .zip de cada música</label>
+        </details>
+        <div class="pairs-wrap">
+          <table class="pairs">
+            <thead><tr><th>#</th><th>Música</th><th>Partitura</th><th>Letra</th><th>Cifra</th><th>Gênero</th><th>Instrumentos</th><th>Fidelidade</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="help">Bolinha verde: nome muito parecido; amarela: parecido; vermelha: confira (pouco parecido ou com outro arquivo quase igual). Sem partitura, a música é gerada só pelo áudio.</p>
+        <div class="unmatched" id="batchUnmatched"></div>
+        <div class="row" style="margin: 10px 0">
+          <label class="check"><input type="checkbox" name="overwrite"> Substituir as charts que já existem (sem isso, elas são puladas)</label>
+        </div>
+        <button class="primary" type="submit" id="batchGo">Gerar</button>
+        <div id="batchError" style="color: var(--red); margin-top: 8px; min-height: 1em"></div>
+      </div>
+    </form>
+    <div class="card">
+      <div class="row" style="margin-bottom: 10px">
+        <h2 style="margin: 0; margin-right: auto">Lotes</h2>
+        <button type="button" id="queuePause">Pausar a fila</button>
+      </div>
+      <p class="help" id="queueHelp">Pausar deixa terminar a música atual e não começa a próxima. O andamento de cada música também aparece na aba Nova chart, em Gerações.</p>
+      <div id="batches"><p class="empty">Nenhum lote ainda.</p></div>
+    </div>
+  </section>
+
   <section class="tab" id="tab-library">
     <div class="card">
       <h2>Biblioteca</h2>
@@ -277,7 +360,7 @@ async function api(path, body) {
   };
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { rows: data.rows });
   return data;
 }
 
@@ -453,17 +536,20 @@ form.elements.cifra_text.addEventListener("input", () => {
 
 // ---- gerações ----
 const jobs = new Map();
-const STATUS = { waiting: "na fila", running: "gerando", done: "pronta", error: "erro" };
+const STATUS = { waiting: "na fila", running: "gerando", done: "pronta", error: "erro", skipped: "pulada", canceled: "cancelada" };
+const FINISHED = new Set(["done", "error", "skipped", "canceled"]);
 
 function addJob(info) {
+  if (jobs.has(info.id)) return jobs.get(info.id);
   if (!jobs.size) $("#jobs").innerHTML = "";
   const el = document.createElement("div");
   el.className = "job";
-  el.innerHTML = `<div class="head"><b></b><span class="badge"></span><button hidden>Abrir no editor</button></div><pre></pre><div class="err" hidden></div>`;
+  el.innerHTML = `<div class="head"><b></b><span class="badge"></span><button class="open" hidden>Abrir no editor</button><button class="stop" hidden></button></div><pre></pre><div class="err" hidden></div>`;
   $("#jobs").prepend(el);
   const job = { info, el, next: 0 };
   jobs.set(info.id, job);
-  $("button", el).onclick = () => openEditor(job.info.song_dir);
+  $("button.open", el).onclick = () => openEditor(job.info.song_dir);
+  $("button.stop", el).onclick = () => cancelJob(job.info);
   render(job);
   if (info.status === "waiting" || info.status === "running") poll(job);
   return job;
@@ -475,7 +561,10 @@ function render(job, lines = []) {
   const badge = $(".badge", el);
   badge.className = "badge " + info.status;
   badge.textContent = STATUS[info.status] || info.status;
-  $("button", el).hidden = info.status !== "done";
+  $("button.open", el).hidden = info.status !== "done";
+  const stop = $("button.stop", el);
+  stop.hidden = FINISHED.has(info.status);
+  stop.textContent = info.status === "running" ? "Parar" : "Tirar da fila";
   if (lines.length) {
     const pre = $("pre", el);
     const atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4;
@@ -493,9 +582,14 @@ async function poll(job) {
     job.next = data.next;
     job.info = data;
     render(job, data.lines);
-    if (data.status === "done" || data.status === "error") return;
+    if (FINISHED.has(data.status)) return;
   } catch { /* servidor fechado: tenta de novo */ }
   setTimeout(() => poll(job), 1000);
+}
+
+async function cancelJob(info) {
+  if (info.status === "running" && !confirm(`Parar a geração de "${info.title}"? Ela para no próximo passo.`)) return;
+  try { await api(`api/jobs/${info.id}/cancel`, {}); } catch (e) { alert(e.message); }
 }
 
 async function openEditor(songDir) {
@@ -598,6 +692,228 @@ addForm.onsubmit = async ev => {
   } catch (e) { $("#addError").textContent = e.message; }
 };
 
+// ---- lote ----
+const batchForm = $("#batchForm");
+let batchSources = [], batchPlan = null, batchRows = [];
+const SHORT = { guitar: "G", bass: "B", drums: "D", keys: "T" };
+const baseName = p => String(p || "").split(/[\\/]/).pop();
+
+function addSources(paths) {
+  for (const p of paths) if (p && !batchSources.includes(p)) batchSources.push(p);
+  renderSources();
+  scanBatch();
+}
+
+function renderSources() {
+  $("#batchSources").innerHTML = batchSources.map((p, i) =>
+    `<span title="${esc(p)}"><b>${esc(baseName(p) || p)}</b><button type="button" data-src="${i}" title="Tirar">✕</button></span>`).join("");
+  for (const b of document.querySelectorAll("#batchSources [data-src]")) {
+    b.onclick = () => { batchSources.splice(+b.dataset.src, 1); renderSources(); scanBatch(); };
+  }
+}
+
+async function pickSources(kind) {
+  try {
+    const { path } = await api("api/pick", { kind, start: batchSources[batchSources.length - 1] || "" });
+    if (path) addSources(Array.isArray(path) ? path : [path]);
+  } catch (e) { alert(e.message); }
+}
+$("#batchFiles").onclick = () => pickSources("batch");
+$("#batchFolder").onclick = () => pickSources("folder");
+$("#batchPath").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const lines = e.target.value.split(/\r?\n/).map(l => l.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  e.target.value = "";
+  addSources(lines);
+});
+
+function commonInstruments() {
+  return [...batchForm.querySelectorAll("[name=batchInstrument]:checked")].map(i => i.value);
+}
+
+async function scanBatch() {
+  batchPlan = null;
+  $("#batchPlan").hidden = true;
+  $("#batchError").textContent = "";
+  if (!batchSources.length) return ($("#batchStatus").textContent = "");
+  $("#batchStatus").textContent = "Procurando e casando os arquivos…";
+  try {
+    batchPlan = await api("api/batch/scan", { paths: batchSources });
+  } catch (e) { return ($("#batchStatus").textContent = e.message); }
+  const p = batchPlan;
+  $("#batchStatus").textContent = `${p.items.length} música(s), ${p.scores.length} partitura(s), ` +
+    `${p.lyrics.length} letra(s) e ${p.cifras.length} cifra(s).` + (p.items.length ? "" : " Nenhuma música (.mp3, .flac, .wav, .ogg…) encontrada.");
+  const instruments = commonInstruments();
+  batchRows = p.items.map(it => ({
+    input: it.input, title: it.title, artist: it.artist, tagGenre: it.genre || "", genreTag: it.genre_tag,
+    picks: { reference: it.reference, lyrics: it.lyrics, cifra: it.cifra },
+    reference: it.reference?.path || "", lyrics: it.lyrics?.path || "", cifra: it.cifra?.path || "",
+    genre: "@lote", fidelity: "", instruments: [...instruments], touched: false, error: "",
+  }));
+  $("#batchPlan").hidden = !batchRows.length;
+  renderPairs();
+}
+
+function fileSelect(row, i, key, files, none) {
+  const pick = row.picks[key], dot = pick && pick.path === row[key]
+    ? `<span class="conf ${pick.confidence}" title="semelhança ${pick.score.toFixed(2)} (${pick.confidence})"></span>` : "";
+  return `<select data-row="${i}" data-key="${key}" title="${esc(row[key])}"><option value="">${none}</option>${
+    files.map(f => `<option value="${esc(f)}"${f === row[key] ? " selected" : ""}>${esc(baseName(f))}</option>`).join("")}</select>${dot}`;
+}
+
+function renderPairs() {
+  const p = batchPlan;
+  const genres = `<option value="@lote">(do lote)</option><option value="">Padrão</option>` +
+    state.genres.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join("");
+  $(".pairs tbody", batchForm).innerHTML = batchRows.map((r, i) => {
+    const low = ["reference", "lyrics", "cifra"].some(k => r.picks[k] && r.picks[k].path === r[k] && r.picks[k].confidence === "baixa");
+    const tags = [r.artist, r.title].filter(Boolean).join(" - ");
+    return `<tr class="${r.error ? "bad" : low ? "low" : ""}">
+      <td>${i + 1}</td>
+      <td class="song" title="${esc(r.input)}">${esc(baseName(r.input))}${tags ? `<small>${esc(tags)}</small>` : ""}${r.genreTag ? `<small>gênero: ${esc(r.genreTag)}</small>` : ""}${r.error ? `<div class="row-error">${esc(r.error)}</div>` : ""}</td>
+      <td class="file">${fileSelect(r, i, "reference", p.scores, "— nenhuma —")}</td>
+      <td class="file">${fileSelect(r, i, "lyrics", p.lyrics, "— nenhuma —")}</td>
+      <td class="file">${fileSelect(r, i, "cifra", p.cifras, "— nenhuma —")}</td>
+      <td><select data-row="${i}" data-key="genre">${genres.replace(`value="${esc(r.genre)}"`, `value="${esc(r.genre)}" selected`)}</select></td>
+      <td class="inst">${state.instruments.map(n => `<label class="check" title="${NAMES[n]}"><input type="checkbox" data-row="${i}" data-inst="${n}"${r.instruments.includes(n) ? " checked" : ""}>${SHORT[n] || n}</label>`).join("")}</td>
+      <td><select data-row="${i}" data-key="fidelity"${r.reference ? "" : " disabled"}><option value="">(do lote)</option>${
+        ["seguir", "completar", "corrigir"].map(f => `<option value="${f}"${r.fidelity === f ? " selected" : ""}>${f[0].toUpperCase() + f.slice(1)}</option>`).join("")}</select></td>
+      <td style="white-space: nowrap"><button type="button" class="x" data-up="${i}" title="Subir na fila"${i ? "" : " disabled"}>↑</button><button type="button" class="x" data-del="${i}" title="Tirar do lote">✕</button></td></tr>`;
+  }).join("");
+  const used = new Set(batchRows.flatMap(r => [r.reference, r.lyrics, r.cifra]));
+  const left = [["Partituras", p.scores], ["Letras", p.lyrics], ["Cifras", p.cifras]]
+    .map(([label, files]) => [label, files.filter(f => !used.has(f))]).filter(([, files]) => files.length);
+  $("#batchUnmatched").innerHTML = left.map(([label, files]) =>
+    `<div>${label} sem música (ficam de fora): ${files.map(f => esc(baseName(f))).join(", ")}</div>`).join("");
+  $("#batchGo").textContent = `Gerar ${batchRows.length} música${batchRows.length === 1 ? "" : "s"}`;
+}
+
+$(".pairs tbody", batchForm).addEventListener("change", e => {
+  const t = e.target, row = batchRows[+t.dataset.row];
+  if (!row) return;
+  e.stopPropagation();
+  if (t.dataset.inst) {
+    row.instruments = state.instruments.filter(n =>
+      n === t.dataset.inst ? t.checked : row.instruments.includes(n));
+    row.touched = true;
+  } else {
+    row[t.dataset.key] = t.value;
+  }
+  row.error = "";
+  renderPairs();
+});
+$(".pairs tbody", batchForm).addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.del) batchRows.splice(+b.dataset.del, 1);
+  if (b.dataset.up) { const i = +b.dataset.up; [batchRows[i - 1], batchRows[i]] = [batchRows[i], batchRows[i - 1]]; }
+  $("#batchPlan").hidden = !batchRows.length;
+  renderPairs();
+});
+$("#batchInstruments").addEventListener("change", () => {
+  const instruments = commonInstruments();
+  for (const r of batchRows) if (!r.touched) r.instruments = [...instruments];
+  renderPairs();
+});
+
+batchForm.onsubmit = async ev => {
+  ev.preventDefault();
+  const f = batchForm.elements, commonGenre = $("#batchGenre").value;
+  const common = {
+    instruments: commonInstruments(), reference_fidelity: $("#batchFidelity").value, output: f.output.value,
+    overwrite: f.overwrite.checked, tempo: f.tempo.value, separator: f.separator.value, format: f.format.value,
+    zip: f.zip.checked,
+  };
+  const items = batchRows.map(r => ({
+    input: r.input, reference: r.reference, lyrics: r.lyrics, cifra: r.cifra, instruments: r.instruments,
+    title: r.title, artist: r.artist, label: r.title ? [r.artist, r.title].filter(Boolean).join(" - ") : "",
+    genre: r.genre !== "@lote" ? r.genre : commonGenre === "@tag" ? r.tagGenre : commonGenre,
+    reference_fidelity: r.fidelity || null,
+  }));
+  $("#batchError").textContent = "";
+  try {
+    const res = await api("api/batch", { items, common });
+    if (f.output.value && f.output.value !== state.settings.output) {
+      state.settings = await api("api/settings", { output: f.output.value });
+      form.elements.output.value = state.settings.output;
+    }
+    for (const info of res.jobs) addJob(info);
+    addBatch(res.batch, res.jobs.map(j => j.id));
+    batchSources = [];
+    renderSources();
+    scanBatch();
+  } catch (e) {
+    $("#batchError").textContent = e.message;
+    const rows = e.rows || {};
+    batchRows.forEach((r, i) => { r.error = rows[i] || ""; });
+    renderPairs();
+  }
+};
+
+// Os lotes que já foram para a fila, com o resumo de cada um.
+const batches = new Map();
+
+function addBatch(id, ids) {
+  if (batches.has(id)) return;
+  if (!batches.size) $("#batches").innerHTML = "";
+  const el = document.createElement("div");
+  el.className = "batch-run";
+  $("#batches").prepend(el);
+  batches.set(id, { ids, el });
+  renderBatch(id);
+}
+
+function renderBatch(id) {
+  const { ids, el } = batches.get(id);
+  const infos = ids.map(i => jobs.get(i)?.info).filter(Boolean);
+  const count = s => infos.filter(j => j.status === s).length;
+  const parts = [["done", "pronta(s)"], ["skipped", "pulada(s)"], ["error", "com erro"], ["canceled", "cancelada(s)"],
+                 ["running", "gerando"], ["waiting", "na fila"]].filter(([s]) => count(s)).map(([s, l]) => `${count(s)} ${l}`);
+  const finished = infos.every(j => FINISHED.has(j.status));
+  el.innerHTML = `<div class="head"><b>Lote de ${infos.length} música${infos.length === 1 ? "" : "s"}</b><span class="help">${parts.join(", ")}</span>${
+    count("waiting") ? '<button type="button" class="cancel">Cancelar as que faltam</button>' : ""}</div>
+    <ol>${infos.map(j => `<li><span class="badge ${j.status}">${STATUS[j.status] || j.status}</span> ${esc(j.song_dir ? baseName(j.song_dir) : j.title)}${
+      j.status === "done" ? `<button type="button" data-open="${j.id}">Abrir no editor</button>` : ""}${
+      !FINISHED.has(j.status) ? `<button type="button" data-cancel="${j.id}">${j.status === "running" ? "Parar" : "Tirar da fila"}</button>` : ""}${
+      j.status === "skipped" ? '<span class="help" style="display: block">já tem chart (marque "Substituir" para gerar de novo)</span>'
+        : j.error ? `<span class="err">${esc(j.error)}</span>` : ""}</li>`).join("")}</ol>${
+    finished ? `<div class="batch-done">Lote terminado: ${parts.join(", ")}.</div>` : ""}`;
+  const cancel = $("button.cancel", el);
+  if (cancel) cancel.onclick = async () => {
+    if (!confirm("Tirar da fila as músicas deste lote que ainda não começaram?")) return;
+    try { await api(`api/batch/${id}/cancel`, {}); } catch (e) { alert(e.message); }
+  };
+  for (const b of el.querySelectorAll("[data-open]")) b.onclick = () => openEditor(jobs.get(b.dataset.open).info.song_dir);
+  for (const b of el.querySelectorAll("[data-cancel]")) b.onclick = () => cancelJob(jobs.get(b.dataset.cancel).info);
+}
+
+async function refreshQueue() {
+  try {
+    const s = await api("api/state");
+    for (const info of s.jobs) {   // o andamento das que já terminaram não é mais consultado
+      const job = jobs.get(info.id);
+      if (job && FINISHED.has(info.status) && !FINISHED.has(job.info.status)) { job.info = { ...job.info, ...info }; render(job); }
+    }
+    showPaused(s.paused);
+  } catch { /* servidor fechado */ }
+  for (const id of batches.keys()) renderBatch(id);
+}
+setInterval(refreshQueue, 1500);
+
+let queuePaused = false;
+function showPaused(paused) {
+  queuePaused = paused;
+  $("#queuePause").textContent = paused ? "Retomar a fila" : "Pausar a fila";
+  $("#queueHelp").textContent = paused
+    ? "Fila pausada: a música atual termina e a próxima só começa quando você retomar."
+    : "Pausar deixa terminar a música atual e não começa a próxima. O andamento de cada música também aparece na aba Nova chart, em Gerações.";
+}
+$("#queuePause").onclick = async () => {
+  try { showPaused((await api("api/queue", { action: queuePaused ? "resume" : "pause" })).paused); }
+  catch (e) { alert(e.message); }
+};
+
 // ---- biblioteca ----
 async function loadLibrary() {
   const dir = $("#libDir").value.trim();
@@ -648,6 +964,15 @@ $("#libFilter").addEventListener("input", renderLibrary);
   $("#libDir").value = state.settings.library || "";
   if (!state.ffmpeg) $("#warn").textContent = "ffmpeg não encontrado no PATH: a geração vai falhar até instalá-lo.";
   for (const info of state.jobs) addJob(info);
+  $("#batchInstruments").innerHTML = state.instruments.map(i =>
+    `<label class="check"><input type="checkbox" name="batchInstrument" value="${i}" checked> ${NAMES[i] || i}</label>`).join("");
+  batchForm.elements.output.value = state.settings.output || "";
+  $("#batchGenre").insertAdjacentHTML("beforeend", state.genres.map(g =>
+    `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join(""));
+  const byBatch = new Map();
+  for (const info of state.jobs) if (info.batch) byBatch.set(info.batch, [...(byBatch.get(info.batch) || []), info.id]);
+  for (const [id, ids] of byBatch) addBatch(id, ids);
+  showPaused(state.paused);
   syncForm();
 })();
 </script>
