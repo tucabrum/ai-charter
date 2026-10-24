@@ -122,6 +122,31 @@ def test_auto_lyrics_explains_how_to_install(monkeypatch, tmp_path):
         transcribe_lyrics(tmp_path / "vocals.wav", "pt", "small", 0.45)
 
 
+def test_auto_lyrics_hands_whisper_decoded_audio(monkeypatch, tmp_path):
+    """O Whisper recebe o áudio já decodificado (16 kHz), e não o arquivo: o decodificador dele
+    quebra com a PyAV 15+."""
+    import sys
+    import types
+
+    import soundfile as sf
+
+    sf.write(tmp_path / "vocals.wav", np.zeros(44100, dtype=np.float32), 44100)
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, audio, **_kwargs):
+            seen["audio"] = audio
+            word = types.SimpleNamespace(word=" oi", start=0.1, end=0.3)
+            return [types.SimpleNamespace(words=[word])], None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=FakeModel))
+    assert transcribe_lyrics(tmp_path / "vocals.wav", "pt", "small", 0.45) == ["oi"]
+    assert isinstance(seen["audio"], np.ndarray) and len(seen["audio"]) == 16000
+
+
 def test_chord_recognition_from_spectrum():
     from ai_charter.analysis.chords import chord_name, chord_scores, is_single_note
 

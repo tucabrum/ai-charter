@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+WHISPER_SR = 16000
+
 
 @dataclass
 class TimedWord:
@@ -58,8 +60,14 @@ def transcribe_lyrics(vocals: Path, language: str, model_size: str, gap_seconds:
             "Na primeira vez ele é baixado de huggingface.co, então é preciso internet. "
             "Confira também o nome do modelo (whisper_model nas regras)."
         ) from exc
+    # O áudio vai já decodificado (16 kHz, mono, como o Whisper espera): o decodificador do próprio
+    # faster-whisper depende da versão da PyAV (a 1.2.1 chama av.open com um argumento que a PyAV 15+
+    # não aceita mais).
+    import librosa
+
+    audio = librosa.load(vocals, sr=WHISPER_SR, mono=True)[0]
     segments, _ = model.transcribe(
-        str(vocals), language=language, word_timestamps=True,
+        audio, language=language, word_timestamps=True,
         vad_filter=True,                  # ignora trechos sem voz
         condition_on_previous_text=False,  # evita que um erro "contamine" o resto da letra
     )
