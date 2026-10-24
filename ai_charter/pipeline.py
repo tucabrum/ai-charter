@@ -38,7 +38,7 @@ from ai_charter.charting.vocals import VocalTrack, build_aligned_track, build_vo
 from ai_charter.config import Rules, get_genre, load_rules
 from ai_charter.drum_model import MODEL_PATH as BASIC_DRUM_MODEL
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
-from ai_charter.drum_model import DrumModel
+from ai_charter.drum_model import TOM_LANES, DrumModel, TomLaneModel, tom_lane_inputs
 from ai_charter.export import audio
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
@@ -233,6 +233,10 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
         near = np.array([len(confirmed) > 0 and np.min(np.abs(confirmed - t)) < 0.1 for t in times], dtype=bool)
         sure = (adtof_feats[:, adtof.CLASSES.index("bumbo")] >= trust) & near
         probs[sure, k] = np.maximum(probs[sure, k], model.thresholds[k])
+    # A cor de cada tom: aprendida das charts oficiais (TomLaneModel), se houver; senão, pela altura
+    lane_model = TomLaneModel.load() if uses_adtof else None
+    lane_probs = (lane_model.predict(tom_lane_inputs(kit.features, ticks, res, adtof_feats))
+                  if lane_model is not None else None)
     seen: dict[tuple[int, str], Candidate] = {}
     hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota
     quantized = dict(zip(hit.tolist(), quantize_runs(ticks[hit], res, triplets)))
@@ -242,7 +246,8 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
             if probs[j, k] < model.thresholds[k]:
                 continue
             if piece == DRUM_TOM:
-                piece = which_tom(kit, j, rules.drum_detection.floor_tom_max_hz)
+                piece = (TOM_LANES[int(lane_probs[j].argmax())] if lane_probs is not None
+                         else which_tom(kit, j, rules.drum_detection.floor_tom_max_hz))
             key = (tick, piece)
             if key not in seen or probs[j, k] > seen[key].strength:
                 seen[key] = Candidate(tick, float(probs[j, k]), piece=piece)

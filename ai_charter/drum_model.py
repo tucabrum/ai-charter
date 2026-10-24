@@ -228,3 +228,64 @@ def save(params: dict, thresholds: np.ndarray, info: dict, path: Path = MODEL_PA
     if groove is not None:
         out["groove"] = {**_jsonable(groove), "features": GROOVE_NAMES}
     path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+
+
+# --- Cor de cada tom (amarelo, azul ou verde), aprendida das charts oficiais ---------------------
+# A afinação muda de kit para kit: o que decide a cor é a altura do golpe comparada à dos outros
+# tons DA MÚSICA, e à do tom de antes e de depois (viradas costumam descer do agudo ao surdo).
+TOM_LANE_PATH = Path(__file__).with_name("drum_tom_lanes.json")
+TOM_LANES = ("tom_high", "tom_mid", "tom_low")
+TOM_CONTEXT_NAMES = ["tom_altura_rank", "tom_centro_rank", "tom_altura_vs_antes", "tom_altura_vs_depois",
+                     "tom_centro_vs_antes", "tom_centro_vs_depois", "tom_gap_antes", "tom_gap_depois"]
+
+
+def tom_context(features: np.ndarray, adtof_feats: np.ndarray, ticks: np.ndarray, resolution: int,
+                min_chance: float = 0.2) -> np.ndarray:
+    """Para cada ataque de UMA música: onde a altura dele fica entre os golpes de tom da música
+    (os que o ADTOF ouve como tom) e quanto ela difere do golpe de tom anterior e do seguinte."""
+    altura = features[:, FEATURE_NAMES.index("altura_graves")]
+    levels = features[:, [FEATURE_NAMES.index(f"nivel_{i}") for i in range(12)]]
+    centro = (levels * np.arange(12)).sum(axis=1) / (levels.sum(axis=1) + 1e-9)
+    is_tom = adtof_feats[:, adtof.CLASSES.index("tom")] >= min_chance
+    out = np.zeros((len(features), len(TOM_CONTEXT_NAMES)), dtype=np.float32)
+    if not is_tom.any():
+        return out
+    beats = ticks / resolution
+    rank = lambda v, ref: np.searchsorted(np.sort(ref), v) / max(1, len(ref))   # noqa: E731
+    out[:, 0], out[:, 1] = rank(altura, altura[is_tom]), rank(centro, centro[is_tom])
+    idx, at = np.flatnonzero(is_tom), np.arange(len(features))
+    before = np.searchsorted(idx, at, "left") - 1     # o golpe de tom anterior a cada ataque
+    after = np.searchsorted(idx, at, "right")         # e o seguinte
+    for j, (col_a, col_c, col_g) in ((before, (2, 4, 6)), (after, (3, 5, 7))):
+        ok = (j >= 0) & (j < len(idx))
+        other = idx[np.clip(j, 0, len(idx) - 1)]
+        gap = np.abs(beats[other] - beats)
+        ok &= gap <= 2.0
+        out[ok, col_a] = altura[ok] - altura[other[ok]]
+        out[ok, col_c] = centro[ok] - centro[other[ok]]
+        out[:, col_g] = np.where(ok, gap, 2.0)
+    return out
+
+
+def tom_lane_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int, adtof_feats: np.ndarray) -> np.ndarray:
+    return np.hstack([model_inputs(features, ticks, resolution, adtof_feats),
+                      tom_context(features, adtof_feats, ticks, resolution)])
+
+
+class TomLaneModel:
+    """Rede pequena: entrada do modelo de bateria + contexto de tons -> chance de cada cor."""
+
+    def __init__(self, params: dict):
+        self.params = _arrays(params)
+
+    @classmethod
+    def load(cls, path: Path = TOM_LANE_PATH) -> "TomLaneModel | None":
+        if not adtof.available() or not path.is_file():
+            return None
+        params = json.loads(path.read_text(encoding="utf-8"))
+        if params.get("features") != INPUT_NAMES_ADTOF + TOM_CONTEXT_NAMES:
+            return None
+        return cls(params)
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return mlp(self.params, x)

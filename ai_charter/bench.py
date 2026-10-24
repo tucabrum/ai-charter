@@ -602,6 +602,43 @@ def train_drums(data, folds: int = 3, adtof_cache: Path | None = None, songs_roo
     print(f"modelo salvo em {path}")
 
 
+def train_tom_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
+    """Treina a escolha da cor de cada tom (amarelo, azul, verde) com as charts oficiais:
+    drum_tom_lanes.json. Só os golpes que a chart tem como tom entram; o teste mede a cor certa."""
+    from ai_charter import drum_model as dm
+
+    d = _load_collections(data)
+    songs = d["songs"]
+    cut = np.flatnonzero(songs[1:] != songs[:-1]) + 1
+    starts, ends = np.concatenate([[0], cut]), np.concatenate([cut, [len(songs)]])
+    names = [str(songs[s]) for s in starts]
+    del songs
+    ticks, feats = d["ticks"], d["features"]
+    lanes = d["y"][:, [PIECES.index("tom amarelo"), PIECES.index("tom azul"), PIECES.index("surdo")]]
+    adtof_feats, have = _adtof_for_songs(names, starts, ends, ticks, adtof_cache, songs_root)
+    xs, ys, tests = [], [], []
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        rows = np.flatnonzero(lanes[s:e].sum(axis=1) == 1)   # um tom só (sem dois tons juntos)
+        if not have[i] or not len(rows):
+            continue
+        x = dm.tom_lane_inputs(feats[s:e], ticks[s:e], 192, adtof_feats[s:e])
+        xs.append(x[rows])
+        ys.append(lanes[s:e][rows])
+        tests.append(np.full(len(rows), is_test(names[i])))
+    x, y, test = np.vstack(xs), np.vstack(ys).astype(np.float32), np.concatenate(tests)
+    fit = np.flatnonzero(~test)
+    print(f"{len(fit)} golpes de tom para treinar, {int(test.sum())} de teste", flush=True)
+    params = dm.train(x, y, fit, hidden=32, epochs=_epochs(len(fit)))
+    pred = dm.mlp(params, x, np.flatnonzero(test)).argmax(axis=1)
+    acc = float((pred == y[test].argmax(axis=1)).mean())
+    print(f"cor certa no teste: {acc:.2f} (ao acaso: 0,33)")
+    out = dm._jsonable(params)
+    out.update(features=dm.INPUT_NAMES_ADTOF + dm.TOM_CONTEXT_NAMES, lanes=list(dm.TOM_LANES),
+               info={"cor_certa_teste": round(acc, 3)})
+    dm.TOM_LANE_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    print(f"modelo salvo em {dm.TOM_LANE_PATH}")
+
+
 def _f1(pred: np.ndarray, true: np.ndarray) -> float:
     tp = float((pred & true).sum())
     return 2 * tp / max(1.0, float(pred.sum() + true.sum()))
@@ -633,6 +670,10 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("data", type=Path, nargs="+", help="uma ou mais coletas (juntadas)")
     t.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: treina o modelo com ADTOF")
     t.add_argument("--songs", type=Path, help="com --adtof-cache: a pasta das músicas usada na coleta")
+    tl = sub.add_parser("train-tom-lanes", help="treina a cor de cada tom (ai_charter/drum_tom_lanes.json)")
+    tl.add_argument("data", type=Path, nargs="+")
+    tl.add_argument("--adtof-cache", type=Path, required=True)
+    tl.add_argument("--songs", type=Path, required=True)
     m = sub.add_parser("demucs-cache", help="mix de cada música -> Demucs -> bateria separada, guardada em cache")
     m.add_argument("folder", type=Path)
     m.add_argument("cache", type=Path)
@@ -653,6 +694,9 @@ def main(argv: list[str] | None = None) -> None:
 
     from ai_charter.config import load_rules
 
+    if args.command == "train-tom-lanes":
+        train_tom_lanes(args.data, args.adtof_cache, args.songs)
+        return
     if args.command == "train-drums":
         train_drums(args.data, adtof_cache=args.adtof_cache, songs_root=args.songs)
         return
