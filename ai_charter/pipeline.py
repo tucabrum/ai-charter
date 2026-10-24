@@ -29,6 +29,7 @@ from ai_charter.charting.common import (
     Candidate, TrackChart, dedupe, quantize_runs, quantize_tick, star_power_for_phrases, star_power_windows,
 )
 from ai_charter.charting.chords import label_chords
+from ai_charter.charting.drum_reduce import bpm_from_tempo
 from ai_charter.charting.drums import build_drum_track
 from ai_charter.charting.frets import build_fret_track
 from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
@@ -283,7 +284,8 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows, mix: Path
             model = DrumModel.load(BASIC_DRUM_MODEL)
     if model is not None:
         return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model, adtof_act), rules.drums,
-                                tempo.resolution, sp_windows, rules.general.drum_fill_every_measures)
+                                tempo.resolution, sp_windows, rules.general.drum_fill_every_measures,
+                                bpm_at=bpm_from_tempo(tempo))
     hits = detect_drum_hits(y, sr, rules.drum_detection)
     res, triplets = tempo.resolution, rules.general.allow_triplets
     strong: dict[tuple[int, str], Candidate] = {}
@@ -302,7 +304,7 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows, mix: Path
             strong[(tick, piece)] = c
     cands = sorted(strong.values(), key=lambda c: c.tick)
     return build_drum_track(cands, rules.drums, res, sp_windows,
-                            rules.general.drum_fill_every_measures)
+                            rules.general.drum_fill_every_measures, bpm_at=bpm_from_tempo(tempo))
 
 
 def run(opts: Options, log=print) -> Result:

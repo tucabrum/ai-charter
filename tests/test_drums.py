@@ -238,3 +238,16 @@ def test_extra_onsets_join_the_detected_ones():
     assert merged.tolist() == [100, 200, 250, 300] and extra.tolist() == [False, False, True, False]
     assert _with_extra_onsets(onsets, None, SR, 1000)[0] is onsets
     assert MERGE_FRAMES >= 2
+
+
+def test_reduction_features_see_the_notes_around():
+    from ai_charter.charting.drum_reduce import FEATURE_NAMES, features
+
+    res = 192
+    notes = [(0, KICK), (0, HIHAT), (48, HIHAT), (96, SNARE)]
+    x = features(notes, res, lambda _t: 120.0)
+    assert x.shape == (4, len(FEATURE_NAMES))
+    col = FEATURE_NAMES.index
+    assert x[0, col("peca_kick")] == 1 and x[0, col("junto_hihat")] == 1 and x[0, col("posicao_0")] == 1
+    assert x[1, col("depois_1/16_hihat")] == 1 and x[1, col("depois_1/8_snare")] == 1
+    assert x[3, col("antes_1/8_hihat")] == 1 and x[3, col("bpm")] == pytest.approx(0.6)

@@ -37,8 +37,9 @@ LANE_PIECES = {0: ("bumbo", "bumbo"), 1: ("caixa", "caixa"), 2: ("chimbal", "tom
 EXPERT, TOM_MARKER = 96, {2: 110, 3: 111, 4: 112}
 
 
-def official_hits(midi: mido.MidiFile) -> set[tuple[int, str]] | None:
-    """(tick, peça) da bateria Expert oficial; None se a chart não tem bateria."""
+def official_hits(midi: mido.MidiFile, base: int = 96) -> set[tuple[int, str]] | None:
+    """(tick, peça) da bateria oficial numa dificuldade (base 96 = Expert, 84 Hard, 72 Medium,
+    60 Easy); None se a chart não tem bateria."""
     track = next((t for t in midi.tracks if t.name == "PART DRUMS"), None)
     if track is None:
         return None
@@ -48,7 +49,7 @@ def official_hits(midi: mido.MidiFile) -> set[tuple[int, str]] | None:
     toms = {lane: [(n.start, n.end) for n in notes if n.pitch == marker] for lane, marker in TOM_MARKER.items()}
     hits = set()
     for n in notes:
-        lane = 0 if n.pitch == 95 else n.pitch - EXPERT   # 95 = bumbo duplo (Expert+)
+        lane = 0 if (n.pitch == 95 and base == EXPERT) else n.pitch - base   # 95 = bumbo duplo (Expert+)
         if not 0 <= lane <= 4:
             continue
         is_tom = any(a <= n.start < b for a, b in toms.get(lane, []))
@@ -56,9 +57,9 @@ def official_hits(midi: mido.MidiFile) -> set[tuple[int, str]] | None:
     return hits
 
 
-def our_hits(track) -> set[tuple[int, str]]:
+def our_hits(track, difficulty: str = "expert") -> set[tuple[int, str]]:
     hits = set()
-    for note in track.notes.get("expert", []):
+    for note in track.notes.get(difficulty, []):
         for lane in note.lanes:
             cymbal = lane in (0, 1) or 64 + lane in note.flags
             hits.add((note.tick, LANE_PIECES[lane][0 if cymbal else 1]))
@@ -357,6 +358,35 @@ def adtof_cache(folders: list[Path], cache: Path, workers: int = 1) -> None:
             print(f"[{i}/{len(folders)}] {folder.name}", flush=True)
 
 
+DIFFICULTY_BASES = {"expert": 96, "hard": 84, "medium": 72, "easy": 60}
+# Peças da chart -> peças do transcritor (para passar o Expert oficial pelo nosso redutor)
+PIECE_TO_ANALYSIS = {"bumbo": "kick", "caixa": "snare", "chimbal": "hihat", "tom amarelo": "tom_high",
+                     "condução": "ride", "tom azul": "tom_mid", "ataque": "crash", "surdo": "tom_low"}
+
+
+def evaluate_reduction(folder: Path, rules) -> dict | None:
+    """Passa o Expert OFICIAL pelo nosso redutor de dificuldades e compara Hard, Medium e Easy com
+    os oficiais (por dificuldade: placar por peça e quantas notas cada um tem). Só lê o MIDI."""
+    from ai_charter.charting.common import Candidate
+    from ai_charter.charting.drums import build_drum_track
+
+    midi = mido.MidiFile(folder / "notes.mid")
+    expert = official_hits(midi)
+    if not expert:
+        return None
+    res = midi.ticks_per_beat
+    cands = [Candidate(t, 1.0, piece=PIECE_TO_ANALYSIS[p]) for t, p in sorted(expert)]
+    from ai_charter.charting.drum_reduce import bpm_from_tempo
+
+    track = build_drum_track(cands, rules.drums, res, [], 0, bpm_at=bpm_from_tempo(_tempo_map(midi)))
+    out = {}
+    for diff in ("hard", "medium", "easy"):
+        theirs = official_hits(midi, DIFFICULTY_BASES[diff])
+        if theirs:
+            out[diff] = match(our_hits(track, diff), theirs, res // 8)
+    return out
+
+
 def match_times(ours: list[tuple[float, str]], theirs: list[tuple[float, str, float]]) -> dict[str, list[int]]:
     """Como `match`, mas em segundos: cada golpe oficial tem a sua tolerância (1/32 de nota no tempo
     dele). É o jeito de comparar quando a nossa grade (BPM detectado) não é a da chart oficial."""
@@ -639,6 +669,53 @@ def train_tom_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
     print(f"modelo salvo em {dm.TOM_LANE_PATH}")
 
 
+def _reduce_rows(folder: Path):
+    from ai_charter.charting import drum_reduce as dr
+
+    midi = mido.MidiFile(folder / "notes.mid")
+    expert = official_hits(midi)
+    if not expert:
+        return None
+    notes = [(t, PIECE_TO_ANALYSIS[p]) for t, p in sorted(expert)]
+    x = dr.features(notes, midi.ticks_per_beat, dr.bpm_from_tempo(_tempo_map(midi)))
+    y = np.zeros((len(notes), len(dr.DIFFICULTIES)), dtype=np.float32)
+    for k, diff in enumerate(dr.DIFFICULTIES):
+        theirs = {(t, PIECE_TO_ANALYSIS[p]) for t, p in (official_hits(midi, DIFFICULTY_BASES[diff]) or ())}
+        y[:, k] = [n in theirs for n in notes]
+    return x, y
+
+
+def train_reduce(folders: list[Path]) -> None:
+    """Aprende das charts oficiais (só os MIDIs) quais notas do Expert ficam no Hard, no Medium e no
+    Easy: ai_charter/drum_reduce.json."""
+    from ai_charter import drum_model as dm
+    from ai_charter.charting import drum_reduce as dr
+
+    xs, ys, kinds = [], [], []
+    for folder in folders:
+        try:
+            r = _reduce_rows(folder)
+        except Exception:
+            continue
+        if r is None:
+            continue
+        kind = "test" if is_test(folder.name) else "val" if zlib.crc32(song_key(folder.name).encode()) % 10 == 3 else "fit"
+        xs.append(r[0]); ys.append(r[1]); kinds += [kind] * len(r[0])
+    x, y, kinds = np.vstack(xs), np.vstack(ys), np.array(kinds)
+    fit, val, test = (np.flatnonzero(kinds == k) for k in ("fit", "val", "test"))
+    print(f"{len(xs)} músicas, {len(fit)} notas de treino", flush=True)
+    params = dm.train(x, y, fit, hidden=48, epochs=_epochs(len(fit)))
+    pv, pt = dm.mlp(params, x, val), dm.mlp(params, x, test)
+    grid = np.arange(0.1, 0.9, 0.05)
+    thresholds = [float(max(grid, key=lambda th: _f1(pv[:, k] >= th, y[val, k] > 0))) for k in range(y.shape[1])]
+    for k, diff in enumerate(dr.DIFFICULTIES):
+        print(f"{diff:7s} limiar {thresholds[k]:.2f}  F1 por nota no teste {_f1(pt[:, k] >= thresholds[k], y[test, k] > 0):.3f}")
+    out = dm._jsonable(params)
+    out.update(thresholds=thresholds, features=dr.FEATURE_NAMES, difficulties=list(dr.DIFFICULTIES))
+    dr.MODEL_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    print(f"modelo salvo em {dr.MODEL_PATH}")
+
+
 def _f1(pred: np.ndarray, true: np.ndarray) -> float:
     tp = float((pred & true).sum())
     return 2 * tp / max(1.0, float(pred.sum() + true.sum()))
@@ -670,6 +747,17 @@ def main(argv: list[str] | None = None) -> None:
     t.add_argument("data", type=Path, nargs="+", help="uma ou mais coletas (juntadas)")
     t.add_argument("--adtof-cache", type=Path, help="pasta do adtof-cache: treina o modelo com ADTOF")
     t.add_argument("--songs", type=Path, help="com --adtof-cache: a pasta das músicas usada na coleta")
+    tr = sub.add_parser("train-reduce", help="aprende as dificuldades das charts oficiais (drum_reduce.json)")
+    tr.add_argument("folder", type=Path)
+    tr.add_argument("--charter")
+    tr.add_argument("--rules", type=Path)
+    tr.set_defaults(test=False, limit=None)
+    rd = sub.add_parser("reduce", help="mede as dificuldades: o Expert oficial pelo nosso redutor x as oficiais")
+    rd.add_argument("folder", type=Path)
+    rd.add_argument("--charter")
+    rd.add_argument("--test", action="store_true")
+    rd.add_argument("--limit", type=int)
+    rd.add_argument("--rules", type=Path)
     tl = sub.add_parser("train-tom-lanes", help="treina a cor de cada tom (ai_charter/drum_tom_lanes.json)")
     tl.add_argument("data", type=Path, nargs="+")
     tl.add_argument("--adtof-cache", type=Path, required=True)
@@ -719,6 +807,28 @@ def main(argv: list[str] | None = None) -> None:
         folders = [f for f in folders if (cache_dir_for(args.cache, f) / "drums.ogg").is_file()]
     if args.limit and args.limit < len(folders):
         folders = [folders[i] for i in np.linspace(0, len(folders) - 1, args.limit).astype(int)]
+    if args.command == "train-reduce":
+        train_reduce(folders)
+        return
+    if args.command == "reduce":
+        total: dict[str, dict[str, list[int]]] = {}
+        for folder in folders:
+            try:
+                res = evaluate_reduction(folder, rules)
+            except Exception as err:
+                print(f"{folder.name}: erro ({err})")
+                continue
+            for diff, counts in (res or {}).items():
+                for piece, c in counts.items():
+                    t = total.setdefault(diff, {}).setdefault(piece, [0, 0, 0])
+                    for k in range(3):
+                        t[k] += c[k]
+        for diff, counts in total.items():
+            hit, ours, theirs = (sum(c[k] for c in counts.values()) for k in range(3))
+            print(f"\n{diff}: F1 {2 * hit / max(1, ours + theirs):.3f} · nossas {ours} notas, oficiais {theirs}")
+            for piece, r in score(counts).items():
+                print(f"  {piece:12s} F1 {r['f1']:.2f}  nossos {r['nossos']:6d}  oficiais {r['oficiais']:6d}")
+        return
     if args.command == "demucs-cache":
         demucs_cache(folders, args.cache)
         return
