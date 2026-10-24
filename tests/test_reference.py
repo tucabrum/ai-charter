@@ -42,6 +42,7 @@ def test_reads_midi_tracks_with_guesses(tmp_path):
         (1, "guitar", 2), (2, "bass", 1), (3, "drums", 2), (4, "keys", 1)]
     assert [(n.beat, n.length, n.pitch) for n in score.tracks[0].notes] == [(0.0, 0.5, 64), (0.5, 0.5, 67)]
     assert score.length_beats == 2.0
+    assert score.bars == [(1, 0.0, 4.0)]   # sem fórmula de compasso: 4/4
     assert default_mapping(score) == {1: "guitar", 2: "bass", 3: "drums", 4: "keys"}
 
 
@@ -179,6 +180,35 @@ def test_guide_picks_the_score_track_that_matches_each_bar():
     assert {round(c.pitch) for c in out if c.tick < bar} == {40}
     assert {round(c.pitch) for c in out if c.tick >= bar} == {57}
     assert "pistas por compasso: " in lines[0]
+
+
+def test_guide_keeps_one_track_per_section_and_hand_picked_sections():
+    """A base confere com a detecção em todos os compassos, menos num solto em que o solo confere um
+    pouco mais: a escolha não pula para o solo só ali (trocar de pista custa). Um trecho escolhido à
+    mão vale mesmo onde a base confere melhor."""
+    res, bar = 192, 4 * 192
+    tracks = {"3 Base": eighths(0, 6, 40, res), "1 Solo": eighths(0, 6, 45, res)}
+    detected = [Candidate(t, 1, pitch=40) for t in range(0, 6 * bar, 96) if t // bar != 2]
+    # compasso 3: 5 das 8 notas são as do solo (ele confere ~0,1 a mais; trocar e voltar custaria 0,2)
+    detected += [Candidate(t, 1, pitch=45 if t % 192 or t == 2 * bar else 40) for t in range(2 * bar, 3 * bar, 96)]
+    guide = make_guide(tracks, res, "seguir")
+    guide(detected, log=lambda *_: None)
+    assert guide.stats["tracks"] == {"3 Base": 6}
+    guide = make_guide(tracks, res, "seguir")
+    guide.sections = [(4 * bar, 6 * bar, "1 Solo")]   # compassos 5 e 6 à mão
+    out = guide(detected, log=lambda *_: None)
+    assert guide.stats["tracks"] == {"3 Base": 4, "1 Solo": 2}
+    assert {round(c.pitch) for c in out if c.tick >= 4 * bar} == {45}
+
+
+def test_parse_sections():
+    from ai_charter.reference import parse_sections
+
+    assert parse_sections("1-16=3, 17-24=1,25=3") == [(1, 16, 3), (17, 24, 1), (25, 25, 3)]
+    assert parse_sections("") == []
+    for bad in ("1-16", "a-3=1", "9-2=1", "1-2=x"):
+        with pytest.raises(ValueError):
+            parse_sections(bad)
 
 
 def test_guide_corrects_pitch_and_chords():
@@ -352,6 +382,9 @@ def check_gpif_tracks(score):
                      (4, 1.5, 43), (4, 1.5, 50), (6.5, 0.667, 52), (8, 2.0, 59)]
     assert [(n.beat, n.pitch) for n in drums.notes] == [(0, 36), (0, 42), (2, 38), (4, 36), (4, 42), (6, 38)]
     assert score.length_beats == 10
+    # compasso 1 duas vezes (repetição), depois o 2 (2/4); bar_spans junta passadas seguidas
+    assert score.bars == [(1, 0, 4), (1, 4, 8), (2, 8, 10)]
+    assert score.bar_spans(1, 1) == [(0, 8)] and score.bar_spans(2, 9) == [(8, 10)]
 
 
 def test_reads_guitar_pro_7_gp_file(tmp_path):

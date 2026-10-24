@@ -158,7 +158,8 @@ def update_song_ini(path: Path, values: dict[str, object]) -> None:
 def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None = None,
             auto_lyrics: bool = False, rules_path: Path | None = None, genre: str | None = None,
             reference: Path | None = None, reference_tracks: dict[int, str] | None = None,
-            reference_fidelity: str | dict[str, str] = "seguir", cifra: Path | None = None,
+            reference_fidelity: str | dict[str, str] = "seguir",
+            reference_sections: list[tuple[int, int, int]] | None = None, cifra: Path | None = None,
             replace_existing: bool = False, log=print) -> AugmentResult:
     from ai_charter.analysis.transcribe import transcribe_lyrics
     from ai_charter.charting.common import star_power_windows
@@ -227,7 +228,8 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     guides = {}
     if reference is not None and any(i in ("guitar", "bass", "keys", "drums") for i in todo):
         from ai_charter.reference import load_guides
-        guides = load_guides(reference, reference_tracks, mix, ANALYSIS_SR, tempo, rules, log, reference_fidelity)
+        guides = load_guides(reference, reference_tracks, mix, ANALYSIS_SR, tempo, rules, log, reference_fidelity,
+                             reference_sections)
 
     new_tracks: dict[str, mido.MidiTrack] = {}
     ini: dict[str, object] = {}
@@ -331,6 +333,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reference-fidelity", default="seguir",
                         help="quanto a partitura manda nas notas: corrigir, completar ou seguir (padrão), para "
                              "todos ou por instrumento, ex.: drums=seguir,guitar=completar")
+    parser.add_argument("--reference-sections", default="",
+                        help="pista da partitura escolhida à mão por trecho: compassos da partitura=pista, "
+                             "ex.: 1-16=3,17-24=1 (o resto continua automático)")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
     args = parser.parse_args(argv)
     instruments = tuple(i.strip() for i in args.instruments.split(",") if i.strip())
@@ -341,15 +346,16 @@ def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # no Windows o padrão (cp1252) embaralha os acentos
     try:
-        mapping, fidelity = None, "seguir"
+        mapping, fidelity, sections = None, "seguir", None
         if args.reference is not None:
-            from ai_charter.reference import parse_fidelity, parse_mapping, read_score
+            from ai_charter.reference import parse_fidelity, parse_mapping, parse_sections, read_score
             read_score(args.reference)
             mapping = parse_mapping(args.reference_tracks) if args.reference_tracks else None
             fidelity = parse_fidelity(args.reference_fidelity)
+            sections = parse_sections(args.reference_sections) or None
         result = augment(args.folder, instruments, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
                          rules_path=args.rules, genre=args.genre, reference=args.reference,
-                         reference_tracks=mapping, reference_fidelity=fidelity,
+                         reference_tracks=mapping, reference_fidelity=fidelity, reference_sections=sections,
                          cifra=args.cifra, replace_existing=args.replace)
     except (RuntimeError, ValueError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)

@@ -61,6 +61,7 @@ MIN_MATCHED = 0.3                         # abaixo disso a referência não conf
 FIDELITY = ("corrigir", "completar", "seguir")   # quanto a partitura manda nas notas (ver Guide)
 DEFAULT_FIDELITY = "seguir"
 BAR_MATCH = 0.5                           # completar: parte das notas detectadas do compasso que confere
+SWITCH_COST = 0.1                         # trocar de pista da partitura; a diferença entre pistas é de ~0,1-0,4 por compasso
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
 WARP_COST = 0.2                           # alinhamento: custo de cada passo fora da diagonal
 UNMATCHED_COST = 0.5                      # alinhamento: passo da partitura depois do fim da gravação
@@ -99,6 +100,20 @@ class RefTrack:
 class Score:
     path: Path
     tracks: list[RefTrack]
+    # compassos na ordem em que tocam (repetições desdobradas): (número na partitura, início, fim), em batidas
+    bars: list[tuple[int, float, float]] = field(default_factory=list)
+
+    def bar_spans(self, first: int, last: int) -> list[tuple[float, float]]:
+        """Os trechos (início, fim, em batidas) em que tocam os compassos first..last da partitura.
+        Um trecho repetido (|: :|) aparece uma vez para cada passada."""
+        spans: list[tuple[float, float]] = []
+        for number, start, end in self.bars:
+            if first <= number <= last:
+                if spans and abs(spans[-1][1] - start) < 1e-6:
+                    spans[-1] = (spans[-1][0], end)
+                else:
+                    spans.append((start, end))
+        return spans
 
     @property
     def length_beats(self) -> float:
@@ -134,20 +149,27 @@ def read_score(path: Path) -> Score:
     path = Path(path)
     suffix = path.suffix.lower()
     if suffix in MIDI_EXTENSIONS:
-        return Score(path, _read_midi(path))
+        return Score(path, *_read_midi(path))
     if suffix in GP_EXTENSIONS:
-        return Score(path, _read_guitar_pro(path))
+        return Score(path, *_read_guitar_pro(path))
     if suffix in NEW_GP_EXTENSIONS:
-        return Score(path, _read_new_guitar_pro(path))
+        return Score(path, *_read_new_guitar_pro(path))
     raise ValueError(f"formato de partitura não reconhecido: {path.name} (use .mid, .gp3, .gp4, .gp5, .gpx ou .gp)")
 
 
-def _read_midi(path: Path) -> list[RefTrack]:
+def _read_midi(path: Path) -> tuple[list[RefTrack], list[tuple[int, float, float]]]:
     import mido
 
     midi = mido.MidiFile(path, clip=True)
     res = midi.ticks_per_beat
     tracks: list[RefTrack] = []
+    signatures = {0: 4.0}   # tick -> batidas por compasso (fórmula de compasso)
+    for track in midi.tracks:
+        tick = 0
+        for msg in track:
+            tick += msg.time
+            if msg.type == "time_signature":
+                signatures[tick] = msg.numerator * 4 / msg.denominator
     for track in midi.tracks:
         name, program = track.name.strip(), {}
         by_channel: dict[int, list[RefNote]] = {}
@@ -172,7 +194,14 @@ def _read_midi(path: Path) -> list[RefTrack]:
             prog = program.get(channel)
             tracks.append(RefTrack(len(tracks) + 1, label, guess_instrument(label, prog, drums),
                                    sorted(notes, key=lambda n: (n.beat, n.pitch)), prog, drums))
-    return tracks
+    length = max((n.beat + n.length for t in tracks for n in t.notes), default=0.0)
+    bars, at, number = [], 0.0, 1
+    changes = sorted((tick / res, beats) for tick, beats in signatures.items())
+    while at < length:
+        beats = [b for start, b in changes if start <= at + 1e-6][-1]
+        bars.append((number, at, at + beats))
+        at, number = at + beats, number + 1
+    return tracks, bars
 
 
 def play_order(headers) -> list[int]:
@@ -196,7 +225,7 @@ def play_order(headers) -> list[int]:
     return order
 
 
-def _read_guitar_pro(path: Path) -> list[RefTrack]:
+def _read_guitar_pro(path: Path) -> tuple[list[RefTrack], list[tuple[int, float, float]]]:
     try:
         import guitarpro
     except ImportError as exc:
@@ -238,7 +267,8 @@ def _read_guitar_pro(path: Path) -> list[RefTrack]:
         tracks.append(RefTrack(len(tracks) + 1, t.name.strip() or f"Pista {len(tracks) + 1}",
                                guess_instrument(t.name, program, drums, None if drums else strings),
                                sorted(notes, key=lambda n: (n.beat, n.pitch)), program, drums))
-    return tracks
+    return tracks, [(headers[i].number, at / quarter, (at + headers[i].length) / quarter)
+                    for at, i in zip(offsets, order)]
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +344,7 @@ def gpx_files(data: bytes) -> dict[str, bytes]:
     return files
 
 
-def _read_new_guitar_pro(path: Path) -> list[RefTrack]:
+def _read_new_guitar_pro(path: Path) -> tuple[list[RefTrack], list[tuple[int, float, float]]]:
     data = Path(path).read_bytes()
     if data[:2] == b"PK":   # .gp (Guitar Pro 7+): zip com Content/score.gpif
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -377,8 +407,9 @@ def _note_pitch(note, tuning: list[int], drums: bool, articulations: list[int]) 
     return None
 
 
-def parse_gpif(xml: bytes) -> list[RefTrack]:
-    """As pistas de um score.gpif (Guitar Pro 6+), com repetições e casas de 1ª/2ª vez desdobradas."""
+def parse_gpif(xml: bytes) -> tuple[list[RefTrack], list[tuple[int, float, float]]]:
+    """As pistas e os compassos de um score.gpif (Guitar Pro 6+), com repetições e casas de 1ª/2ª vez
+    desdobradas."""
     root = ElementTree.fromstring(xml)
     by_id = {kind: {int(el.get("id")): el for el in root.findall(f"./{kind}s/{kind}")}
              for kind in ("Bar", "Voice", "Beat", "Note", "Rhythm")}
@@ -452,7 +483,7 @@ def parse_gpif(xml: bytes) -> list[RefTrack]:
         tracks.append(RefTrack(len(tracks) + 1, name,
                                guess_instrument(name, program, drums, None if drums or not tuning else tuning),
                                sorted(notes, key=lambda n: (n.beat, n.pitch)), program, drums))
-    return tracks
+    return tracks, [(i + 1, at, at + headers[i].length) for at, i in zip(offsets, order)]
 
 
 def default_mapping(score: Score) -> dict[int, str]:
@@ -490,6 +521,22 @@ def parse_fidelity(text: str) -> Fidelity:
         else:
             default = level
     return {i: per.get(i, default) for i in GUIDED} if per else default
+
+
+def parse_sections(text: str) -> list[tuple[int, int, int]]:
+    """ "1-16=3, 17-24=1, 25=3" -> [(1, 16, 3), (17, 24, 1), (25, 25, 3)]: compassos da partitura
+    (numeração dela) = pista que vale ali. Para escolher à mão a pista de cada trecho quando um
+    instrumento tem várias (base, solo...)."""
+    sections = []
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        bars, sep, track = (s.strip() for s in part.partition("="))
+        first, _, last = (s.strip() for s in bars.partition("-"))
+        last = last or first
+        if not (sep and first.isdigit() and last.isdigit() and track.isdigit() and int(first) <= int(last)):
+            raise ValueError(f"trecho inválido em --reference-sections: {part!r} "
+                             f"(use compassos=pista, ex.: 1-16=3,17-24=1)")
+        sections.append((int(first), int(last), int(track)))
+    return sections
 
 
 def fidelity_for(fidelity: Fidelity, instrument: str) -> str:
@@ -680,8 +727,9 @@ class Guide:
     """Corrige as notas detectadas de um instrumento com as da partitura.
 
     `events` são as notas da partitura (uma lista) ou, com várias pistas no mesmo instrumento (solo,
-    base...), as notas de cada pista ({nome: lista}). Aí cada compasso usa a pista que mais confere
-    com o que foi detectado ali, em vez de somar todas.
+    base...), as notas de cada pista ({nome: lista}). Aí cada trecho usa uma pista, em vez de somar
+    todas (ver choose_tracks). `sections` fixa a pista de trechos escolhidos à mão:
+    [(tick inicial, tick final, nome da pista)].
 
     `fidelity` diz quanto a partitura manda (FIDELITY):
       corrigir  - as notas são as detectadas; a partitura só corrige altura e acorde;
@@ -695,47 +743,86 @@ class Guide:
     resolution: int
     cfg: object                       # PitchedDetection do instrumento
     fidelity: str = "corrigir"
+    sections: list = field(default_factory=list)   # [(tick inicial, tick final, pista)] escolhidos à mão
     stats: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.tracks = self.events if isinstance(self.events, dict) else {"": self.events}
         self.tracks = {name: events for name, events in self.tracks.items() if events} or {"": []}
 
+    def _bar_match(self, found: list, events: list[RefEvent]) -> float:
+        """Quanto a pista confere com o detectado num compasso: o ataque (até MATCH_BEATS) e, mais
+        ainda, a mesma nota (sem olhar a oitava); notas a mais na pista pesam contra (um solo por
+        cima da base não ganha da base)."""
+        ticks = np.array([e.tick for e in events])
+        total = 0.0
+        for c in found:
+            event = _nearest(events, ticks, c.tick, MATCH_BEATS * self.resolution)
+            if event is not None:
+                total += 1 + (round(c.pitch) % 12 in {p % 12 for p in event.pitches})
+        return total / (len(found) + len(events))
+
+    def _forced(self, b: int) -> str | None:
+        """A pista escolhida à mão para o compasso b (pelo meio dele), se houver."""
+        middle = (b + 0.5) * 4 * self.resolution
+        return next((name for start, end, name in self.sections if start <= middle < end), None)
+
     def choose_tracks(self, cands: list) -> tuple[list[RefEvent], dict[str, int]]:
-        """As notas da partitura, compasso a compasso, da pista que mais confere com a detecção ali.
-        Conta o ataque (até MATCH_BEATS) e, mais ainda, a mesma nota (sem olhar a oitava); notas a
-        mais na pista pesam contra (um solo por cima da base não ganha da base)."""
+        """As notas da partitura, compasso a compasso, da pista escolhida para cada trecho.
+
+        A escolha olha a música inteira (Viterbi): cada compasso vale o quanto a pista confere com a
+        detecção ali (_bar_match), e trocar de pista custa SWITCH_COST, então a pista só muda num
+        trecho em que a outra confere claramente melhor por alguns compassos. Compassos iguais na
+        partitura (em todas as pistas) contam juntos e escolhem a mesma pista: a parte que se repete
+        é charteada igual. Os trechos de `sections` ficam com a pista escolhida à mão."""
         if len(self.tracks) == 1:
             (events,) = self.tracks.values()
             return events, {}
-        bar, tolerance = 4 * self.resolution, MATCH_BEATS * self.resolution
+        bar = 4 * self.resolution
+        names = list(self.tracks)
         detected = _by_bar(cands, bar)
         per_track = {name: _by_bar(events, bar) for name, events in self.tracks.items()}
         last_bar = max((e.tick // bar for events in self.tracks.values() for e in events), default=-1)
-        chosen, previous, count = [], None, {}
-        for b in range(last_bar + 1):
-            options = [name for name in self.tracks if per_track[name].get(b)]
-            if not options:
-                continue
+        bars = [b for b in range(last_bar + 1)
+                if self._forced(b) in names or any(per_track[n].get(b) for n in names)]
+        if not bars:
+            return [], {}
+        score = np.full((len(bars), len(names)), -np.inf)
+        for i, b in enumerate(bars):
             found = detected.get(b, [])
+            for k, name in enumerate(names):
+                if per_track[name].get(b):
+                    score[i, k] = self._bar_match(found, per_track[name][b]) if found else 0.0
 
-            def score(name: str) -> float:
-                events = per_track[name][b]
-                ticks = np.array([e.tick for e in events])
-                total = 0.0
-                for c in found:
-                    event = _nearest(events, ticks, c.tick, tolerance)
-                    if event is not None:
-                        total += 1 + (round(c.pitch) % 12 in {p % 12 for p in event.pitches})
-                return total / (len(found) + len(events)) + (0.05 if name == previous else 0.0)
+        def signature(b: int) -> tuple:   # o compasso b em todas as pistas (posição no compasso e notas)
+            return tuple(tuple((round((e.tick - b * bar) / (self.resolution / 48)), e.pitches)
+                               for e in per_track[name].get(b, [])) for name in names)
 
-            if found:
-                name = max(options, key=score)
-            else:   # nada detectado no compasso: continua na mesma pista, se ela toca ali
-                name = previous if previous in options else options[0]
-            chosen.extend(per_track[name][b])
-            count[name] = count.get(name, 0) + 1
-            previous = name
+        groups: dict[tuple, list[int]] = {}
+        for i, b in enumerate(bars):
+            groups.setdefault(signature(b), []).append(i)
+        for rows in groups.values():
+            if len(rows) > 1:
+                score[rows] = score[rows].mean(axis=0)
+        for i, b in enumerate(bars):
+            forced = self._forced(b)
+            if forced in names:
+                score[i] = -np.inf
+                score[i, names.index(forced)] = 0.0
+        # Viterbi: melhor sequência de pistas, com custo por troca
+        best, back = score[0].copy(), np.zeros((len(bars), len(names)), dtype=int)
+        for i in range(1, len(bars)):
+            moves = best[:, None] - SWITCH_COST * (1 - np.eye(len(names)))   # [de, para]
+            back[i] = moves.argmax(axis=0)
+            best = moves.max(axis=0) + score[i]
+        path = [int(best.argmax())]
+        for i in range(len(bars) - 1, 0, -1):
+            path.append(int(back[i, path[-1]]))
+        path.reverse()
+        chosen, count = [], {}
+        for b, k in zip(bars, path):
+            chosen.extend(per_track[names[k]].get(b, []))
+            count[names[k]] = count.get(names[k], 0) + 1
         return chosen, count
 
     def _apply(self, c, event: RefEvent) -> bool:
@@ -973,9 +1060,11 @@ def short_name(track: RefTrack) -> str:
 
 
 def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: int, tempo, rules,
-                log=print, fidelity: Fidelity = DEFAULT_FIDELITY) -> dict[str, "Guide | DrumGuide"]:
+                log=print, fidelity: Fidelity = DEFAULT_FIDELITY,
+                sections: list[tuple[int, int, int]] | None = None) -> dict[str, "Guide | DrumGuide"]:
     """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums).
-    `fidelity`: uma para todos os instrumentos ou uma por instrumento (ver parse_fidelity)."""
+    `fidelity`: uma para todos os instrumentos ou uma por instrumento (ver parse_fidelity).
+    `sections`: pista escolhida à mão para trechos da partitura (ver parse_sections)."""
     levels = {instrument: fidelity_for(fidelity, instrument) for instrument in GUIDED}
     score = read_score(path)
     mapping = default_mapping(score) if mapping is None else mapping
@@ -984,6 +1073,12 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
     if unknown:
         raise ValueError(f"a partitura não tem a(s) pista(s) {', '.join(map(str, unknown))} "
                          f"(tem {len(score.tracks)})")
+    for first, last, index in sections or ():
+        if mapping.get(index) not in PITCHED:
+            raise ValueError(f"trecho {first}-{last}={index}: a pista {index} não está sendo usada para "
+                             f"guitarra, baixo ou teclado")
+        if not score.bar_spans(first, last):
+            raise ValueError(f"trecho {first}-{last}={index}: a partitura tem {len(score.bars)} compassos")
     log(f"Referência {score.path.name}: " + "; ".join(
         f"{t.index} {t.name} -> {mapping.get(t.index, '(não usada)')}" for t in score.tracks if t.notes))
     # Todas as pistas com altura ajudam a alinhar, mesmo as que não guiam nenhum instrumento.
@@ -997,8 +1092,17 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
         tracks = [by_index[i] for i, inst in mapping.items() if inst == instrument]
         if tracks:   # com várias pistas no instrumento, o guia escolhe uma por compasso
             events = {short_name(t): events_in_ticks([t], alignment, tempo.resolution) for t in tracks}
+            chosen = []   # trechos escolhidos à mão, levados para os ticks da gravação
+            for first, last, index in sections or ():
+                if mapping[index] != instrument:
+                    continue
+                for start, end in score.bar_spans(first, last):
+                    a, b = alignment.to_audio_beat(start), alignment.to_audio_beat(end)
+                    if a is not None:   # o fim pode passar do trecho alinhado: segue no mesmo passo
+                        b = b if b is not None else a + (end - start) * alignment.factor
+                        chosen.append((a * tempo.resolution, b * tempo.resolution, short_name(by_index[index])))
             guides[instrument] = Guide(instrument, events, tempo.resolution, rules.detection[instrument],
-                                       levels[instrument])
+                                       levels[instrument], chosen)
     drum_tracks = [by_index[i] for i, inst in mapping.items() if inst == "drums"]
     if drum_tracks:
         guides["drums"] = DrumGuide(drum_events_in_ticks(drum_tracks, alignment, tempo.resolution),

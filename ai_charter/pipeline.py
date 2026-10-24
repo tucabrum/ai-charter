@@ -71,6 +71,7 @@ class Options:
     reference: Path | None = None  # partitura (MIDI ou Guitar Pro) que guia a transcrição (reference.py)
     reference_tracks: dict[int, str] | None = None   # pista da partitura -> instrumento (None = palpite)
     reference_fidelity: str | dict[str, str] = "seguir"   # corrigir, completar ou seguir (ou um por instrumento)
+    reference_sections: list[tuple[int, int, int]] | None = None   # pista escolhida à mão por trecho
     cifra: Path | None = None      # cifra (Cifra Club): letra e vocabulário de acordes (cifra.py)
     cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
@@ -349,7 +350,7 @@ def run(opts: Options, log=print) -> Result:
         if opts.reference is not None:
             from ai_charter.reference import load_guides
             guides = load_guides(opts.reference, opts.reference_tracks, mix, ANALYSIS_SR, tempo, rules, log,
-                                 opts.reference_fidelity)
+                                 opts.reference_fidelity, opts.reference_sections)
 
         log("4/5 Gerando as charts...")
         last_tick = int(tempo.time_to_tick(duration))

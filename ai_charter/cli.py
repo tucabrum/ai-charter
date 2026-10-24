@@ -41,6 +41,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                              "detectadas), completar (o ritmo da partitura nos compassos em que ela confere com "
                              "o áudio) ou seguir (as notas da partitura onde ela tiver notas; padrão). Uma para "
                              "todos ou por instrumento, ex.: drums=seguir,guitar=completar")
+    parser.add_argument("--reference-sections", default="",
+                        help="pista da partitura escolhida à mão por trecho, quando um instrumento tem várias "
+                             "(base, solo...): compassos da partitura=pista, ex.: 1-16=3,17-24=1 (o resto "
+                             "continua automático)")
     parser.add_argument("--instruments", default=",".join(ALL_INSTRUMENTS),
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",
@@ -71,20 +75,21 @@ def parse_args(argv: list[str] | None = None) -> Options:
         parser.error(f"arquivo de letra não encontrado: {args.lyrics}")
     if args.cifra is not None and not args.cifra.is_file():
         parser.error(f"arquivo de cifra não encontrado: {args.cifra}")
-    reference_tracks, reference_fidelity = None, "seguir"
+    reference_tracks, reference_fidelity, reference_sections = None, "seguir", None
     if args.reference is not None:
-        from ai_charter.reference import parse_fidelity, parse_mapping, read_score
+        from ai_charter.reference import parse_fidelity, parse_mapping, parse_sections, read_score
         try:   # lê já, para um arquivo ruim falhar antes da separação (que demora)
             read_score(args.reference)
             reference_tracks = parse_mapping(args.reference_tracks) if args.reference_tracks else None
             reference_fidelity = parse_fidelity(args.reference_fidelity)
+            reference_sections = parse_sections(args.reference_sections) or None
         except (OSError, RuntimeError, ValueError) as exc:
             parser.error(str(exc))
 
     return Options(
         input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
         rules_path=args.rules, genre=args.genre, reference=args.reference, reference_tracks=reference_tracks,
-        reference_fidelity=reference_fidelity, cifra=args.cifra,
+        reference_fidelity=reference_fidelity, reference_sections=reference_sections, cifra=args.cifra,
         instruments=instruments, tempo_mode=args.tempo,
         title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
         output_format=args.format,

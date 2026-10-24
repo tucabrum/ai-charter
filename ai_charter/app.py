@@ -133,6 +133,7 @@ class Request:
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
     reference_fidelity: str | dict[str, str] = "seguir"
+    reference_sections: list[tuple[int, int, int]] | None = None
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -201,6 +202,16 @@ def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
 FIDELITY_CHOICES = ("seguir", "completar", "corrigir")
 
 
+def _sections(data: dict) -> list[tuple[int, int, int]] | None:
+    """Pista da partitura escolhida à mão por trecho ("1-16=3, 17-24=1"; vazio = automático)."""
+    from ai_charter.reference import parse_sections
+
+    try:
+        return parse_sections(str(data.get("reference_sections") or "")) or None
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
 def _fidelity(data: dict) -> str | dict[str, str]:
     """A fidelidade à partitura: um nível para todos ou um por instrumento ({"drums": "seguir"})."""
     from ai_charter.reference import GUIDED
@@ -237,7 +248,7 @@ def parse_request(data: dict, settings: dict) -> Request:
         input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
-        reference_fidelity=_fidelity(data),
+        reference_fidelity=_fidelity(data), reference_sections=_sections(data),
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -277,7 +288,7 @@ def run_request(req: Request, log) -> Path:
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
             rules_path=req.rules_path, genre=req.genre, reference=req.reference,
             reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
-            instruments=req.instruments, tempo_mode=req.tempo_mode,
+            reference_sections=req.reference_sections, instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
             cifra=cifra, cifra_lyrics=req.lyrics_from_cifra,
@@ -301,6 +312,7 @@ class AddRequest:
     reference: Path | None = None
     reference_tracks: dict[int, str] | None = None
     reference_fidelity: str | dict[str, str] = "seguir"
+    reference_sections: list[tuple[int, int, int]] | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
     cifra_text: str = ""             # cifra colada (Cifra Club)
@@ -326,7 +338,7 @@ def parse_add_request(data: dict) -> AddRequest:
     return AddRequest(
         folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
-        reference_fidelity=_fidelity(data),
+        reference_fidelity=_fidelity(data), reference_sections=_sections(data),
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")), cifra_text=str(data.get("cifra_text") or "").strip(),
@@ -355,7 +367,7 @@ def run_add_request(req: AddRequest, log) -> Path:
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
                      rules_path=req.rules_path, genre=req.genre, reference=req.reference,
                      reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
-                     replace_existing=req.replace, log=log)
+                     reference_sections=req.reference_sections, replace_existing=req.replace, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder

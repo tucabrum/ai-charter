@@ -147,6 +147,8 @@
           <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="form">Procurar…</button></div>
           <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura (todas as pistas; dá para mudar por pista na tabela) <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
           <div class="ref-tracks"></div>
+          <label class="ref-fidelity">Pista por trecho (opcional) <input type="text" name="reference_sections" placeholder="1-16=3, 17-24=1"></label>
+          <p class="help">Quando várias pistas tocam o mesmo instrumento (base e solo), o charter escolhe uma por trecho sozinho. Para mandar: compassos da partitura = número da pista na tabela. O que ficar de fora continua automático.</p>
         </div>
         <div class="field">
           <span>Cifra (cole do Cifra Club, opcional)</span>
@@ -242,6 +244,8 @@
         <div class="row"><input type="text" name="reference" placeholder="musica.gp5"><button type="button" data-pick="score" data-for="reference" data-form="addForm">Procurar…</button></div>
         <p class="help">Guia guitarra, baixo, teclado e bateria. Com várias pistas no mesmo instrumento (solo, base...), cada compasso usa a que mais confere com o áudio. Na bateria, a partitura corrige a peça de cada golpe.</p><label class="ref-fidelity">Fidelidade à partitura (todas as pistas; dá para mudar por pista na tabela) <select name="reference_fidelity"><option value="seguir" selected>Seguir: as notas da partitura onde ela tiver notas</option><option value="completar">Completar: o ritmo da partitura onde ela confere com o áudio</option><option value="corrigir">Corrigir: notas do áudio, só altura e acordes da partitura</option></select></label>
         <div class="ref-tracks"></div>
+          <label class="ref-fidelity">Pista por trecho (opcional) <input type="text" name="reference_sections" placeholder="1-16=3, 17-24=1"></label>
+          <p class="help">Quando várias pistas tocam o mesmo instrumento (base e solo), o charter escolhe uma por trecho sozinho. Para mandar: compassos da partitura = número da pista na tabela. O que ficar de fora continua automático.</p>
       </div>
       <div class="field">
         <span>Cifra (cole do Cifra Club, opcional)</span>
@@ -528,14 +532,15 @@ async function loadReference(owner) {
 function referenceBody(owner) {
   const reference = owner.elements.reference.value.trim();
   if (!reference) return { reference: "" };
-  if (!owner.refTracks) return { reference, reference_fidelity: owner.elements.reference_fidelity.value, reference_tracks: null };
+  const reference_sections = owner.elements.reference_sections.value.trim();
+  if (!owner.refTracks) return { reference, reference_sections, reference_fidelity: owner.elements.reference_fidelity.value, reference_tracks: null };
   const mapping = {}, reference_fidelity = {};
   for (const row of owner.querySelectorAll(".ref-tracks tr[data-row]")) {
     const track = row.querySelector("select[data-track]"), level = row.querySelector("select[data-fidelity]");
     if (track.value) mapping[track.dataset.track] = track.value;
     if (track.value && !level.disabled) reference_fidelity[track.value] = level.value;
   }
-  return { reference, reference_fidelity, reference_tracks: mapping };
+  return { reference, reference_sections, reference_fidelity, reference_tracks: mapping };
 }
 
 for (const owner of [form, $("#addForm")]) {
