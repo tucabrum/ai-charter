@@ -39,7 +39,7 @@ from ai_charter.config import Rules, get_genre, load_rules
 from ai_charter.drum_model import MODEL_PATH as BASIC_DRUM_MODEL
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
 from ai_charter.drum_model import TOM_LANES, DrumModel, TomLaneModel, tom_lane_inputs
-from ai_charter.export import audio
+from ai_charter.export import audio, lead_in
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
 from ai_charter.export.song_ini import write_song_ini
@@ -75,6 +75,7 @@ class Options:
     reference_anchors: list[tuple[int, float]] | None = None   # compasso da partitura -> segundos, à mão
     cifra: Path | None = None      # cifra (Cifra Club): letra e vocabulário de acordes (cifra.py)
     cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
+    lead_in: float = 3.0           # segundos mínimos antes da 1ª nota (compassos de silêncio; 0 = sem)
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
     tempo_mode: str = "auto"
     title: str | None = None
@@ -418,29 +419,35 @@ def run(opts: Options, log=print) -> Result:
                     + (f" ({len(vocals.spoken)} sílabas faladas, sem nota)" if vocals.spoken else ""))
 
         log("5/5 Exportando para o Clone Hero / YARG...")
+        # Compassos de silêncio antes da 1ª nota, só nos arquivos: a análise acima não muda.
+        lead = lead_in.plan(tempo, lead_in.first_tick(tracks, vocals), opts.lead_in)
+        if lead.bars:
+            log(f"    entrada: {lead.bars} compasso(s) de silêncio ({lead.seconds:.1f} s) antes da música")
         stem_entries: dict[str, str] = {}
         if opts.separator == "none":
             # Sem stems de verdade: a música inteira vai no song.ogg.
-            audio.to_ogg(mix_wav, song_dir / "song.ogg")
+            audio.to_ogg(mix_wav, song_dir / "song.ogg", delay=lead.seconds)
             stem_entries["MusicStream"] = "song.ogg"
         else:
             for stem_name, (filename, key) in STEM_FILES.items():
                 if stem_name in stems:
-                    audio.mix_to_ogg(stems[stem_name], song_dir / filename)
+                    audio.mix_to_ogg(stems[stem_name], song_dir / filename, delay=lead.seconds)
                     stem_entries[key] = filename
 
         info = SongInfo(
             name=title, artist=artist, album=tags.get("album", ""), genre=tags.get("genre", ""),
             year=(tags.get("date") or tags.get("year") or "")[:4],
-            preview_start=find_preview_start(mix, ANALYSIS_SR), song_length=duration,
+            preview_start=find_preview_start(mix, ANALYSIS_SR) + lead.seconds, song_length=duration + lead.seconds,
             stems=stem_entries,
         )
         sections = (find_sections(mix, ANALYSIS_SR, tempo, rules.general.section_seconds)
                     if rules.general.sections else [])
         if opts.output_format == "mid":
             write_midi(song_dir / "notes.mid", title, tempo, tracks, sections, vocals, last_tick)
+            lead_in.shift_file(song_dir / "notes.mid", lead.ticks)
         else:
             write_chart(song_dir / "notes.chart", info, tempo, tracks, sections)
+            lead_in.shift_file(song_dir / "notes.chart", lead.ticks)
         write_song_ini(song_dir / "song.ini", info, tracks, vocals)
         audio.extract_cover(opts.input, song_dir / "album.png")
 

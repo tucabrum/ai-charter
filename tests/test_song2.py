@@ -24,7 +24,7 @@ def song(tmp_path_factory):
     for name in ("violao", "guitarra", "bass", "drums", "vocals"):
         shutil.move(paths[name], stems / f"{name}.wav")
     result = run(Options(input=paths["mix"], output_dir=folder / "out", separator="folder",
-                         stems_dir=stems, lyrics=paths["lyrics"], title="Estrada", artist="Teste"),
+                         stems_dir=stems, lyrics=paths["lyrics"], title="Estrada", artist="Teste", lead_in=0),
                  log=lambda *_: None)
     return result, parse_midi(result.song_dir / "notes.mid")
 
@@ -172,7 +172,7 @@ def dirty_song(tmp_path_factory):
         shutil.move(paths[name], stems / f"{name}.wav")
     messages = []
     result = run(Options(input=paths["mix"], output_dir=folder / "out", separator="folder",
-                         stems_dir=stems, lyrics=paths["lyrics"], title="Estrada", artist="Suja"),
+                         stems_dir=stems, lyrics=paths["lyrics"], title="Estrada", artist="Suja", lead_in=0),
                  log=messages.append)
     return parse_midi(result.song_dir / "notes.mid"), messages
 

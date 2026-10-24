@@ -25,22 +25,29 @@ def to_wav(src: Path, dst: Path, sample_rate: int = 44100) -> None:
           "-ar", str(sample_rate), str(dst)])
 
 
-def to_ogg(src: Path, dst: Path, quality: int = 8) -> None:
-    """Converte para OGG Vorbis, o formato de áudio que o Clone Hero usa (qualidade 0-10)."""
-    _run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", "-c:a", "libvorbis",
-          "-q:a", str(quality), str(dst)])
+def _delay(seconds: float) -> str:
+    """Filtro que põe `seconds` de silêncio no começo (o tempo de entrada, ver lead_in.py)."""
+    return f"adelay=delays={seconds * 1000:.3f}:all=1"
 
 
-def mix_to_ogg(sources: list[Path], dst: Path, quality: int = 8) -> None:
+def to_ogg(src: Path, dst: Path, quality: int = 8, delay: float = 0.0) -> None:
+    """Converte para OGG Vorbis, o formato de áudio que o Clone Hero usa (qualidade 0-10).
+
+    `delay`: segundos de silêncio no começo."""
+    _run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vn", *(["-af", _delay(delay)] if delay > 0 else []),
+          "-c:a", "libvorbis", "-q:a", str(quality), str(dst)])
+
+
+def mix_to_ogg(sources: list[Path], dst: Path, quality: int = 8, delay: float = 0.0) -> None:
     """Soma vários áudios (ex.: violão + guitarra) num único .ogg, sem alterar o volume."""
     if len(sources) == 1:
-        to_ogg(sources[0], dst, quality)
+        to_ogg(sources[0], dst, quality, delay)
         return
     cmd = ["ffmpeg", "-y", "-v", "error"]
     for src in sources:
         cmd += ["-i", str(src)]
-    cmd += ["-filter_complex", f"amix=inputs={len(sources)}:normalize=0:duration=longest",
-            "-c:a", "libvorbis", "-q:a", str(quality), str(dst)]
+    mix = f"amix=inputs={len(sources)}:normalize=0:duration=longest" + (f",{_delay(delay)}" if delay > 0 else "")
+    cmd += ["-filter_complex", mix, "-c:a", "libvorbis", "-q:a", str(quality), str(dst)]
     _run(cmd)
 
 
