@@ -217,6 +217,32 @@ def test_add_to_existing_chart(server, tmp_path):
         assert message in json.loads(err.value.read())["error"]
 
 
+def test_align_by_hand_endpoints(server, music, tmp_path):
+    """O painel de alinhar à mão toca o arquivo de música (com Range, para pular para qualquer ponto)
+    e mostra as notas de um compasso da partitura; os pontos marcados chegam ao pedido."""
+    base, app = server
+    music.write_bytes(bytes(range(256)) * 4)
+    req = urllib.request.Request(base + "api/audio?file=" + urllib.parse.quote(str(music)), headers={"Range": "bytes=10-19"})
+    with urllib.request.urlopen(req) as r:
+        assert r.status == 206 and r.headers["Content-Range"] == "bytes 10-19/1024" and r.read() == bytes(range(10, 20))
+    with pytest.raises(urllib.error.HTTPError):
+        get(base + "api/audio?file=" + urllib.parse.quote(str(tmp_path / "app.json")))   # só arquivos de música
+    midi = mido.MidiFile()
+    midi.tracks.append(mido.MidiTrack([mido.MetaMessage("track_name", name="Guitarra"), mido.Message("program_change", program=29)]
+                                      + [m for n in (50, 52, 57) for m in (mido.Message("note_on", note=n, velocity=90),
+                                                                         mido.Message("note_off", note=n, time=480 * 4))]))
+    ref = tmp_path / "ref.mid"
+    midi.save(ref)
+    info = get(base + f"api/reference/bar?file={urllib.parse.quote(str(ref))}&bar=2")
+    assert info["bars"] == 3 and info["tracks"] == [{"index": 1, "name": "Guitarra", "notes": ["Mi"]}]
+    req = parse_request({"input": str(music), "instruments": ["guitar"], "reference": str(ref),
+                         "reference_anchors": "1=2.40,3=1:05.5"}, app.settings)
+    assert req.reference_anchors == [(1, 2.4), (3, 65.5)]
+    with pytest.raises(BadRequest):
+        parse_request({"input": str(music), "instruments": ["guitar"], "reference": str(ref),
+                       "reference_anchors": "1=dois"}, app.settings)
+
+
 def test_reference_tracks_and_mapping(server, music, tmp_path):
     base, app = server
     midi = mido.MidiFile()

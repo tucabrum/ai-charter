@@ -136,6 +136,7 @@ class Request:
     reference_tracks: dict[int, str] | None = None
     reference_fidelity: str | dict[str, str] = "seguir"
     reference_sections: list[tuple[int, int, int]] | None = None
+    reference_anchors: list[tuple[int, float]] | None = None
     tempo_mode: str = "auto"
     output_format: str = "mid"
     title: str | None = None
@@ -202,6 +203,9 @@ def _reference(data: dict) -> tuple[Path | None, dict[int, str] | None]:
     return path, mapping
 
 
+AUDIO_TYPES = {".mp3": "audio/mpeg", ".flac": "audio/flac", ".wav": "audio/wav", ".ogg": "audio/ogg",
+               ".opus": "audio/ogg", ".m4a": "audio/mp4"}   # o que a página consegue tocar (alinhar à mão)
+
 # Quanto a partitura manda nas notas (reference.Guide); o primeiro é o padrão.
 FIDELITY_CHOICES = ("seguir", "completar", "corrigir")
 
@@ -212,6 +216,16 @@ def _sections(data: dict) -> list[tuple[int, int, int]] | None:
 
     try:
         return parse_sections(str(data.get("reference_sections") or "")) or None
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _anchors(data: dict) -> list[tuple[int, float]] | None:
+    """Pontos de alinhamento marcados à mão ("1=2.40, 33=65.10": compasso da partitura = segundos)."""
+    from ai_charter.reference import parse_anchors
+
+    try:
+        return parse_anchors(str(data.get("reference_anchors") or "")) or None
     except ValueError as exc:
         raise BadRequest(str(exc)) from exc
 
@@ -255,6 +269,7 @@ def parse_request(data: dict, settings: dict) -> Request:
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
+        reference_anchors=_anchors(data),
         tempo_mode=_choice(data, "tempo", TEMPO_MODES), output_format=_choice(data, "format", FORMATS),
         title=str(data.get("title") or "").strip() or None, artist=str(data.get("artist") or "").strip() or None,
         lyrics=lyrics, lyrics_text=lyrics_text, auto_lyrics=auto_lyrics, make_zip=bool(data.get("zip")),
@@ -314,7 +329,8 @@ def run_request(req: Request, log) -> Path:
             input=req.input, output_dir=req.output_dir, separator=req.separator, stems_dir=req.stems_dir,
             rules_path=req.rules_path, genre=req.genre, reference=req.reference,
             reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
-            reference_sections=req.reference_sections, instruments=req.instruments, tempo_mode=req.tempo_mode,
+            reference_sections=req.reference_sections, reference_anchors=req.reference_anchors,
+            instruments=req.instruments, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
             cifra=cifra, cifra_lyrics=req.lyrics_from_cifra,
@@ -339,6 +355,7 @@ class AddRequest:
     reference_tracks: dict[int, str] | None = None
     reference_fidelity: str | dict[str, str] = "seguir"
     reference_sections: list[tuple[int, int, int]] | None = None
+    reference_anchors: list[tuple[int, float]] | None = None
     lyrics: Path | None = None
     lyrics_text: str = ""
     cifra_text: str = ""             # cifra colada (Cifra Club)
@@ -365,6 +382,7 @@ def parse_add_request(data: dict) -> AddRequest:
         folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
+        reference_anchors=_anchors(data),
         lyrics=_path(data, "lyrics", "file"), lyrics_text=str(data.get("lyrics_text") or "").strip(),
         auto_lyrics=bool(data.get("auto_lyrics")), replace=bool(data.get("replace")),
         open_editor=bool(data.get("open_editor")), cifra_text=str(data.get("cifra_text") or "").strip(),
@@ -393,7 +411,8 @@ def run_add_request(req: AddRequest, log) -> Path:
     result = augment(req.folder, req.instruments, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
                      rules_path=req.rules_path, genre=req.genre, reference=req.reference,
                      reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
-                     reference_sections=req.reference_sections, replace_existing=req.replace, log=log)
+                     reference_sections=req.reference_sections, reference_anchors=req.reference_anchors,
+                     replace_existing=req.replace, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder
@@ -703,6 +722,32 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_range(self, file: Path, content_type: str) -> None:
+        """Um arquivo, com suporte a Range: o player da página pula para qualquer ponto da música."""
+        size = file.stat().st_size
+        start, end = 0, size - 1
+        wanted = self.headers.get("Range", "")
+        if wanted.startswith("bytes="):
+            first, _, last = wanted[6:].split(",")[0].partition("-")
+            start = int(first) if first else max(size - int(last or 0), 0)
+            end = min(int(last), size - 1) if first and last else end
+        self.send_response(206 if wanted else 200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(end - start + 1))
+        if wanted:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        with file.open("rb") as f:
+            f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = f.read(min(1 << 16, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+
     def _json(self, data, status: int = 200) -> None:
         self._send(json.dumps(data, ensure_ascii=False).encode(), "application/json; charset=utf-8", status)
 
@@ -757,6 +802,23 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"error": str(exc)}, 400)
             return self._json({"tracks": [t.summary() for t in score.tracks], "guided": GUIDED,
                                "mapping": default_mapping(score), "beats": round(score.length_beats)})
+        if path == "/api/reference/bar":   # notas de um compasso, para alinhar à mão
+            from ai_charter.reference import bar_notes, read_score
+            try:
+                file = _path({"file": (query.get("file") or [""])[0]}, "file", "file", required=True)
+                bar = int((query.get("bar") or ["1"])[0])
+                score = read_score(file)
+            except (BadRequest, OSError, RuntimeError, ValueError) as exc:
+                return self._json({"error": str(exc)}, 400)
+            return self._json({"bar": bar, "bars": len(score.bars), "tracks": bar_notes(score, bar)})
+        if path == "/api/audio":   # o arquivo de música, para tocar na página (alinhar à mão)
+            try:
+                file = _path({"file": (query.get("file") or [""])[0]}, "file", "file", required=True)
+            except BadRequest as exc:
+                return self._json({"error": str(exc)}, 400)
+            if file.suffix.lower() not in AUDIO_TYPES:
+                return self._json({"error": "não é um arquivo de música"}, 400)
+            return self._send_range(file, AUDIO_TYPES[file.suffix.lower()])
         if path == "/api/song":
             try:
                 folder = _path({"dir": (query.get("dir") or [""])[0]}, "dir", "dir", required=True)

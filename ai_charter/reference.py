@@ -67,6 +67,7 @@ WARP_COST = 0.2                           # alinhamento: custo de cada passo for
 UNMATCHED_COST = 0.5                      # alinhamento: passo da partitura depois do fim da gravação
 BAND_BEATS = 16                           # alinhamento: o caminho fica a até tantas batidas da melhor reta
 OUT_OF_BAND_COST = 2.0                    # (a distância de cosseno vai até 2: fora da faixa nunca compensa)
+ANCHOR_BAND_BEATS = 1.5                   # com pontos marcados à mão, o caminho fica a até tantas batidas deles
 
 NAME_HINTS = (   # (instrumento, padrão no nome da pista), na ordem em que são testados
     ("drums", r"drum|bateria|percuss|kit"),
@@ -488,6 +489,34 @@ def parse_gpif(xml: bytes) -> tuple[list[RefTrack], list[tuple[int, float, float
     return tracks, [(i + 1, at, at + headers[i].length) for at, i in zip(offsets, order)]
 
 
+NOTE_NAMES = ("Dó", "Dó#", "Ré", "Ré#", "Mi", "Fá", "Fá#", "Sol", "Sol#", "Lá", "Lá#", "Si")
+DRUM_NAMES = {"kick": "bumbo", "snare": "caixa", "hihat": "chimbal", "ride": "condução", "crash": "ataque",
+              "tom_high": "tom agudo", "tom_mid": "tom médio", "tom_low": "surdo"}
+
+
+def bar_notes(score: Score, bar: int) -> list[dict]:
+    """O que cada pista toca no compasso `bar` da partitura (a primeira vez que ele toca), para a
+    pessoa reconhecer o compasso ouvindo a música: [{"index", "name", "notes": ["Ré#", "Sol+Ré", ...]}]."""
+    spans = [(start, end) for number, start, end in score.bars if number == bar][:1]
+    out = []
+    for track in score.tracks:
+        notes = [n for n in track.notes for start, end in spans if start - 1e-6 <= n.beat < end - 1e-6]
+        groups: list[list[RefNote]] = []
+        for n in notes:
+            if groups and n.beat - groups[-1][0].beat <= CHORD_ONSET_BEATS:
+                groups[-1].append(n)
+            else:
+                groups.append([n])
+        if track.drums:
+            names = ["+".join(sorted({DRUM_NAMES.get(GM_DRUMS.get(n.pitch, ""), "?") for n in g})) for g in groups]
+        else:
+            names = ["+".join(dict.fromkeys(NOTE_NAMES[n.pitch % 12] for n in sorted(g, key=lambda n: n.pitch)))
+                     for g in groups]
+        if names:
+            out.append({"index": track.index, "name": track.name, "notes": names})
+    return out
+
+
 def default_mapping(score: Score) -> dict[int, str]:
     """Pistas -> instrumento pelo palpite (todas as pistas com notas e palpite conhecido)."""
     return {t.index: t.guess for t in score.tracks if t.notes and t.guess in INSTRUMENTS}
@@ -539,6 +568,23 @@ def parse_sections(text: str) -> list[tuple[int, int, int]]:
                              f"(use compassos=pista, ex.: 1-16=3,17-24=1)")
         sections.append((int(first), int(last), int(track)))
     return sections
+
+
+def parse_anchors(text: str) -> list[tuple[int, float]]:
+    """ "1=2.4, 33=1:05.2" -> [(1, 2.4), (33, 65.2)]: o compasso da partitura começa nesse instante
+    da música (segundos, ou minutos:segundos). Ajuda o alinhamento quando ele se perde."""
+    anchors = []
+    for part in filter(None, (p.strip() for p in text.split(","))):
+        bar, sep, when = (s.strip() for s in part.partition("="))
+        minutes, _, seconds = when.rpartition(":")
+        try:
+            at = float(seconds) + 60 * float(minutes or 0)
+        except ValueError:
+            at = -1.0
+        if not (sep and bar.isdigit() and at >= 0):
+            raise ValueError(f"ponto de alinhamento inválido: {part!r} (use compasso=segundos, ex.: 1=2.4,33=1:05.2)")
+        anchors.append((int(bar), at))
+    return anchors
 
 
 def fidelity_for(fidelity: Fidelity, instrument: str) -> str:
@@ -611,7 +657,8 @@ def best_line(C: np.ndarray, min_cover: float = 0.6) -> tuple[int, float]:
     return best
 
 
-def align_chroma(ref: np.ndarray, audio: np.ndarray) -> tuple[np.ndarray, float]:
+def align_chroma(ref: np.ndarray, audio: np.ndarray,
+                 anchors: list[tuple[float, float]] | None = None) -> tuple[np.ndarray, float]:
     """Caminho (passo da partitura, batida da gravação) por DTW e o custo médio por passo.
 
     A partitura pode cobrir só um trecho da gravação (introdução ou final a mais no áudio). As duas
@@ -622,13 +669,24 @@ def align_chroma(ref: np.ndarray, audio: np.ndarray) -> tuple[np.ndarray, float]
     O caminho também fica numa faixa de BAND_BEATS em volta da reta que melhor liga as duas
     (best_line). Quando o chroma confere pouco na música toda (partitura gerada automaticamente,
     mixagem embolada), um caminho torto que pula para outra parte da música pode custar quase o
-    mesmo que o certo; a reta, que tem de conferir na música inteira de uma vez, não se engana assim."""
+    mesmo que o certo; a reta, que tem de conferir na música inteira de uma vez, não se engana assim.
+
+    `anchors` ([(passo da partitura, batida da gravação)], marcados à mão) tomam o lugar da reta: o
+    caminho fica a até ANCHOR_BAND_BEATS da linha que passa por eles (antes do primeiro e depois do
+    último, segue batida a batida)."""
     import librosa
 
     C = 1 - _normalize(ref).T @ _normalize(audio)   # distância de cosseno
-    offset, _ = best_line(C)
     rows, cols = np.indices(C.shape)
-    C = np.where(np.abs(cols - rows - offset) <= BAND_BEATS, C, OUT_OF_BAND_COST)
+    if anchors:
+        steps, beats = (np.array(v, dtype=float) for v in zip(*sorted(anchors)))
+        center = np.interp(rows, steps, beats)
+        center = np.where(rows < steps[0], beats[0] - (steps[0] - rows), center)
+        center = np.where(rows > steps[-1], beats[-1] + (rows - steps[-1]), center)
+        C = np.where(np.abs(cols - center) <= ANCHOR_BAND_BEATS, C, OUT_OF_BAND_COST)
+    else:
+        offset, _ = best_line(C)
+        C = np.where(np.abs(cols - rows - offset) <= BAND_BEATS, C, OUT_OF_BAND_COST)
     # Com subseq, o librosa procura a sequência MENOR dentro da maior: se a partitura fosse mais longa,
     # ele procuraria a gravação inteira num pedaço dela. A gravação ganha batidas neutras no fim
     # (partitura que passa do fim do áudio) para continuar sendo a maior.
@@ -653,8 +711,10 @@ def regular_grid(beat_times: np.ndarray) -> np.ndarray:
     return np.concatenate([np.maximum(before, 0.0), beat_times[1:]])
 
 
-def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_times: np.ndarray) -> Alignment:
-    """Melhor alinhamento entre as pistas (com altura) da partitura e a gravação."""
+def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_times: np.ndarray,
+          anchors: list[tuple[float, float]] | None = None) -> Alignment:
+    """Melhor alinhamento entre as pistas (com altura) da partitura e a gravação.
+    `anchors`: [(batida da partitura, segundos na gravação)] marcados à mão (ver load_guides)."""
     pitched = [t for t in tracks if not t.drums and t.notes]
     if not pitched:
         raise ValueError("a partitura não tem pistas com notas (além da bateria) para alinhar")
@@ -665,8 +725,10 @@ def align(score: Score, tracks: list[RefTrack], y: np.ndarray, sr: int, beat_tim
         step = 1 / factor   # passos de partitura por batida da gravação
         n_steps = int(np.ceil(score.length_beats / step)) + 1
         ref = score_chroma(pitched, step, n_steps)
+        marks = [(beat / step, float(np.interp(seconds, grid, np.arange(len(grid)))))   # (passo, batida da grade)
+                 for beat, seconds in anchors or ()]
         for transpose in range(12):
-            path, cost = align_chroma(np.roll(ref, transpose, axis=0), audio)
+            path, cost = align_chroma(np.roll(ref, transpose, axis=0), audio, marks)
             if len(path) and (best is None or cost < best[0]):
                 best = (cost, factor, transpose, path, step)
     if best is None:
@@ -1083,10 +1145,13 @@ def short_name(track: RefTrack) -> str:
 
 def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: int, tempo, rules,
                 log=print, fidelity: Fidelity = DEFAULT_FIDELITY,
-                sections: list[tuple[int, int, int]] | None = None) -> dict[str, "Guide | DrumGuide"]:
+                sections: list[tuple[int, int, int]] | None = None,
+                anchors: list[tuple[int, float]] | None = None) -> dict[str, "Guide | DrumGuide"]:
     """Lê a partitura, alinha com a gravação e devolve um guia por instrumento (guitar, bass, keys, drums).
     `fidelity`: uma para todos os instrumentos ou uma por instrumento (ver parse_fidelity).
-    `sections`: pista escolhida à mão para trechos da partitura (ver parse_sections)."""
+    `sections`: pista escolhida à mão para trechos da partitura (ver parse_sections).
+    `anchors`: compassos da partitura e o instante em que começam na música, marcados à mão (ver
+    parse_anchors); o alinhamento passa por eles."""
     levels = {instrument: fidelity_for(fidelity, instrument) for instrument in GUIDED}
     score = read_score(path)
     mapping = default_mapping(score) if mapping is None else mapping
@@ -1103,9 +1168,16 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
             raise ValueError(f"trecho {first}-{last}={index}: a partitura tem {len(score.bars)} compassos")
     log(f"Referência {score.path.name}: " + "; ".join(
         f"{t.index} {t.name} -> {mapping.get(t.index, '(não usada)')}" for t in score.tracks if t.notes))
+    marks = []
+    for bar, seconds in anchors or ():
+        starts = [start for number, start, _ in score.bars if number == bar]
+        if not starts:
+            raise ValueError(f"ponto de alinhamento {bar}={seconds:g}: a partitura tem {len(score.bars)} compassos")
+        marks.append((starts[0], seconds))   # compasso repetido: vale a primeira vez que ele toca
     # Todas as pistas com altura ajudam a alinhar, mesmo as que não guiam nenhum instrumento.
-    alignment = align(score, score.tracks, y, sr, tempo.beat_times)
+    alignment = align(score, score.tracks, y, sr, tempo.beat_times, marks)
     log(f"    alinhada com a gravação (distância {alignment.cost:.2f}"
+        + (f", {len(marks)} ponto(s) marcado(s) à mão" if marks else "")
         + (f", transposta {alignment.transpose:+d} semitons" if alignment.transpose else "")
         + (f", {alignment.factor:g} batida(s) da gravação por batida da partitura" if alignment.factor != 1 else "")
         + ")")

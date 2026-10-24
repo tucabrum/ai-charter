@@ -201,6 +201,35 @@ def test_guide_keeps_one_track_per_section_and_hand_picked_sections():
     assert {round(c.pitch) for c in out if c.tick >= 4 * bar} == {45}
 
 
+def test_parse_anchors():
+    from ai_charter.reference import parse_anchors
+
+    assert parse_anchors("1=2.4, 33=1:05.2") == [(1, 2.4), (33, 65.2)]
+    assert parse_anchors("") == []
+    for bad in ("1", "x=2", "1=dois", "1=-3"):
+        with pytest.raises(ValueError):
+            parse_anchors(bad)
+
+
+def test_alignment_follows_hand_marks(tmp_path):
+    """Um ponto marcado à mão manda no alinhamento: com o compasso 1 marcado 2 s depois (um compasso
+    a 120 BPM), a partitura vai junto, mesmo conferindo pior com o áudio."""
+    import soundfile as sf
+    from ai_charter.reference import align
+
+    mix, sr = sf.read(synth.render(tmp_path)["mix"])
+    y = mix.mean(axis=1) if mix.ndim > 1 else mix
+    beats = len(synth.MELODY) // 2
+    score = read_score(write_midi(tmp_path / "ref.mid", [
+        ("Guitarra", 29, 0, [(n, 0.5) for n in synth.MELODY]),
+        ("Baixo", 33, 1, [(n, 1.0) for n in synth.BASS[:beats]])]))
+    grid = beat_this_grid(len(y) / sr)
+    right = align(score, score.tracks, y, sr, grid, [(0.0, synth.START + 0.05)])   # toque 50 ms atrasado
+    assert right.to_audio_beat(0) == pytest.approx(2 / 3, abs=0.05)
+    late = align(score, score.tracks, y, sr, grid, [(0.0, synth.START + 4 * synth.BEAT)])
+    assert late.to_audio_beat(0) == pytest.approx(4, abs=0.05)   # 3 s: a batida 4 do mapa (1,5 s + 3 x 0,5 s)
+
+
 def test_parse_sections():
     from ai_charter.reference import parse_sections
 

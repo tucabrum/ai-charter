@@ -74,6 +74,12 @@
   .ref-tracks select { padding: 2px 6px; }
   .ref-fidelity { display: block; margin-top: 6px; }
   .ref-fidelity select { max-width: 100%; }
+  .anchor { margin-top: 8px; }
+  .anchor-panel { margin-top: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+  .anchor-time { font-variant-numeric: tabular-nums; min-width: 4.5em; }
+  .anchor-notes div { margin-top: 2px; }
+  .anchor-list { margin: 6px 0 0; padding-left: 18px; }
+  .anchor-list button { padding: 0 6px; margin-left: 6px; }
   .ref-error { color: var(--red); font-size: 12px; }
   .genre-hint button { padding: 1px 8px; margin-left: 6px; font-size: 12px; }
   #addForm { max-width: 640px; }
@@ -161,6 +167,23 @@
           <div class="ref-tracks"></div>
           <label class="ref-fidelity">Pista por trecho (opcional) <input type="text" name="reference_sections" placeholder="1-16=3, 17-24=1"></label>
           <p class="help">Quando várias pistas tocam o mesmo instrumento (base e solo), o charter escolhe uma por trecho sozinho. Para mandar: compassos da partitura = número da pista na tabela. O que ficar de fora continua automático.</p>
+          <div class="anchor">
+            <div class="row"><button type="button" class="anchor-open">Alinhar à mão…</button><span class="help anchor-summary">Só se a chart sair fora da partitura.</span></div>
+            <input type="hidden" name="reference_anchors">
+            <div class="anchor-panel" hidden>
+              <p class="help">Toque a música e aperte <b>espaço</b> (ou <b>Marcar</b>) no instante em que começa o compasso abaixo. Pode marcar outros compassos que você reconheça bem (a entrada do refrão, por exemplo); marcar de novo o mesmo compasso troca a marca.</p>
+              <div class="row">
+                <label>Compasso <input type="number" class="anchor-bar" min="1" value="1" style="width: 5em"></label>
+                <button type="button" class="anchor-play">▶ Tocar</button>
+                <button type="button" class="anchor-back">↺ 5 s</button>
+                <button type="button" class="anchor-mark primary">Marcar</button>
+                <span class="anchor-time">0:00.0</span>
+              </div>
+              <div class="anchor-notes help"></div>
+              <ul class="anchor-list"></ul>
+              <audio class="anchor-audio" preload="auto"></audio>
+            </div>
+          </div>
         </div>
         <div class="field">
           <span>Cifra (cole do Cifra Club, opcional)</span>
@@ -580,14 +603,15 @@ function referenceBody(owner) {
   const reference = owner.elements.reference.value.trim();
   if (!reference) return { reference: "" };
   const reference_sections = owner.elements.reference_sections.value.trim();
-  if (!owner.refTracks) return { reference, reference_sections, reference_fidelity: owner.elements.reference_fidelity.value, reference_tracks: null };
+  const reference_anchors = owner.elements.reference_anchors ? owner.elements.reference_anchors.value : "";
+  if (!owner.refTracks) return { reference, reference_sections, reference_anchors, reference_fidelity: owner.elements.reference_fidelity.value, reference_tracks: null };
   const mapping = {}, reference_fidelity = {};
   for (const row of owner.querySelectorAll(".ref-tracks tr[data-row]")) {
     const track = row.querySelector("select[data-track]"), level = row.querySelector("select[data-fidelity]");
     if (track.value) mapping[track.dataset.track] = track.value;
     if (track.value && !level.disabled) reference_fidelity[track.value] = level.value;
   }
-  return { reference, reference_sections, reference_fidelity, reference_tracks: mapping };
+  return { reference, reference_sections, reference_anchors, reference_fidelity, reference_tracks: mapping };
 }
 
 for (const owner of [form, $("#addForm")]) {
@@ -597,6 +621,80 @@ for (const owner of [form, $("#addForm")]) {
     for (const select of owner.querySelectorAll(".ref-tracks select[data-fidelity]")) select.value = e.target.value;
   });
 }
+
+// ---- alinhar à mão: tocar a música e marcar quando começa um compasso da partitura ----
+const anchor = {
+  box: $(".anchor", form), marks: new Map(),   // compasso -> segundos
+  get audio() { return $(".anchor-audio", this.box); },
+};
+function fmtTime(s) { return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`; }
+function renderAnchors() {
+  const marks = [...anchor.marks].sort((a, b) => a[0] - b[0]);
+  form.elements.reference_anchors.value = marks.map(([bar, s]) => `${bar}=${s.toFixed(2)}`).join(",");
+  $(".anchor-list", anchor.box).innerHTML = marks.map(([bar, s]) =>
+    `<li>compasso ${bar} = ${fmtTime(s)}<button type="button" data-bar="${bar}" title="tirar">×</button></li>`).join("");
+  $(".anchor-summary", anchor.box).textContent = marks.length
+    ? marks.map(([bar, s]) => `compasso ${bar} = ${fmtTime(s)}`).join(", ")
+    : "Só se a chart sair fora da partitura.";
+}
+function clearAnchors() {
+  anchor.marks.clear();
+  anchor.audio.pause();
+  anchor.audio.removeAttribute("src");
+  $(".anchor-panel", anchor.box).hidden = true;
+  renderAnchors();
+}
+async function showBarNotes() {
+  const file = form.elements.reference.value.trim(), bar = Number($(".anchor-bar", anchor.box).value) || 1;
+  const box = $(".anchor-notes", anchor.box);
+  try {
+    const info = await api(`api/reference/bar?file=${encodeURIComponent(file)}&bar=${bar}`);
+    box.innerHTML = info.tracks.length
+      ? info.tracks.map(t => `<div>${t.index} ${esc(t.name)}: ${esc(t.notes.slice(0, 12).join("  "))}${t.notes.length > 12 ? " …" : ""}</div>`).join("")
+      : `<div>A partitura não tem notas no compasso ${bar} (ela tem ${info.bars} compassos).</div>`;
+  } catch (e) {
+    box.textContent = e.message;
+  }
+}
+function markAnchor() {
+  const bar = Number($(".anchor-bar", anchor.box).value) || 1;
+  anchor.marks.set(bar, anchor.audio.currentTime);
+  renderAnchors();
+}
+$(".anchor-open", anchor.box).onclick = () => {
+  const panel = $(".anchor-panel", anchor.box), input = form.elements.input.value.trim().replace(/^"|"$/g, "");
+  if (!form.elements.reference.value.trim()) return alert("Escolha a partitura primeiro.");
+  if (form.elements.sourceMode && form.elements.sourceMode.value === "url" || !input)
+    return alert("Para alinhar à mão, escolha o arquivo de música (com um link do YouTube, gere uma vez para baixar o áudio e use o arquivo baixado).");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) {
+    const src = "api/audio?file=" + encodeURIComponent(input);
+    if (anchor.audio.getAttribute("src") !== src) anchor.audio.src = src;
+    showBarNotes();
+  } else {
+    anchor.audio.pause();
+  }
+};
+$(".anchor-play", anchor.box).onclick = () => (anchor.audio.paused ? anchor.audio.play() : anchor.audio.pause());
+$(".anchor-back", anchor.box).onclick = () => { anchor.audio.currentTime = Math.max(0, anchor.audio.currentTime - 5); };
+$(".anchor-mark", anchor.box).onclick = markAnchor;
+$(".anchor-bar", anchor.box).addEventListener("change", e => { e.stopPropagation(); showBarNotes(); });
+$(".anchor-list", anchor.box).onclick = e => {
+  if (e.target.dataset.bar) { anchor.marks.delete(Number(e.target.dataset.bar)); renderAnchors(); }
+};
+anchor.audio.addEventListener("play", () => { $(".anchor-play", anchor.box).textContent = "❚❚ Pausar"; });
+anchor.audio.addEventListener("pause", () => { $(".anchor-play", anchor.box).textContent = "▶ Tocar"; });
+anchor.audio.addEventListener("timeupdate", () => { $(".anchor-time", anchor.box).textContent = fmtTime(anchor.audio.currentTime); });
+document.addEventListener("keydown", e => {   // espaço marca enquanto o painel está aberto (fora de campos de texto)
+  if (e.code !== "Space" || $(".anchor-panel", anchor.box).hidden) return;
+  if (e.target.matches && e.target.matches("textarea, input[type=text], select, button")) return;
+  e.preventDefault();
+  markAnchor();
+});
+// Outra música ou outra partitura: as marcas antigas não valem mais.
+form.elements.input.addEventListener("change", clearAnchors);
+form.elements.reference.addEventListener("change", clearAnchors);
+form.elements.reference.addEventListener("picked", clearAnchors);
 
 // ---- cifra ----
 function syncCifraOption(owner, modeName, label, available, fallback) {
