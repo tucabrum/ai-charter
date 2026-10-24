@@ -65,6 +65,8 @@ SWITCH_COST = 0.1                         # trocar de pista da partitura; a dife
 CHORD_ONSET_BEATS = 1 / 32                # notas que começam até aqui juntas são um acorde
 WARP_COST = 0.2                           # alinhamento: custo de cada passo fora da diagonal
 UNMATCHED_COST = 0.5                      # alinhamento: passo da partitura depois do fim da gravação
+BAND_BEATS = 16                           # alinhamento: o caminho fica a até tantas batidas da melhor reta
+OUT_OF_BAND_COST = 2.0                    # (a distância de cosseno vai até 2: fora da faixa nunca compensa)
 
 NAME_HINTS = (   # (instrumento, padrão no nome da pista), na ordem em que são testados
     ("drums", r"drum|bateria|percuss|kit"),
@@ -597,16 +599,36 @@ def _normalize(chroma: np.ndarray) -> np.ndarray:
     return chroma / np.linalg.norm(chroma, axis=0, keepdims=True)
 
 
+def best_line(C: np.ndarray, min_cover: float = 0.6) -> tuple[int, float]:
+    """A reta (passo i da partitura -> batida i + deslocamento da gravação) com a menor distância
+    média, e essa distância. Só valem retas que cobrem pelo menos `min_cover` da sequência menor."""
+    n, m = C.shape
+    best = (0, np.inf)
+    for offset in range(-n + 1, m):
+        diagonal = np.diagonal(C, offset=offset)   # C[i, i + offset]
+        if len(diagonal) >= min_cover * min(n, m) and diagonal.mean() < best[1]:
+            best = (offset, float(diagonal.mean()))
+    return best
+
+
 def align_chroma(ref: np.ndarray, audio: np.ndarray) -> tuple[np.ndarray, float]:
     """Caminho (passo da partitura, batida da gravação) por DTW e o custo médio por passo.
 
     A partitura pode cobrir só um trecho da gravação (introdução ou final a mais no áudio). As duas
     já estão em batidas, então o caminho esperado é a diagonal: sair dela (esticar ou encolher um
     trecho) custa WARP_COST, e o custo devolvido conta isso. Sem esse custo, o chroma (que muda
-    devagar) deixa o DTW espremer a música inteira em poucos compassos quase sem pagar nada."""
+    devagar) deixa o DTW espremer a música inteira em poucos compassos quase sem pagar nada.
+
+    O caminho também fica numa faixa de BAND_BEATS em volta da reta que melhor liga as duas
+    (best_line). Quando o chroma confere pouco na música toda (partitura gerada automaticamente,
+    mixagem embolada), um caminho torto que pula para outra parte da música pode custar quase o
+    mesmo que o certo; a reta, que tem de conferir na música inteira de uma vez, não se engana assim."""
     import librosa
 
     C = 1 - _normalize(ref).T @ _normalize(audio)   # distância de cosseno
+    offset, _ = best_line(C)
+    rows, cols = np.indices(C.shape)
+    C = np.where(np.abs(cols - rows - offset) <= BAND_BEATS, C, OUT_OF_BAND_COST)
     # Com subseq, o librosa procura a sequência MENOR dentro da maior: se a partitura fosse mais longa,
     # ele procuraria a gravação inteira num pedaço dela. A gravação ganha batidas neutras no fim
     # (partitura que passa do fim do áudio) para continuar sendo a maior.

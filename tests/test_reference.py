@@ -246,6 +246,25 @@ def beat_this_grid(total: float) -> np.ndarray:
     return np.concatenate([[0.0], np.arange(synth.START + synth.BEAT, total + 1, synth.BEAT)])
 
 
+def test_alignment_stays_near_the_best_line():
+    """Chroma que confere pouco (partitura gerada automaticamente): a gravação é a partitura 5 batidas
+    depois, com muito ruído, e um trecho do fim da gravação imita o começo da partitura. A reta acha
+    o deslocamento certo, e o caminho do DTW não sai da faixa em volta dela."""
+    from ai_charter.reference import BAND_BEATS, align_chroma, best_line
+
+    rng = np.random.default_rng(0)
+    n, m = 120, 200
+    ref = rng.random((12, n))
+    audio = rng.random((12, m))
+    audio[:, 5:5 + n] = ref + 1.5 * rng.random((12, n))
+    audio[:, 150:190] = ref[:, :40]   # o começo da partitura "de novo" lá no fim
+    C = 1 - (ref / np.linalg.norm(ref, axis=0)).T @ (audio / np.linalg.norm(audio, axis=0))
+    assert best_line(C)[0] == 5
+    path, _ = align_chroma(ref, audio)
+    deviation = path[:, 1] - path[:, 0]
+    assert np.all(np.abs(deviation - 5) <= BAND_BEATS) and np.median(deviation) == 5
+
+
 @pytest.mark.parametrize("outro", [0, 8])
 def test_alignment_on_beat_this_grid(tmp_path, outro):
     """Com `outro` batidas a mais no fim, a partitura fica mais longa que a gravação: antes o DTW do
