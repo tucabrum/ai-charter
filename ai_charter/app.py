@@ -12,6 +12,7 @@ Sobe um servidor local (só nesta máquina) que entrega a página da interface
   GET  /api/library      músicas da biblioteca (pastas com notes.mid ou notes.chart)
   GET  /api/song?dir=    o que a pasta de uma música já tem (partes, stems, letra e gênero)
   GET  /api/tags?file=   tags do arquivo de música e o gênero que corresponde à tag
+  GET  /api/video?url=   título, artista e duração de um vídeo do YouTube (sem baixar; youtube.py)
   GET  /api/reference?file=  pistas de uma partitura (MIDI ou Guitar Pro) e o palpite de cada uma
   POST /api/jobs         põe uma geração na fila (uma de cada vez: o Demucs é pesado)
   POST /api/add          põe na fila o acréscimo de instrumentos a uma chart (augment.py)
@@ -90,7 +91,8 @@ def load_settings(path: Path = SETTINGS_PATH) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
-    return {"library": data.get("library") or "", "output": data.get("output") or ""}
+    return {"library": data.get("library") or "", "output": data.get("output") or "",
+            "downloads": data.get("downloads") or ""}
 
 
 def save_settings(settings: dict, path: Path = SETTINGS_PATH) -> None:
@@ -123,7 +125,7 @@ class Job:
 @dataclass
 class Request:
     """Uma geração pedida pela página, já validada."""
-    input: Path
+    input: Path | None            # None quando a música vem de um link (url)
     output_dir: Path
     instruments: tuple[str, ...]
     separator: str = "demucs"
@@ -146,6 +148,8 @@ class Request:
     make_zip: bool = False
     overwrite: bool = False
     open_editor: bool = False
+    url: str | None = None        # vídeo do YouTube: o áudio é baixado no começo da geração
+    download_dir: Path | None = None   # onde guardar o áudio baixado (youtube.DEFAULT_DIR se None)
 
 
 def _path(data: dict, key: str, kind: str, required: bool = False) -> Path | None:
@@ -244,8 +248,10 @@ def parse_request(data: dict, settings: dict) -> Request:
     reference, reference_tracks = _reference(data)
     stems_dir = _path(data, "stems", "dir", required=separator == "folder")
     output = _path(data, "output", "") or (Path(settings["output"]) if settings.get("output") else Path("output"))
+    url, source = _source(data)
+    downloads = _path(data, "downloads", "") or (Path(settings["downloads"]) if settings.get("downloads") else None)
     return Request(
-        input=_path(data, "input", "file", required=True), output_dir=output, instruments=instruments,
+        input=source, url=url, download_dir=downloads, output_dir=output, instruments=instruments,
         separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
@@ -257,12 +263,32 @@ def parse_request(data: dict, settings: dict) -> Request:
     )
 
 
+def _source(data: dict) -> tuple[str | None, Path | None]:
+    """A música do pedido: um link (baixado na hora de gerar) ou um arquivo."""
+    from ai_charter.youtube import is_url
+
+    text = str(data.get("input") or "").strip().strip('"')
+    if is_url(text):
+        return text, None
+    return None, _path(data, "input", "file", required=True)
+
+
 def run_request(req: Request, log) -> Path:
     """Roda o pipeline para um pedido e devolve a pasta da música criada."""
+    from dataclasses import replace
+
     from ai_charter.export import audio
     from ai_charter.pipeline import Options, _safe_name, run
 
     audio.require_ffmpeg()
+    if req.url:
+        from ai_charter import youtube
+        log("0/5 Baixando o áudio do vídeo...")
+        path, _ = youtube.download(req.url, req.download_dir, log)
+        song_dir = run_request(replace(req, input=path, url=None), log)
+        if youtube.save_cover(path, song_dir):
+            log("A miniatura do vídeo virou a capa (album.png)")
+        return song_dir
     tags = audio.read_tags(req.input)
     title = req.title or tags.get("title") or req.input.stem
     artist = req.artist or tags.get("artist") or "Unknown Artist"
@@ -416,7 +442,8 @@ class Jobs:
         self._resume.set()
 
     def submit(self, req: Request, batch: str | None = None, label: str | None = None) -> Job:
-        return self.submit_task(label or req.title or req.input.stem, partial(self.runner, req),
+        return self.submit_task(label or req.title or (req.input.stem if req.input else req.url),
+                                partial(self.runner, req),
                                 req.open_editor, batch)
 
     def submit_task(self, title: str, task, open_editor: bool = False, batch: str | None = None) -> Job:
@@ -699,6 +726,19 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json({"error": "geração não encontrada"}, 404)
             since = int((query.get("since") or ["0"])[0] or 0)
             return self._json({**job.summary(), "lines": job.lines[since:], "next": len(job.lines)})
+        if path == "/api/video":
+            from ai_charter import youtube
+            url = (query.get("url") or [""])[0].strip()
+            if not youtube.is_url(url):
+                return self._json({"error": "link inválido"}, 400)
+            try:
+                video = youtube.info(url)
+            except RuntimeError as exc:
+                return self._json({"error": str(exc)}, 400)
+            folder = Path((query.get("dir") or [""])[0].strip() or self.app.settings.get("downloads")
+                          or youtube.DEFAULT_DIR)
+            return self._json({"title": video.title, "artist": video.artist, "duration": video.duration,
+                               "id": video.id, "cached": str(youtube.cached(folder, video.id) or "")})
         if path == "/api/tags":
             try:
                 file = _path({"file": (query.get("file") or [""])[0]}, "file", "file", required=True)
@@ -746,8 +786,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(job.summary())
             if path == "/api/batch/scan":
                 from ai_charter.batch import scan
-                paths = [Path(str(p).strip().strip('"')) for p in data.get("paths") or [] if str(p).strip()]
-                missing = [str(p) for p in paths if not p.exists()]
+                from ai_charter.youtube import is_url
+                paths = [str(p).strip().strip('"') for p in data.get("paths") or [] if str(p).strip()]
+                missing = [p for p in paths if not is_url(p) and not Path(p).exists()]
                 if missing:
                     raise BadRequest("não encontrado: " + ", ".join(missing))
                 return self._json(scan(paths).to_dict())
@@ -777,7 +818,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/pick":
                 return self._json({"path": self.app.dialogs.ask(str(data.get("kind")), data.get("start"))})
             if path == "/api/settings":
-                for key in ("library", "output"):
+                for key in ("library", "output", "downloads"):
                     if key in data:
                         self.app.settings[key] = str(data[key] or "").strip().strip('"')
                 save_settings(self.app.settings, self.app.settings_path)

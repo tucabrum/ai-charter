@@ -15,7 +15,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
         prog="ai-charter",
         description="Gera charts de Clone Hero / YARG (Easy a Expert) a partir de um MP3 ou FLAC.",
     )
-    parser.add_argument("input", type=Path, help="arquivo de música (.mp3, .flac, .wav, .ogg)")
+    parser.add_argument("input", help="arquivo de música (.mp3, .flac, .wav, .ogg, .opus, .m4a) ou link de um "
+                                      "vídeo do YouTube (o áudio é baixado e guardado em --downloads)")
+    parser.add_argument("--downloads", type=Path,
+                        help="pasta onde guardar o áudio baixado de um link (padrão: Música\\ai-charter)")
     parser.add_argument("-o", "--output", type=Path, default=Path("output"),
                         help="pasta onde a música será criada (padrão: ./output)")
     parser.add_argument("--separator", choices=("demucs", "folder", "none"), default="demucs",
@@ -69,7 +72,9 @@ def parse_args(argv: list[str] | None = None) -> Options:
     invalid = set(instruments) - set(ALL_INSTRUMENTS)
     if invalid:
         parser.error(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
-    if not args.input.exists():
+    from ai_charter.youtube import is_url
+    url = args.input if is_url(args.input) else None
+    if url is None and not Path(args.input).exists():
         parser.error(f"arquivo não encontrado: {args.input}")
     if args.lyrics is not None and not args.lyrics.exists():
         parser.error(f"arquivo de letra não encontrado: {args.lyrics}")
@@ -87,7 +92,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
             parser.error(str(exc))
 
     return Options(
-        input=args.input, output_dir=args.output, separator=args.separator, stems_dir=args.stems,
+        input=_source(parser, args, url), output_dir=args.output, separator=args.separator, stems_dir=args.stems,
         rules_path=args.rules, genre=args.genre, reference=args.reference, reference_tracks=reference_tracks,
         reference_fidelity=reference_fidelity, reference_sections=reference_sections, cifra=args.cifra,
         instruments=instruments, tempo_mode=args.tempo,
@@ -95,6 +100,18 @@ def parse_args(argv: list[str] | None = None) -> Options:
         output_format=args.format,
         make_zip=args.zip, keep_work=args.keep_work,
     )
+
+
+def _source(parser, args, url: str | None) -> Path:
+    """O arquivo de música; um link é baixado agora (o mesmo vídeo não é baixado de novo)."""
+    if url is None:
+        return Path(args.input)
+    from ai_charter.youtube import download
+    print("Baixando o áudio do vídeo...")
+    try:
+        return download(url, args.downloads)[0]
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
 
 def main(argv: list[str] | None = None) -> None:

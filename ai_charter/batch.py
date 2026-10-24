@@ -7,7 +7,8 @@ Uso:
 
 Os arquivos podem vir misturados ou em pastas separadas (as subpastas também são olhadas):
 músicas, partituras (MIDI ou Guitar Pro) e .txt (letra ou cifra do Cifra Club, reconhecida
-pelas linhas de acordes). Cada partitura, letra e cifra é casada com a música de nome mais
+pelas linhas de acordes). Links do YouTube (vídeos ou playlists) também valem como músicas: o
+áudio é baixado quando a geração de cada um começa (youtube.py). Cada partitura, letra e cifra é casada com a música de nome mais
 parecido (nome do arquivo e as tags de título e artista). Cada arquivo vai para uma música só;
 o que não se parece o bastante com nenhuma fica de fora e a música é gerada sem ele.
 """
@@ -171,6 +172,7 @@ class Files:
     scores: list[Path] = field(default_factory=list)
     lyrics: list[Path] = field(default_factory=list)
     cifras: list[Path] = field(default_factory=list)
+    urls: list[str] = field(default_factory=list)   # links do YouTube (vídeo ou playlist)
 
 
 def is_cifra(path: Path) -> bool:
@@ -183,11 +185,18 @@ def is_cifra(path: Path) -> bool:
         return False
 
 
-def collect(paths: list[Path]) -> Files:
-    """Separa os arquivos (e o conteúdo das pastas, com subpastas) por tipo."""
+def collect(paths: list) -> Files:
+    """Separa os arquivos (e o conteúdo das pastas, com subpastas) por tipo, e os links."""
+    from ai_charter.youtube import is_url
+
     found: list[Path] = []
-    for path in paths:
-        path = Path(path)
+    urls: list[str] = []
+    for raw in paths:
+        if is_url(raw):
+            if str(raw).strip() not in urls:
+                urls.append(str(raw).strip())
+            continue
+        path = Path(raw)
         if path.is_dir():
             for folder, dirs, files in os.walk(path):
                 if {f.lower() for f in files} & set(CHART_FILES):
@@ -197,7 +206,7 @@ def collect(paths: list[Path]) -> Files:
                 found += [Path(folder) / f for f in sorted(files)]
         elif path.is_file():
             found.append(path)
-    out, seen = Files(), set()
+    out, seen = Files(urls=urls), set()
     for path in found:
         key = os.path.normcase(str(path.resolve()))
         if key in seen:
@@ -269,20 +278,31 @@ def assign(names: list[list[str]], audio: list[Path], others: list[Path]) -> dic
     return picks
 
 
-def plan(files: Files, tags: dict[str, dict] | None = None) -> Plan:
+def plan(files: Files, tags: dict[str, dict] | None = None, videos: list | None = None) -> Plan:
     """Os pares (música, partitura, letra, cifra) propostos para o lote.
 
-    `tags`: as tags de cada música (pelo caminho), lidas com o ffprobe; sem elas vale só o nome."""
+    `tags`: as tags de cada música (pelo caminho), lidas com o ffprobe; sem elas vale só o nome.
+    `videos`: os vídeos dos links (youtube.Video), que entram depois dos arquivos, pelo título."""
     from ai_charter.config import genre_for_tag
 
     tags = tags or {}
+    videos = videos or []
     audio = sorted(files.audio, key=lambda p: (p.parent.as_posix().lower(), p.name.lower()))
     names = [audio_names(p, tags.get(str(p))) for p in audio]
+    n_files = len(audio)
+    for v in videos:   # o vídeo casa pelo nome "Artista - Título", como se fosse o nome de um arquivo
+        audio.append(Path(re.sub(r'[<>:"/\\|?*]', "", v.name) or v.id))
+        names.append([Name(normalize(v.artist), normalize(v.title))])
     refs = assign(names, audio, files.scores)
     lyrics = assign(names, audio, files.lyrics)
     cifras = assign(names, audio, files.cifras)
     items = []
     for i, path in enumerate(audio):
+        if i >= n_files:
+            v = videos[i - n_files]
+            items.append(Item(input=v.url, title=v.title, artist=v.artist,
+                              reference=refs.get(i), lyrics=lyrics.get(i), cifra=cifras.get(i)))
+            continue
         t = tags.get(str(path)) or {}
         artist, title = t.get("artist", "").strip(), t.get("title", "").strip()
         if not title:   # sem tags: "Artista - Título" do nome do arquivo (senão vira "Unknown Artist")
@@ -312,9 +332,18 @@ def read_all_tags(paths: list[Path]) -> dict[str, dict]:
     return {str(p): audio.read_tags(p) for p in paths}
 
 
-def scan(paths: list[Path]) -> Plan:
+def scan(paths: list) -> Plan:
+    """Os pares do lote para os caminhos e links dados (os links são consultados no YouTube)."""
     files = collect(paths)
-    return plan(files, read_all_tags(files.audio))
+    videos, seen = [], set()
+    if files.urls:
+        from ai_charter.youtube import expand
+        for url in files.urls:
+            for v in expand(url):
+                if v.id not in seen:
+                    seen.add(v.id)
+                    videos.append(v)
+    return plan(files, read_all_tags(files.audio), videos)
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +388,9 @@ LEVEL = {"alta": "", "media": " (média)", "baixa": " (BAIXA: confira)"}
 
 def print_plan(p: Plan) -> None:
     for n, it in enumerate(p.items, 1):
-        print(f"{n:>3}. {Path(it.input).name}")
+        link = it.input.startswith(("http://", "https://"))
+        name = " - ".join(x for x in (it.artist, it.title) if x)
+        print(f"{n:>3}. {f'{name}  ({it.input})' if link else Path(it.input).name}")
         for label, pick in (("partitura", it.reference), ("letra", it.lyrics), ("cifra", it.cifra)):
             if pick is not None:
                 print(f"       {label}: {Path(pick.path).name}  [{pick.score:.2f}{LEVEL[pick.confidence]}]")
@@ -377,8 +408,9 @@ def main(argv: list[str] | None = None) -> None:
         prog="ai-charter-batch",
         description="Gera charts de várias músicas de uma vez, casando cada partitura, letra e cifra "
                     "com a música de nome mais parecido.")
-    parser.add_argument("paths", nargs="+", type=Path,
-                        help="músicas, partituras (.mid/.gp*), letras e cifras (.txt), ou pastas com eles")
+    parser.add_argument("paths", nargs="+",
+                        help="músicas, partituras (.mid/.gp*), letras e cifras (.txt), pastas com eles, "
+                             "ou links do YouTube (vídeos ou playlists)")
     parser.add_argument("-o", "--output", type=Path, default=Path("output"),
                         help="pasta onde as músicas serão criadas (padrão: ./output)")
     parser.add_argument("--instruments", default="guitar,bass,drums,keys",
@@ -398,11 +430,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    missing = [str(p) for p in args.paths if not p.exists()]
+    from ai_charter.youtube import is_url
+    missing = [p for p in args.paths if not is_url(p) and not Path(p).exists()]
     if missing:
         parser.error("não encontrado: " + ", ".join(missing))
 
-    p = scan(args.paths)
+    try:
+        p = scan(args.paths)
+    except RuntimeError as exc:   # link que o YouTube recusou, yt-dlp não instalado...
+        parser.error(str(exc))
     if not p.items:
         parser.error("nenhuma música (.mp3, .flac, .wav, .ogg, .opus, .m4a) nos caminhos dados")
     print_plan(p)

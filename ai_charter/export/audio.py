@@ -45,15 +45,22 @@ def mix_to_ogg(sources: list[Path], dst: Path, quality: int = 8) -> None:
 
 
 def read_tags(src: Path) -> dict[str, str]:
-    """Lê as tags do arquivo (título, artista, álbum...) em minúsculas."""
+    """Lê as tags do arquivo (título, artista, álbum...) em minúsculas.
+
+    No Ogg e no Opus as tags ficam na faixa de áudio, não no arquivo: as dela valem quando o
+    arquivo não tem a mesma tag."""
     result = subprocess.run(
-        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(src)],
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams",
+         "-select_streams", "a:0", str(src)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         return {}
-    tags = json.loads(result.stdout or "{}").get("format", {}).get("tags", {})
-    return {k.lower(): str(v) for k, v in tags.items()}
+    data = json.loads(result.stdout or "{}")
+    tags = {}
+    for source in [*(s.get("tags", {}) for s in data.get("streams", [])[:1]), data.get("format", {}).get("tags", {})]:
+        tags.update({k.lower(): str(v) for k, v in source.items()})
+    return tags
 
 
 def extract_cover(src: Path, dst: Path) -> bool:

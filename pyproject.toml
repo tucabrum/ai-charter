@@ -19,6 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 # Separação de stems com IA (baixa o PyTorch, que é grande).
 separation = ["demucs>=4.0"]
+# Baixar o áudio de um vídeo do YouTube (link no lugar do arquivo de música).
+youtube = ["yt-dlp>=2025.1"]
 # Transcrição automática da letra (--auto-lyrics).
 lyrics = ["faster-whisper>=1.0"]
 # Transcrição de bateria do ADTOF (uso não comercial, CC BY-NC-SA), como entrada do modelo de bateria.

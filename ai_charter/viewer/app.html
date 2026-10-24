@@ -126,8 +126,20 @@
       <form class="card" id="form" autocomplete="off">
         <h2>Nova chart</h2>
         <div class="field">
-          <span>Música (MP3, FLAC, WAV, OGG)</span>
-          <div class="row"><input type="text" name="input" placeholder="C:\Músicas\artista - música.flac"><button type="button" data-pick="audio" data-for="input">Procurar…</button></div>
+          <span>Música</span>
+          <div>
+            <label class="check"><input type="radio" name="sourceMode" value="file" checked> Arquivo (MP3, FLAC, WAV, OGG, Opus)</label>
+            <label class="check"><input type="radio" name="sourceMode" value="url"> Link do YouTube</label>
+          </div>
+          <div class="row" id="source-file"><input type="text" name="input" placeholder="C:\Músicas\artista - música.flac"><button type="button" data-pick="audio" data-for="input">Procurar…</button></div>
+          <div id="source-url" hidden>
+            <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=..." style="width: 100%">
+            <p class="help" id="videoInfo">O áudio é baixado no começo da geração, como veio do YouTube (Opus ou AAC, sem recomprimir), e fica guardado: o mesmo link não é baixado de novo.</p>
+          </div>
+        </div>
+        <div class="field" id="downloads-field" hidden>
+          <span>Pasta dos downloads do YouTube</span>
+          <div class="row"><input type="text" name="downloads" placeholder="Música\ai-charter"><button type="button" data-pick="folder" data-for="downloads">Procurar…</button></div>
         </div>
         <div class="two">
           <div class="field"><span>Título (padrão: tag do arquivo)</span><input type="text" name="title"></div>
@@ -287,7 +299,7 @@
       <div class="row">
         <button type="button" id="batchFiles">Escolher arquivos…</button>
         <button type="button" id="batchFolder">Escolher pasta…</button>
-        <input type="text" id="batchPath" placeholder="ou cole o caminho de um arquivo ou pasta e tecle Enter" style="flex: 1; min-width: 220px">
+        <textarea id="batchPath" rows="1" placeholder="ou cole caminhos ou links do YouTube (vídeos ou playlists), um por linha, e tecle Enter" style="flex: 1; min-width: 220px; min-height: 34px"></textarea>
       </div>
       <div class="batch-sources" id="batchSources"></div>
       <div id="batchStatus" class="help"></div>
@@ -299,6 +311,8 @@
           <div class="field"><span>Fidelidade à partitura</span><select name="reference_fidelity" id="batchFidelity"><option value="seguir" selected>Seguir</option><option value="completar">Completar</option><option value="corrigir">Corrigir</option></select></div>
           <div class="field"><span>Pasta de saída</span>
             <div class="row"><input type="text" name="output" placeholder="output"><button type="button" data-pick="folder" data-for="output" data-form="batchForm">Procurar…</button></div></div>
+          <div class="field" id="batchDownloads" hidden><span>Pasta dos downloads do YouTube</span>
+            <div class="row"><input type="text" name="downloads" placeholder="Música\ai-charter"><button type="button" data-pick="folder" data-for="downloads" data-form="batchForm">Procurar…</button></div></div>
         </div>
         <details>
           <summary>Opções avançadas (para todas)</summary>
@@ -405,6 +419,10 @@ function syncForm() {
   $("#lyrics-auto").hidden = mode !== "auto";
   $("#lyrics-none").hidden = mode !== "none";
   $("#stems-field").hidden = form.elements.separator.value !== "folder";
+  const link = form.elements.sourceMode.value === "url";
+  $("#source-file").hidden = link;
+  $("#source-url").hidden = !link;
+  $("#downloads-field").hidden = !link;
 }
 form.addEventListener("change", syncForm);
 
@@ -412,7 +430,8 @@ form.onsubmit = async ev => {
   ev.preventDefault();
   const f = form.elements, mode = f.lyricsMode.value;
   const body = {
-    input: f.input.value, title: f.title.value, artist: f.artist.value, output: f.output.value,
+    input: f.sourceMode.value === "url" ? f.url.value.trim() : f.input.value, downloads: f.downloads.value,
+    title: f.title.value, artist: f.artist.value, output: f.output.value,
     instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
     separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
     genre: f.genre.value, ...referenceBody(form),
@@ -422,19 +441,47 @@ form.onsubmit = async ev => {
     lyrics: mode === "file" ? f.lyrics.value : "",
     auto_lyrics: mode === "auto",
   };
+  if (f.sourceMode.value === "url" && !isUrl(body.input)) return showError("cole o link do vídeo (https://...)");
   if (mode === "paste" && !body.lyrics_text.trim()) return showError("cole a letra ou escolha outra opção de vocais");
   if (mode !== "none" && f.format.value !== "mid") return showError("o formato notes.chart não tem vocais: use notes.mid");
   showError("");
   try {
     const job = await api("api/jobs", body);
-    if (f.output.value && f.output.value !== state.settings.output) {
-      state.settings = await api("api/settings", { output: f.output.value });
-    }
+    await saveFolders(f.output.value, f.sourceMode.value === "url" ? f.downloads.value : "");
     addJob(job);
   } catch (e) { showError(e.message); }
 };
 
 function showError(text) { $("#formError").textContent = text; }
+
+const isUrl = text => /^https?:\/\/\S+$/i.test(String(text || "").trim());
+
+// Guarda as pastas de saída e dos downloads escolhidas (as duas abas usam as mesmas).
+async function saveFolders(output, downloads) {
+  const changes = {};
+  if (output && output !== state.settings.output) changes.output = output;
+  if (downloads && downloads !== state.settings.downloads) changes.downloads = downloads;
+  if (!Object.keys(changes).length) return;
+  state.settings = await api("api/settings", changes);
+  form.elements.output.value = batchForm.elements.output.value = state.settings.output;
+  form.elements.downloads.value = batchForm.elements.downloads.value = state.settings.downloads;
+}
+
+// Título, artista e duração do vídeo, para conferir o link antes de gerar.
+async function videoInfo() {
+  const url = form.elements.url.value.trim(), box = $("#videoInfo");
+  if (!isUrl(url)) return;
+  box.textContent = "Consultando o vídeo…";
+  try {
+    const v = await api("api/video?url=" + encodeURIComponent(url) + "&dir=" + encodeURIComponent(form.elements.downloads.value.trim()));
+    const time = v.duration ? ` (${Math.floor(v.duration / 60)}:${String(Math.round(v.duration % 60)).padStart(2, "0")})` : "";
+    box.textContent = `${[v.artist, v.title].filter(Boolean).join(" - ")}${time}` + (v.cached ? " · já baixado" : "");
+    form.elements.title.placeholder = v.title || "Título (padrão: do vídeo)";
+    form.elements.artist.placeholder = v.artist || "Artista (padrão: do vídeo)";
+  } catch (e) { box.textContent = e.message; }
+}
+form.elements.url.addEventListener("change", videoInfo);
+form.elements.url.addEventListener("paste", () => setTimeout(videoInfo, 0));
 
 // ---- gênero ----
 function genreName(id) {
@@ -740,7 +787,7 @@ function addSources(paths) {
 
 function renderSources() {
   $("#batchSources").innerHTML = batchSources.map((p, i) =>
-    `<span title="${esc(p)}"><b>${esc(baseName(p) || p)}</b><button type="button" data-src="${i}" title="Tirar">✕</button></span>`).join("");
+    `<span title="${esc(p)}"><b>${esc(isUrl(p) ? p : baseName(p) || p)}</b><button type="button" data-src="${i}" title="Tirar">✕</button></span>`).join("");
   for (const b of document.querySelectorAll("#batchSources [data-src]")) {
     b.onclick = () => { batchSources.splice(+b.dataset.src, 1); renderSources(); scanBatch(); };
   }
@@ -755,7 +802,7 @@ async function pickSources(kind) {
 $("#batchFiles").onclick = () => pickSources("batch");
 $("#batchFolder").onclick = () => pickSources("folder");
 $("#batchPath").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
+  if (e.key !== "Enter" || e.shiftKey) return;
   e.preventDefault();
   const lines = e.target.value.split(/\r?\n/).map(l => l.trim().replace(/^"|"$/g, "")).filter(Boolean);
   e.target.value = "";
@@ -786,6 +833,7 @@ async function scanBatch() {
     genre: "@lote", fidelity: "", instruments: [...instruments], touched: false, error: "",
   }));
   $("#batchPlan").hidden = !batchRows.length;
+  $("#batchDownloads").hidden = !batchRows.some(r => isUrl(r.input));
   renderPairs();
 }
 
@@ -805,7 +853,8 @@ function renderPairs() {
     const tags = [r.artist, r.title].filter(Boolean).join(" - ");
     return `<tr class="${r.error ? "bad" : low ? "low" : ""}">
       <td>${i + 1}</td>
-      <td class="song" title="${esc(r.input)}">${esc(baseName(r.input))}${tags ? `<small>${esc(tags)}</small>` : ""}${r.genreTag ? `<small>gênero: ${esc(r.genreTag)}</small>` : ""}${r.error ? `<div class="row-error">${esc(r.error)}</div>` : ""}</td>
+      <td class="song" title="${esc(r.input)}">${isUrl(r.input) ? `${esc(tags || r.input)}<small>link do YouTube</small>`
+        : `${esc(baseName(r.input))}${tags ? `<small>${esc(tags)}</small>` : ""}`}${r.genreTag ? `<small>gênero: ${esc(r.genreTag)}</small>` : ""}${r.error ? `<div class="row-error">${esc(r.error)}</div>` : ""}</td>
       <td class="file">${fileSelect(r, i, "reference", p.scores, "— nenhuma —")}</td>
       <td class="file">${fileSelect(r, i, "lyrics", p.lyrics, "— nenhuma —")}</td>
       <td class="file">${fileSelect(r, i, "cifra", p.cifras, "— nenhuma —")}</td>
@@ -857,7 +906,7 @@ batchForm.onsubmit = async ev => {
   const common = {
     instruments: commonInstruments(), reference_fidelity: $("#batchFidelity").value, output: f.output.value,
     overwrite: f.overwrite.checked, tempo: f.tempo.value, separator: f.separator.value, format: f.format.value,
-    zip: f.zip.checked,
+    zip: f.zip.checked, downloads: f.downloads.value,
   };
   const items = batchRows.map(r => ({
     input: r.input, reference: r.reference, lyrics: r.lyrics, cifra: r.cifra, instruments: r.instruments,
@@ -868,10 +917,7 @@ batchForm.onsubmit = async ev => {
   $("#batchError").textContent = "";
   try {
     const res = await api("api/batch", { items, common });
-    if (f.output.value && f.output.value !== state.settings.output) {
-      state.settings = await api("api/settings", { output: f.output.value });
-      form.elements.output.value = state.settings.output;
-    }
+    await saveFolders(f.output.value, batchRows.some(r => isUrl(r.input)) ? f.downloads.value : "");
     for (const info of res.jobs) addJob(info);
     addBatch(res.batch, res.jobs.map(j => j.id));
     batchSources = [];
@@ -1001,6 +1047,7 @@ $("#libFilter").addEventListener("input", renderLibrary);
   $("#batchInstruments").innerHTML = state.instruments.map(i =>
     `<label class="check"><input type="checkbox" name="batchInstrument" value="${i}" checked> ${NAMES[i] || i}</label>`).join("");
   batchForm.elements.output.value = state.settings.output || "";
+  form.elements.downloads.value = batchForm.elements.downloads.value = state.settings.downloads || "";
   $("#batchGenre").insertAdjacentHTML("beforeend", state.genres.map(g =>
     `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join(""));
   const byBatch = new Map();
