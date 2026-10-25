@@ -20,6 +20,7 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -29,7 +30,20 @@ CHUNK_SECONDS = 10.0      # a rede ouve a música em pedaços (com pedaços long
 CONTEXT_SECONDS = 1.5     # com um pouco de contexto dos lados
 STAR_LOGP: float | None = -4.0   # log-probabilidade do "*" entre as linhas (None = sem "*")
 SILENCE_DB = -35.0        # voz abaixo disso (em relação ao pico) é silêncio: nenhuma letra ali
+ISLAND_SECONDS = 1.5      # som mais curto que isso no meio de um silêncio longo...
+ISLAND_GAP = 4.0          # ...(pelo menos isso de cada lado) é vazamento, não canto: conta como silêncio
 ANCHOR_SCORE = 0.3       # linha com confiança abaixo disso é alinhada de novo (realign_gaps)
+WORD_SIMILARITY = 0.7     # palavra da letra e palavra ouvida pelo Whisper "batem" a partir disso (0-1)
+WINDOW_MARGIN = 1.0       # s de folga na janela de uma linha, antes e depois das palavras que bateram
+EDGE_WORD_SECONDS = 0.4   # e mais isso para cada palavra da ponta da linha que o Whisper não ouviu
+MIN_ANCHOR_LETTERS = 6    # a linha só ganha janela se as palavras que bateram somam isso de letras
+SECONDS_PER_WORD = 0.8    # e se elas cabem em (palavras da linha x isso + 2 s): senão o casamento é furado
+NEAR_SECONDS = 20.0       # desempate nas letras repetidas: perto de onde o alinhamento já pôs a palavra
+NEAR_BONUS = 0.3
+WHISPER_BELOW = 0.2       # música com confiança média abaixo disso foi mal ouvida: chama o Whisper
+TRUST_WHISPER_BELOW = 0.3   # só linhas com confiança abaixo disso podem ser corrigidas pelo Whisper
+OUTSIDE_SECONDS = 1.0     # linha alinhada a mais que isso fora da janela do Whisper é corrigida
+MIN_SYLLABLE_SECONDS = 0.15   # espaço mínimo por sílaba ao alinhar dentro de uma janela
 VOWELS = set("aeiouy")
 
 _model = None
@@ -68,8 +82,9 @@ def romanize(text: str) -> str:
     return "".join(ch for ch in text if "a" <= ch <= "z" or ch == "'")
 
 
-def emissions(y: np.ndarray, sr: int) -> np.ndarray:
-    """Log-probabilidade de cada letra a cada 20 ms (quadros x símbolos), música inteira."""
+def emissions(y: np.ndarray, sr: int, peak: float | None = None) -> np.ndarray:
+    """Log-probabilidade de cada letra a cada 20 ms (quadros x símbolos), música inteira.
+    `peak`: volume de referência para o silêncio (ver mute_silence); padrão, o pico de `y`."""
     import librosa
     import torch
 
@@ -94,32 +109,254 @@ def emissions(y: np.ndarray, sr: int) -> np.ndarray:
         pad = np.full((n_frames - len(em), em.shape[1]), -30.0, dtype=np.float32)
         pad[:, 0] = 0.0
         em = np.concatenate([em, pad])
-    return mute_silence(em[:n_frames], y)
+    return mute_silence(em[:n_frames], y, peak=peak)
 
 
-def mute_silence(em: np.ndarray, y: np.ndarray, floor_db: float | None = None) -> np.ndarray:
+def frame_rms(y: np.ndarray, sr: int) -> np.ndarray:
+    """Volume (RMS) de cada quadro de 20 ms."""
+    per_frame = int(FRAME * sr)
+    n = len(y) // per_frame
+    return np.sqrt(np.mean(y[:n * per_frame].reshape(n, per_frame) ** 2, axis=1))
+
+
+def mute_silence(em: np.ndarray, y: np.ndarray, floor_db: float | None = None,
+                 peak: float | None = None) -> np.ndarray:
     """Onde a voz está em silêncio (`floor_db` abaixo do pico), nenhuma letra pode soar: sem isso,
     uma letra que a rede não reconheceu pode cair em qualquer ponto de uma introdução muda.
-    `y` a 16 kHz."""
+    `y` a 16 kHz. `peak`: o volume máximo da MÚSICA INTEIRA, quando `y` é só um trecho dela (num
+    solo instrumental, o pico do próprio trecho é o ruído, e nada seria silêncio)."""
     floor_db = SILENCE_DB if floor_db is None else floor_db
-    per_frame = int(FRAME * SAMPLE_RATE)
-    n = min(len(em), len(y) // per_frame)
+    rms = frame_rms(y, SAMPLE_RATE)[:len(em)]
+    n = len(rms)
     if n == 0:
         return em
-    rms = np.sqrt(np.mean(y[:n * per_frame].reshape(n, per_frame) ** 2, axis=1))
-    db = 20 * np.log10(np.maximum(rms, 1e-10) / max(float(rms.max()), 1e-10))
+    ref = peak if peak is not None else float(rms.max())
+    db = 20 * np.log10(np.maximum(rms, 1e-10) / max(ref, 1e-10))
     silent = np.zeros(len(em), dtype=bool)
-    silent[:n] = db < floor_db
+    silent[:n] = _drop_islands(db < floor_db)
     em = em.copy()
     em[silent, 1:] = -30.0
     em[silent, 0] = 0.0
     return em
 
 
-def align_syllables(y: np.ndarray, sr: int, lines: list[list[str]]) -> list[list[SyllableSpan | None]]:
-    """Início e fim de cada sílaba (None se ela não tem letra que o modelo conheça, ex.: "...")."""
-    spans = align_emissions(emissions(y, sr), lines)
-    return realign_gaps(spans, lines, lambda a, b: emissions(y[int(a * sr):int(b * sr)], sr), len(y) / sr)
+def _drop_islands(silent: np.ndarray) -> np.ndarray:
+    """Marca como silêncio os trechos de som curtos (ISLAND_SECONDS) cercados de silêncio longo
+    (ISLAND_GAP) dos dois lados, como um resto de guitarra no stem da voz durante um solo."""
+    silent = silent.copy()
+    runs, i = [], 0             # (início, fim, é silêncio)
+    while i < len(silent):
+        j = i
+        while j < len(silent) and silent[j] == silent[i]:
+            j += 1
+        runs.append((i, j, bool(silent[i])))
+        i = j
+    island, gap = ISLAND_SECONDS / FRAME, ISLAND_GAP / FRAME
+    for k in range(1, len(runs) - 1):
+        a, b, quiet = runs[k]
+        before, after = runs[k - 1][1] - runs[k - 1][0], runs[k + 1][1] - runs[k + 1][0]
+        if not quiet and b - a < island and before >= gap and after >= gap:
+            silent[a:b] = True
+    return silent
+
+
+def align_syllables(y: np.ndarray, sr: int, lines: list[list[str]],
+                    listen: Callable[[], list[tuple[str, float, float]] | None] | None = None,
+                    ) -> list[list[SyllableSpan | None]]:
+    """Início e fim de cada sílaba (None se ela não tem letra que o modelo conheça, ex.: "...").
+
+    `listen`: devolve as palavras que o Whisper ouviu (texto, início, fim). Só é chamado quando a
+    música inteira foi mal ouvida (confiança média < WHISPER_BELOW): aí o alinhamento letra a
+    letra se perde fácil (voz com efeito, vazamento de instrumento num solo), e as linhas inseguras
+    que caíram longe de onde o Whisper as ouviu são refeitas (fix_with_windows). Nas músicas bem
+    ouvidas o Whisper não ajuda: medido nas charts oficiais, ele erra tanto quanto corrige."""
+    em = emissions(y, sr)
+    spans = align_emissions(em, lines)
+    windows: list[tuple[float, float] | None] = [None] * len(lines)
+    if listen is not None and lines and np.mean([line_score(sp) for sp in spans]) < WHISPER_BELOW:
+        heard = listen()
+        if heard:
+            windows = line_windows(lines, heard, len(em) * FRAME, word_times(lines, spans))
+            spans = fix_with_windows(em, lines, spans, windows)
+    peak = float(frame_rms(y, sr).max()) if len(y) else None
+    fixed = {k for k, w in enumerate(windows) if w is not None and not outside(spans[k], w)}
+    return realign_gaps(spans, lines, lambda a, b: emissions(y[int(a * sr):int(b * sr)], sr, peak), len(y) / sr,
+                        fixed=fixed)
+
+
+def lyric_words(lines: list[list[str]]) -> list[tuple[int, str]]:
+    """As palavras da letra (sílabas juntadas), com a linha de cada uma."""
+    words: list[tuple[int, str]] = []
+    for li, line in enumerate(lines):
+        current = ""
+        for syl in line:
+            current += syl[:-1] if syl.endswith("-") else syl
+            if not syl.endswith("-"):
+                words.append((li, current))
+                current = ""
+        if current:
+            words.append((li, current))
+    return words
+
+
+def word_times(lines: list[list[str]], spans: list[list[SyllableSpan | None]]) -> list[float | None]:
+    """Início de cada palavra da letra (lyric_words) num alinhamento já feito."""
+    times: list[float | None] = []
+    for line, sp in zip(lines, spans):
+        start = None
+        for syl, s in zip(line, sp):
+            if start is None and s is not None:
+                start = s.start
+            if not syl.endswith("-"):
+                times.append(start)
+                start = None
+        if line and line[-1].endswith("-"):
+            times.append(start)
+    return times
+
+
+def match_words(ours: list[str], heard: list[str], ours_at: list[float | None] | None = None,
+                heard_at: list[float] | None = None) -> list[tuple[int, int]]:
+    """Pares (palavra da letra, palavra ouvida) que batem, em ordem, com a maior semelhança total.
+    Com os tempos (`ours_at`: onde o alinhamento pôs cada palavra da letra; `heard_at`: onde o
+    Whisper a ouviu), numa letra com trechos repetidos ganha a repetição mais perto no tempo."""
+    import difflib
+
+    a, b = [romanize(w) for w in ours], [romanize(w) for w in heard]
+    n, m = len(a), len(b)
+    best = np.zeros((n + 1, m + 1))
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            sim = difflib.SequenceMatcher(None, a[i - 1], b[j - 1]).ratio() if a[i - 1] and b[j - 1] else 0.0
+            if ours_at is not None and heard_at is not None and ours_at[i - 1] is not None:
+                sim += NEAR_BONUS * max(0.0, 1 - abs(ours_at[i - 1] - heard_at[j - 1]) / NEAR_SECONDS)
+            take = best[i - 1, j - 1] + sim if sim >= WORD_SIMILARITY else -1.0
+            best[i, j] = max(best[i - 1, j], best[i, j - 1], take)
+    pairs, i, j = [], n, m
+    while i > 0 and j > 0:
+        if best[i, j] == best[i - 1, j]:
+            i -= 1
+        elif best[i, j] == best[i, j - 1]:
+            j -= 1
+        else:
+            pairs.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+    return pairs[::-1]
+
+
+def line_windows(lines: list[list[str]], heard: list[tuple[str, float, float]], duration: float,
+                 expected: list[float | None] | None = None) -> list[tuple[float, float] | None]:
+    """Para cada linha da letra, a janela de tempo (s) em que ela pode cair, pelas palavras que o
+    Whisper ouviu e que batem com as dela; None para as linhas sem casamento confiável.
+    `expected`: onde o alinhamento sem âncoras pôs cada palavra (desempate nas repetições)."""
+    words = lyric_words(lines)
+    pairs = match_words([w for _, w in words], [w for w, _, _ in heard], expected, [h[1] for h in heard])
+    hits: dict[int, list[tuple[int, float, float]]] = {}
+    for i, j in pairs:
+        hits.setdefault(words[i][0], []).append((i, heard[j][1], heard[j][2]))
+    first_word = {}
+    for i, (li, _) in enumerate(words):
+        first_word.setdefault(li, i)
+    windows: list[tuple[float, float] | None] = [None] * len(lines)
+    for li, found in hits.items():
+        count = sum(1 for l2, _ in words if l2 == li)
+        letters = sum(len(romanize(words[i][1])) for i, _, _ in found)
+        if letters < MIN_ANCHOR_LETTERS or found[-1][2] - found[0][1] > count * SECONDS_PER_WORD + 2:
+            continue
+        before = found[0][0] - first_word[li]                      # palavras antes da 1ª que bateu
+        after = first_word[li] + count - 1 - found[-1][0]          # e depois da última
+        windows[li] = (max(0.0, found[0][1] - WINDOW_MARGIN - EDGE_WORD_SECONDS * before),
+                       min(duration, found[-1][2] + WINDOW_MARGIN + EDGE_WORD_SECONDS * after))
+    # Janelas em ordem: uma linha não começa antes das palavras ouvidas da anterior acabarem.
+    last_heard = 0.0
+    for li in range(len(lines)):
+        if windows[li] is not None:
+            a, b = windows[li]
+            windows[li] = (max(a, last_heard), max(b, last_heard + 0.5))
+            last_heard = max(last_heard, hits[li][-1][2])
+    return windows
+
+
+def outside(spans: list[SyllableSpan | None], window: tuple[float, float] | None) -> bool:
+    """A linha alinhada caiu fora da janela do Whisper (com OUTSIDE_SECONDS de tolerância), e com
+    pouca confiança? Bem ouvida, ela fica onde está: quando os dois discordam numa linha bem ouvida,
+    o Whisper (que casa palavras soltas e marca o tempo com folga) erra tanto quanto acerta."""
+    found = [s for s in spans if s is not None]
+    if window is None or not found or line_score(spans) >= TRUST_WHISPER_BELOW:
+        return False
+    return found[0].start < window[0] - OUTSIDE_SECONDS or found[-1].start > window[1] + OUTSIDE_SECONDS
+
+
+def fix_with_windows(em: np.ndarray, lines: list[list[str]], spans: list[list[SyllableSpan | None]],
+                     windows: list[tuple[float, float] | None]) -> list[list[SyllableSpan | None]]:
+    """Corrige o alinhamento da música inteira só onde ele discorda do Whisper: as linhas que caíram
+    fora da janela delas. As linhas em que os dois concordam ficam como estão e servem de borda;
+    cada trecho entre duas bordas que tem uma linha fora do lugar é alinhado de novo, com as janelas.
+    (Alinhar toda linha só dentro da janela piora: a folga da janela pega pedaços das vizinhas.)"""
+    out = [list(sp) for sp in spans]
+    trusted = [w is not None and not outside(sp, w) for sp, w in zip(spans, windows)]
+    total = len(em) * FRAME
+    li = 0
+    while li < len(lines):
+        if trusted[li]:
+            li += 1
+            continue
+        j = li
+        while j < len(lines) and not trusted[j]:
+            j += 1
+        if any(outside(spans[k], windows[k]) for k in range(li, j)):
+            before = [s for s in out[li - 1] if s is not None] if li > 0 else []
+            after = [s for s in out[j] if s is not None] if j < len(lines) else []
+            a = before[-1].end if before else 0.0
+            b = after[0].start if after else total
+            fa, fb = int(a / FRAME), max(int(a / FRAME) + 1, int(b / FRAME))
+            local = [None if w is None else (max(0.0, w[0] - a), min(b, w[1]) - a) for w in windows[li:j]]
+            fixed = align_in_windows(em[fa:fb], lines[li:j], local)
+            t0 = fa * FRAME
+            for k, sp in zip(range(li, j), fixed):
+                out[k] = [None if s is None else
+                          SyllableSpan(s.start + t0, s.end + t0, s.score, None if s.vowel is None else s.vowel + t0)
+                          for s in sp]
+        li = j
+    return out
+
+
+def align_in_windows(em: np.ndarray, lines: list[list[str]],
+                     windows: list[tuple[float, float] | None]) -> list[list[SyllableSpan | None]]:
+    """Alinha cada linha com janela dentro dela, e as linhas sem janela no espaço entre as janelas
+    vizinhas. Sem nenhuma janela, é o alinhamento da música inteira."""
+    out: list[list[SyllableSpan | None]] = [[None] * len(line) for line in lines]
+    total = len(em) * FRAME
+
+    def place(first: int, last: int, a: float, b: float) -> None:
+        # Espaço mínimo para as sílabas: com janelas apertadas, as linhas ficariam sem tempo.
+        b = min(total, max(b, a + MIN_SYLLABLE_SECONDS * sum(len(line) for line in lines[first:last])))
+        fa, fb = int(a / FRAME), max(int(a / FRAME) + 1, int(b / FRAME))
+        found = align_emissions(em[fa:fb], lines[first:last])
+        t0 = fa * FRAME
+        for k, sp in zip(range(first, last), found):
+            out[k] = [None if s is None else
+                      SyllableSpan(s.start + t0, s.end + t0, s.score, None if s.vowel is None else s.vowel + t0)
+                      for s in sp]
+
+    li, prev_end = 0, 0.0
+    while li < len(lines):
+        if windows[li] is not None:
+            a, b = windows[li]
+            place(li, li + 1, max(a, prev_end), b)
+            found = [s for s in out[li] if s is not None]
+            prev_end = found[-1].end if found else max(a, prev_end)
+            li += 1
+            continue
+        j = li
+        while j < len(lines) and windows[j] is None:
+            j += 1
+        nxt = windows[j][0] if j < len(lines) else total
+        place(li, j, prev_end, max(nxt, prev_end + FRAME))
+        found = [s for k in range(li, j) for s in out[k] if s is not None]
+        prev_end = found[-1].end if found else prev_end
+        li = j
+    return out
 
 
 def line_score(spans: list[SyllableSpan | None]) -> float:
@@ -128,7 +365,7 @@ def line_score(spans: list[SyllableSpan | None]) -> float:
 
 
 def realign_gaps(spans: list[list[SyllableSpan | None]], lines: list[list[str]], emit, duration: float,
-                 anchor: float = ANCHOR_SCORE) -> list[list[SyllableSpan | None]]:
+                 anchor: float = ANCHOR_SCORE, fixed: set[int] = frozenset()) -> list[list[SyllableSpan | None]]:
     """Segunda passada: as linhas bem ouvidas (confiança >= `anchor`) viram âncoras, e cada trecho de
     linhas mal ouvidas entre duas âncoras é alinhado de novo, só com o áudio entre elas.
 
@@ -137,7 +374,7 @@ def realign_gaps(spans: list[list[SyllableSpan | None]], lines: list[list[str]],
     `emit(início, fim)`: emissões do áudio entre os dois instantes (s).
     """
     out = [list(sp) for sp in spans]
-    good = [line_score(sp) >= anchor for sp in spans]
+    good = [line_score(sp) >= anchor or k in fixed for k, sp in enumerate(spans)]   # `fixed`: já ancoradas
     li = 0
     while li < len(lines):
         if good[li]:

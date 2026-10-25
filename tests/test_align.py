@@ -128,3 +128,58 @@ def test_scale_is_estimated_from_the_voice_and_borderline_notes_snap_into_it():
     assert _snap(61.3, scale) == 62.0     # Dó# quase Ré: vai para o Ré
     assert _snap(61.0, scale) == 61.0     # Dó# bem afinado (nota de passagem): fica
     assert _snap(63.6, scale) == 63.6     # já arredonda para Mi, que está na escala: não mexe
+
+
+def test_mute_silence_uses_the_whole_song_peak_for_a_quiet_stretch():
+    # Um solo instrumental: a voz separada só tem ruído baixo (-50 dB do pico da música). Medido
+    # contra o próprio trecho, o ruído pareceria voz; contra o pico da música, é silêncio.
+    em = np.full((50, 28), -3.0, dtype=np.float32)
+    noise = 0.003 * np.ones(SAMPLE_RATE, dtype=np.float32)
+    assert (mute_silence(em, noise)[:, 1:] > -30).all()
+    assert (mute_silence(em, noise, peak=1.0)[:, 1:] == -30).all()
+
+
+def test_short_sound_in_a_long_silence_counts_as_silence():
+    # 10 s de silêncio com 0,6 s de som no meio (um resto de guitarra no stem da voz, num solo)
+    # e depois a voz de verdade, longa: a ponta vira silêncio, a voz não.
+    y = np.zeros(14 * SAMPLE_RATE, dtype=np.float32)
+    tone = lambda n: 0.5 * np.sin(np.arange(n) * 2 * np.pi * 220 / SAMPLE_RATE)
+    y[5 * SAMPLE_RATE:int(5.6 * SAMPLE_RATE)] = tone(int(0.6 * SAMPLE_RATE))
+    y[10 * SAMPLE_RATE:] = tone(4 * SAMPLE_RATE)
+    em = mute_silence(np.full((700, 28), -3.0, dtype=np.float32), y)
+    assert (em[255:275, 1:] == -30).all()         # a ponta (5,1-5,5 s)
+    assert (em[510:690, 1:] == -3).all()          # a voz (10,2-13,8 s)
+
+
+def test_lyric_words_and_matching_with_what_whisper_heard():
+    from ai_charter.analysis.align import lyric_words, match_words
+
+    lines = [["Hey", "the-", "re,"], ["lit-", "tle", "girl"]]
+    assert lyric_words(lines) == [(0, "Hey"), (0, "there,"), (1, "little"), (1, "girl")]
+    # O Whisper ouviu "a there little curl": "there" e "little" batem; "girl" x "curl" não.
+    assert match_words(["Hey", "there,", "little", "girl"], ["a", "there", "Little", "curl"]) == [(1, 1), (2, 2)]
+
+
+def test_line_windows_come_from_the_heard_words():
+    from ai_charter.analysis.align import EDGE_WORD_SECONDS, WINDOW_MARGIN, line_windows
+
+    lines = [["But", "give", "me", "mi-", "ne"], ["Hey", "the-", "re,"], ["lit-", "tle", "girl"]]
+    heard = [("but", 74.4, 74.6), ("give", 74.6, 75.0), ("me", 75.0, 75.3), ("little", 98.0, 98.3),
+             ("girl", 98.4, 98.9)]
+    w = line_windows(lines, heard, 300.0)
+    assert w[1] is None                                    # "Hey there" não foi ouvido
+    assert w[0][0] == 74.4 - WINDOW_MARGIN
+    assert abs(w[0][1] - (75.3 + WINDOW_MARGIN + EDGE_WORD_SECONDS)) < 1e-9   # "mine" ficou de fora
+    assert w[2] == (98.0 - WINDOW_MARGIN, 98.9 + WINDOW_MARGIN)
+
+
+def test_lines_without_window_fall_between_the_windows_of_their_neighbours():
+    from ai_charter.analysis.align import align_in_windows
+
+    # A rede "ouve" ruído com cara de vogal em 2 s (um solo com vazamento) e a linha de verdade em 6 s.
+    em = _emissions([("a", 100), ("o", 300), ("i", 304), ("a", 320)], 400)
+    lines = [["a"], ["oi"], ["a"]]
+    out = align_in_windows(em, lines, [(1.5, 2.5), None, (6.2, 7.0)])
+    assert 1.9 <= out[0][0].start <= 2.1
+    assert 5.9 <= out[1][0].start <= 6.1                   # a do meio cai entre as janelas, onde está o "oi"
+    assert 6.3 <= out[2][0].start <= 6.5

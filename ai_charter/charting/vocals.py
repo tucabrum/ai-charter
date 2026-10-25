@@ -277,7 +277,12 @@ SNAP_BEFORE = 0.1       # o início da sílaba procura uma nota cantada desde um
 SNAP_AFTER = 0.12       # ...até um pouco depois da vogal
 MIN_MELISMA_SECONDS = 0.12   # um "+" precisa durar isso
 WOBBLE_SECONDS = 0.3    # "+" mais curto que isso que volta à altura anterior é oscilação da voz
+LEAP_SEMITONES = 7      # "+" que salta mais que isso da nota anterior...
+LEAP_SECONDS = 0.3      # ...só vale se durar isso (salto curto é harmônico ou ruído)
+MAX_SPAN_SECONDS = 1.0   # o fim que o alinhamento marca vale até isso depois do início; além, só a voz cantada estende a nota
 SCALE_SNAP = 0.25       # nota fora da escala da música vai para a vizinha da escala se estiver a até 0,5 + isso
+RANGE_PERCENTILES = (10.0, 90.0)  # tessitura da voz: onde ela passa a maior parte do tempo...
+RANGE_MARGIN = 5.0      # ...com essa folga (semitons); fora disso é harmônico, erro de oitava ou vazamento
 
 # Perfis de Krumhansl: o peso de cada grau numa música em tom maior / menor.
 _MAJOR = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
@@ -299,6 +304,28 @@ def estimate_scale(sung: list[SungNote]) -> set[int] | None:
             if r > best:
                 best, scale = r, {(root + d) % 12 for d in degrees}
     return scale
+
+
+def estimate_range(sung: list[SungNote]) -> tuple[float, float] | None:
+    """Tessitura da voz (MIDI): percentis da altura, pesados pelo tempo em cada nota, com folga."""
+    if not sung or RANGE_MARGIN is None:
+        return None
+    pitches = np.array([n.pitch for n in sung])
+    order = np.argsort(pitches)
+    weights = np.cumsum(np.array([n.end - n.time for n in sung])[order])
+    lo, hi = (float(pitches[order][np.searchsorted(weights, q / 100 * weights[-1])]) for q in RANGE_PERCENTILES)
+    return lo - RANGE_MARGIN, hi + RANGE_MARGIN
+
+
+def _fold(pitch: float, band: tuple[float, float] | None) -> float:
+    """Traz por oitavas para dentro da tessitura uma altura que caiu fora dela."""
+    if band is None or band[1] - band[0] < 12:
+        return pitch
+    while pitch < band[0]:
+        pitch += 12
+    while pitch > band[1]:
+        pitch -= 12
+    return pitch
 
 
 def _snap(pitch: float, scale: set[int] | None) -> float:
@@ -344,9 +371,10 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
     """
     step = max(1, resolution // VOCAL_GRID)
     scale = estimate_scale(sung)
+    band = estimate_range(sung)
 
     def fit(pitch: float) -> int:
-        return _fit_pitch(_snap(pitch, scale))
+        return _fit_pitch(_snap(_fold(pitch, band), scale))
 
     flat = [(li, si) for li, line in enumerate(lines) for si in range(len(line))]
     # Sílabas sem tempo (sem letra que o modelo conheça): logo depois da anterior.
@@ -364,7 +392,7 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
         lo = max(span.start - SNAP_BEFORE, times[-1][0] + 0.02 if times else 0.0)
         k = bisect.bisect_left(onsets, lo)
         start = onsets[k] if k < len(onsets) and onsets[k] <= vowel + SNAP_AFTER else vowel
-        times.append((start, max(span.end, start)))
+        times.append((start, max(min(span.end, start + MAX_SPAN_SECONDS), start)))
     next_start = [times[k + 1][0] for k in range(len(times) - 1)] + [float("inf")]
 
     def to_tick(t: float) -> int:
@@ -399,7 +427,9 @@ def build_aligned_track(spans: list[list], sung: list[SungNote], lines: list[lis
                 for n in inside:
                     if n.time >= start + MELISMA_SECONDS and n.time < end \
                             and min(n.end, end) - n.time >= MIN_MELISMA_SECONDS \
-                            and abs(fit(n.pitch) - pieces[-1][1]) >= 1:
+                            and 1 <= abs(fit(n.pitch) - pieces[-1][1]) \
+                            and (abs(fit(n.pitch) - pieces[-1][1]) <= LEAP_SEMITONES
+                                 or min(n.end, end) - n.time >= LEAP_SECONDS):
                         t = max(to_tick(n.time), pieces[-1][0] + step)
                         pieces.append((t, fit(n.pitch), "+"))
                 end_tick = max(to_tick(end), pieces[-1][0] + step)

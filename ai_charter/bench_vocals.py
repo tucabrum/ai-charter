@@ -211,7 +211,15 @@ def evaluate(folder: Path, cache: Path, rules, aligner: str = "ctc") -> dict | N
     detected = estimate_tempo_map(mix, ANALYSIS_SR, rules.general.resolution, "auto")
     y, sr = librosa.load(out / "vocals.ogg", sr=ANALYSIS_SR, mono=True)
     sung = detect_sung_notes(y, sr, rules.vocals, tuning)
-    spans = align_syllables(y, sr, lines) if aligner == "ctc" else None
+    def listen():   # como no ai-charter: o Whisper só entra numa música mal ouvida
+        from ai_charter.analysis.transcribe import anchor_words
+
+        try:
+            return anchor_words(out / "vocals.ogg", rules.vocals.whisper_model)
+        except RuntimeError:   # sem o faster-whisper
+            return None
+
+    spans = align_syllables(y, sr, lines, listen) if aligner == "ctc" else None
     result = {"oficial_gafes": gaffes(theirs, [(s.tick, s.end) for s in theirs if s.pitch is not None])}
     for name, tempo in (("oficial", official), ("nosso", detected)):
         if spans is not None:

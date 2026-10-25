@@ -150,7 +150,7 @@ pitch_split_semitones = 0.7  # mudança de afinação que separa duas notas liga
 min_note_seconds = 0.08      # notas mais curtas que isso são descartadas
 phrase_gap_beats = 0.75      # pausa (em batidas) que separa duas frases
 sung_min_ratio = 0.6         # linha com menos notas cantadas que isso x sílabas é FALADA (só letra, sem notas)
-language = "pt"              # idioma da letra (sílabas e transcrição): "pt" ou "en"
+language = "auto"            # idioma da letra (sílabas e transcrição): "auto" (descobre pela letra), "pt" ou "en"
 whisper_model = "small"      # --auto-lyrics: tiny, base, small, medium, large-v3 (maior = melhor e mais lento)
 
 # ---------------------------------------------------------------------------

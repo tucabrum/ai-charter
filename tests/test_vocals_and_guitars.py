@@ -204,3 +204,13 @@ def test_compare_chart_with_itself_and_finds_time_offset(tmp_path):
     times = [e.time for e in events]
     late = [t + 0.3 for t in times]                       # a mesma chart, 0,3 s atrasada
     assert abs(best_offset(times, late) + 0.3) < 0.01      # precisa voltar 0,3 s
+
+
+def test_lyrics_language_is_guessed_from_the_text(tmp_path):
+    from ai_charter.charting.lyrics import guess_language, read_lyrics
+
+    assert guess_language("Evil knocking at my door\nI don't mind if you take what's yours") == "en"
+    assert guess_language("Desenhou na janela do carro\nNa poeira do vidro") == "pt"
+    path = tmp_path / "letra.txt"
+    path.write_text("Come inside, I've got some sweet things\n", encoding="utf-8")
+    assert read_lyrics(path, "auto") == [["Come", "in-", "side,", "I've", "got", "some", "sweet", "things"]]

@@ -42,8 +42,9 @@ def words_to_lines(words: Iterable[TimedWord], gap_seconds: float, max_words: in
     return [" ".join(line) for line in lines]
 
 
-def transcribe_lyrics(vocals: Path, language: str, model_size: str, gap_seconds: float) -> list[str]:
-    """Ouve o stem de voz e devolve a letra, uma linha por frase cantada."""
+def heard_words(vocals: Path, model_size: str, language: str | None = None) -> list[TimedWord]:
+    """As palavras que o Whisper ouve no stem de voz, com início e fim (s). `language=None`: o
+    Whisper descobre o idioma sozinho."""
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -71,5 +72,14 @@ def transcribe_lyrics(vocals: Path, language: str, model_size: str, gap_seconds:
         vad_filter=True,                  # ignora trechos sem voz
         condition_on_previous_text=False,  # evita que um erro "contamine" o resto da letra
     )
-    words = [TimedWord(w.word, w.start, w.end) for segment in segments for w in (segment.words or [])]
-    return words_to_lines(words, gap_seconds)
+    return [TimedWord(w.word, w.start, w.end) for segment in segments for w in (segment.words or [])]
+
+
+def transcribe_lyrics(vocals: Path, language: str, model_size: str, gap_seconds: float) -> list[str]:
+    """Ouve o stem de voz e devolve a letra, uma linha por frase cantada."""
+    return words_to_lines(heard_words(vocals, model_size, None if language == "auto" else language), gap_seconds)
+
+
+def anchor_words(vocals: Path, model_size: str) -> list[tuple[str, float, float]]:
+    """Palavras ouvidas, para ancorar a letra fornecida (analysis/align.py: line_windows)."""
+    return [(w.text.strip(), w.start, w.end) for w in heard_words(vocals, model_size)]

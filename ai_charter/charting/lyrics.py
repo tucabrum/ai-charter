@@ -131,6 +131,22 @@ def _strip_punctuation(token: str) -> tuple[str, str, str]:
     return m.group(1), m.group(2), m.group(3)
 
 
+PT_WORDS = {"o", "a", "os", "as", "de", "do", "da", "dos", "das", "que", "e", "é", "em", "no", "na", "um", "uma",
+            "eu", "você", "voce", "não", "nao", "se", "com", "por", "pra", "para", "meu", "minha", "seu", "sua",
+            "me", "te", "lhe", "nos", "mais", "mas", "quando", "como", "tudo", "ao", "isso", "só", "vou", "tem"}
+EN_WORDS = {"the", "and", "you", "i", "to", "my", "of", "in", "it", "is", "that", "your", "i'm", "don't", "on",
+            "with", "what", "be", "me", "we", "for", "all", "this", "are", "was", "but", "just", "can", "so", "like",
+            "know", "when", "oh", "it's", "if", "have", "got", "up", "out", "no", "now", "get", "go", "where"}
+
+
+def guess_language(text: str) -> str:
+    """Português ou inglês, pelas palavras mais comuns de cada um (e pelos acentos do português)."""
+    words = re.findall(r"[\w']+", text.lower())
+    pt = sum(w in PT_WORDS for w in words) + 2 * len(re.findall(r"[ãõçáéíóúâêô]", text.lower()))
+    en = sum(w in EN_WORDS for w in words)
+    return "en" if en > pt else "pt"
+
+
 def line_syllables(line: str, language: str = "pt") -> list[str]:
     """Sílabas de uma linha, já no formato do jogo ("ca-" "mi-" "nho")."""
     syllabify = syllabify_pt if language == "pt" else syllabify_en
@@ -146,7 +162,10 @@ def line_syllables(line: str, language: str = "pt") -> list[str]:
 
 
 def read_lyrics(path, language: str = "pt") -> list[list[str]]:
-    """Lê o arquivo de letra: uma lista de sílabas por linha (linhas vazias são ignoradas)."""
+    """Lê o arquivo de letra: uma lista de sílabas por linha (linhas vazias são ignoradas).
+    `language="auto"`: descobre pela própria letra se é português ou inglês."""
     with open(path, encoding="utf-8") as f:
         lines = [line.strip() for line in f]
+    if language == "auto":
+        language = guess_language(" ".join(lines))
     return [line_syllables(line, language) for line in lines if line]

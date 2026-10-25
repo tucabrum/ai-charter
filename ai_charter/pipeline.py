@@ -180,10 +180,20 @@ def chart_vocals(stem: Path, lyrics: Path, tempo: TempoMap, rules: Rules, sp_win
     y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
     sung = detect_sung_notes(y, sr, rules.vocals, tuning)
     lines = read_lyrics(lyrics, rules.vocals.language)
+    def listen():   # só chamado numa música mal ouvida: o Whisper diz onde cada frase é cantada
+        try:
+            from ai_charter.analysis.transcribe import anchor_words
+
+            print("    vocals: letra mal ouvida; conferindo com o Whisper...")
+            return anchor_words(stem, rules.vocals.whisper_model)
+        except Exception as err:
+            print(f"    vocals: sem o Whisper para conferir a letra ({str(err).splitlines()[0]})")
+            return None
+
     try:   # alinhamento forçado da letra (precisa do torchaudio e do modelo MMS_FA)
         from ai_charter.analysis.align import align_syllables
 
-        spans = align_syllables(y, sr, lines)
+        spans = align_syllables(y, sr, lines, listen)
     except Exception as err:
         print(f"    vocals: alinhamento forçado indisponível ({err}); usando o alinhador antigo")
         segments = detect_voice_segments(y, sr, rules.vocals, rules.vocals.phrase_gap_beats * 60 / tempo.average_bpm)

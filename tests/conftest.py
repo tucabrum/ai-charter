@@ -34,3 +34,15 @@ def _no_model_download(monkeypatch):
             raise RuntimeError("modelo MMS_FA não baixado")
 
         monkeypatch.setattr(align, "align_syllables", unavailable)
+
+
+@pytest.fixture(autouse=True)
+def _no_whisper_anchors(monkeypatch):
+    """Os testes não ouvem a voz com o Whisper para ancorar a letra (seria lento e, na voz sintética,
+    sem sentido); as âncoras têm testes próprios em test_align.py."""
+    from ai_charter.analysis import transcribe
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("Whisper desligado nos testes")
+
+    monkeypatch.setattr(transcribe, "anchor_words", unavailable)
