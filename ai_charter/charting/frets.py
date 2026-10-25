@@ -379,6 +379,36 @@ def chord_shape(base: int, size: int, n_lanes: int) -> tuple[int, ...]:
     return tuple(range(base, base + size))
 
 
+def _bass_under_chords(notes: list[ChartNote], chosen: list[Candidate], sizes: list[int]) -> None:
+    """A nota simples que é a nota de baixo de um acorde vizinho fica na lane mais grave do acorde.
+
+    Ex. (Quicksand): Fá3 abafado, Fá3 abafado, Fá3+Sol3 em vermelho+laranja -> os Fá3 no vermelho, e
+    não no amarelo, na frente da base do acorde. Notas iguais seguidas mudam juntas. Não muda se a
+    nota ficaria na lane de outra nota simples vizinha, ou se inverteria o sentido da melodia com ela."""
+    i = 0
+    while i < len(notes):
+        if sizes[i] != 1:
+            i += 1
+            continue
+        j = i   # a sequência de notas simples iguais: i..j
+        while j + 1 < len(notes) and sizes[j + 1] == 1 and abs(chosen[j + 1].pitch - chosen[i].pitch) < 0.5:
+            j += 1
+        pitch = round(chosen[i].pitch)
+        chords = [k for k in (i - 1, j + 1) if 0 <= k < len(notes) and sizes[k] >= 2 and round(chosen[k].pitch) == pitch]
+        if chords:
+            want = min(notes[chords[-1]].lanes)
+            ok = True
+            for k, edge in ((i - 1, i), (j + 1, j)):
+                if 0 <= k < len(notes) and sizes[k] == 1:
+                    lane = notes[k].lanes[0]
+                    if lane == want or (chosen[k].pitch > chosen[edge].pitch) != (lane > want):
+                        ok = False
+            if ok:
+                for k in range(i, j + 1):
+                    notes[k].lanes = (want,)
+        i = j + 1
+
+
 def _apply_sustains(notes: list[ChartNote], cands: list[Candidate], rules: FretDifficultyRules,
                     resolution: int) -> None:
     min_len = rules.sustain_min_beats * resolution
@@ -431,6 +461,7 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
         table = _chord_shape_table(chosen, sizes, r.lanes, r.max_chord)
         notes = [ChartNote(c.tick, table.get(chord_key(c, size)) or chord_shape(lane, size, r.lanes))
                  for c, lane, size in zip(chosen, lanes, sizes)]
+        _bass_under_chords(notes, chosen, sizes)
         _apply_sustains(notes, chosen, r, resolution)
         _apply_forcing(notes, resolution, r.allow_hopos)
         track.notes[difficulty] = notes

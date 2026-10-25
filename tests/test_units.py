@@ -138,6 +138,19 @@ def test_chords_with_the_same_bass_but_other_top_notes_get_other_shapes():
     assert len({next(iter(s)) for s in shape_of.values()}) == 3     # ...e os três diferentes entre si
 
 
+def test_bass_note_sits_under_its_chord():
+    """Quicksand, compasso 19: Fá3 abafado, Fá3, Fá3+Sol3... A nota simples que é o baixo do acorde
+    vizinho fica na lane mais grave do acorde (não na frente dele)."""
+    pattern = [(53, 1, ()), (53, 1, ()), (53, 2, (55,))] * 2 + [(53, 1, ()), (53, 1, ())]
+    cands = [Candidate(b * 4 * RES + i * RES // 2, 1.0, end_tick=b * 4 * RES + i * RES // 2 + 48,
+                       pitch=p, voices=v, upper=u) for b in range(4) for i, (p, v, u) in enumerate(pattern)]
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    for note, c in zip(track.notes["expert"], cands):
+        if c.voices == 1:
+            chord = next(n for n, d in zip(track.notes["expert"], cands) if d.voices == 2)
+            assert note.lanes == (min(chord.lanes),)
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)
