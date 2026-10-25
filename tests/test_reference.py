@@ -254,6 +254,19 @@ def test_guide_corrects_pitch_and_chords():
     assert "80%" in lines[0] and "3 corrigidas" in lines[0]   # o Dó já estava certo
 
 
+def test_octave_in_the_score_becomes_a_chord():
+    """Ré4 + Ré3 (a nota do meio abafada não conta), como na solo de Escape the Fate: no Expert vira um
+    acorde de 2 notas, como um power chord; a mesma nota repetida no mesmo lugar continua nota simples."""
+    from ai_charter.analysis.chords import chord_name
+    from ai_charter.reference import chord_voices
+
+    cfg = load_rules().detection["guitar"]
+    assert chord_voices((50, 62), 0.5, cfg) == 2
+    assert chord_voices((50,), 0.5, cfg) == 1
+    out = make_guide([RefEvent(0, 96, (50, 62))])([Candidate(0, 1, pitch=62)], log=lambda *_: None)
+    assert (out[0].pitch, out[0].voices, chord_name(out[0].chord)) == (50, 2, "D5")
+
+
 def test_guide_is_ignored_when_reference_does_not_match():
     cands = [Candidate(t, 1, pitch=50) for t in range(0, 1920, 192)]
     lines = []

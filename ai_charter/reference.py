@@ -776,10 +776,12 @@ def events_in_ticks(tracks: list[RefTrack], alignment: Alignment, resolution: in
 
 
 def chord_voices(pitches: tuple[int, ...], length_beats: float, cfg) -> int:
-    """Quantas notas o acorde da partitura tem na chart (as mesmas regras da transcrição)."""
+    """Quantas notas o acorde da partitura tem na chart (as mesmas regras da transcrição).
+    Uma oitava (a mesma nota em duas alturas, ex.: Ré3 + Ré4) conta como power chord: no Expert,
+    acorde é acorde, e a oitava soa como um."""
     classes = {p % 12 for p in pitches}
     if len(classes) <= 1:
-        return 1
+        return max(1, min(cfg.power_chord_notes, len(set(pitches))))
     root = pitches[0] % 12
     if classes <= {root, (root + 7) % 12}:
         voices = cfg.power_chord_notes
