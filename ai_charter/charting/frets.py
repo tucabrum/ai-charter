@@ -121,44 +121,117 @@ def assign_lanes(pitches: list[float], n_lanes: int, window: int,
     return result[::-1]
 
 
-def _copy_repeated_lanes(chosen: list[Candidate], lanes: list[int], repeats: Repeats,
-                         resolution: int) -> list[int]:
-    """Faz cada bloco repetido usar as mesmas lanes do bloco original.
+PITCH_WINDOW_BEATS = 16  # mesma nota, mesma lane: a maioria entre as vezes que ela toca nesta distância
 
-    Só copia se a emenda com as notas vizinhas não quebrar mais regras do que
-    antes (ex.: a primeira nota copiada cair na mesma lane da nota anterior,
-    sendo outra nota). Detalhes menores, como o tamanho de um salto, não impedem a cópia.
-    """
-    lanes = list(lanes)
+
+def _unify_pitch_lanes(chosen: list[Candidate], lanes: list[int], sizes: list[int], resolution: int,
+                       keep: set[int] = frozenset()) -> list[int]:
+    """A mesma nota (simples) fica na mesma lane dentro de um trecho: a lane em que ela cai mais vezes
+    a até PITCH_WINDOW_BEATS dali (no empate, a mais comum na música toda, e depois a da primeira vez
+    que ela toca). Notas iguais seguidas mudam juntas. Não muda se a nota ficaria na
+    lane de uma vizinha que é outra nota, ou se inverteria o sentido da melodia com uma vizinha.
+    `keep`: notas que não mudam."""
+    window = PITCH_WINDOW_BEATS * resolution
+    singles = [i for i, s in enumerate(sizes) if s == 1]
+    ticks = np.array([chosen[i].tick for i in singles])
+    runs: list[list[int]] = []   # notas simples iguais e seguidas
+    for i in singles:
+        if runs and runs[-1][-1] == i - 1 and abs(chosen[i].pitch - chosen[i - 1].pitch) < 0.5                 and lanes[i] == lanes[i - 1]:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    overall: dict[int, Counter] = defaultdict(Counter)   # desempate: a lane da nota na música toda
+    first_lane: dict[int, int] = {}                       # ...e, empatando de novo, a da 1ª vez que ela toca
+    for i in singles:
+        overall[round(chosen[i].pitch)][lanes[i]] += 1
+        first_lane.setdefault(round(chosen[i].pitch), lanes[i])
+    out = list(lanes)
+    for run in runs:
+        first, last = run[0], run[-1]
+        if keep & set(run):
+            continue
+        pitch = round(chosen[first].pitch)
+        lo = np.searchsorted(ticks, chosen[first].tick - window)
+        hi = np.searchsorted(ticks, chosen[last].tick + window, "right")
+        votes = Counter(lanes[singles[k]] for k in range(lo, hi) if round(chosen[singles[k]].pitch) == pitch)
+        want = max(votes, key=lambda lane: (votes[lane], overall[pitch][lane], lane == first_lane[pitch]))
+        if want == out[first]:
+            continue
+        ok = True
+        for j, i in ((first - 1, first), (last + 1, last)):
+            if not 0 <= j < len(chosen):
+                continue
+            if abs(chosen[j].pitch - chosen[i].pitch) < 0.5:   # a mesma nota, mas fora da sequência
+                ok = ok and out[j] == want
+            elif out[j] == want or (chosen[j].pitch > chosen[i].pitch) != (out[j] > want):
+                ok = False
+        if ok:
+            for i in run:
+                out[i] = want
+    return out
+
+
+def _repeated_lanes(chosen: list[Candidate], lanes: list[int], repeats: Repeats,
+                    resolution: int) -> dict[int, int]:
+    """Lane obrigatória de cada nota de um bloco que se repete: as repetições usam o mesmo padrão
+    de lanes.
+
+    Um trecho que se repete na música é charteado igual. Sem isso, cada repetição ficava com as lanes
+    que a janela de notas vizinhas decidisse ali (uma subida de 1 tom virava verde -> laranja num
+    compasso e vermelho -> azul no seguinte, com as mesmas notas). O padrão escolhido é, entre os que
+    aparecem nas repetições, o que deixa a mesma nota na mesma lane dentro do bloco; depois, o que põe
+    as notas na lane de costume delas na música (assim blocos diferentes também concordam); depois, o
+    que encaixa em mais repetições sem quebrar regra na emenda com as notas de fora (outra nota na
+    mesma lane, contorno ao contrário); depois, o mais comum. Onde ele não encaixa, o bloco fica como está."""
     indexes: dict[int, list[int]] = defaultdict(list)
     for i, c in enumerate(chosen):
         indexes[repeats.block(c.tick)].append(i)
+    groups: dict[int, list[int]] = defaultdict(list)
+    for block in sorted(indexes):
+        groups[repeats.source.get(block, block)].append(block)
 
-    def seam_violations(idx: list[int], values: list[int]) -> int:
-        """Quantas quebras de regra há nas emendas do bloco com os vizinhos."""
+    def fits(idx: list[int], values: tuple[int, ...]) -> bool:
         pairs = []
         if idx[0] > 0:
             pairs.append((idx[0] - 1, idx[0], lanes[idx[0] - 1], values[0]))
         if idx[-1] + 1 < len(chosen):
             pairs.append((idx[-1], idx[-1] + 1, values[-1], lanes[idx[-1] + 1]))
-        return sum(
-            _transition_cost(chosen[j].pitch - chosen[i].pitch, a, b,
-                             chosen[j].tick % resolution == 0) >= COST_RESET_ON_BEAT
-            for i, j, a, b in pairs
-        )
+        return all(_transition_cost(chosen[b].pitch - chosen[a].pitch, la, lb,
+                                    chosen[b].tick % resolution == 0) < COST_RESET_ON_BEAT
+                   for a, b, la, lb in pairs)
 
-    for block in sorted(indexes):
-        source = repeats.source.get(block, block)
-        if source == block or source not in indexes:
+    usual: dict[int, Counter] = defaultdict(Counter)   # a lane de cada nota simples na música toda
+    for c, lane in zip(chosen, lanes):
+        if c.voices == 1:
+            usual[round(c.pitch)][lane] += 1
+    favorite = {pitch: votes.most_common(1)[0][0] for pitch, votes in usual.items()}
+
+    fixed: dict[int, int] = {}
+    for source, blocks in groups.items():
+        shape = [repeats.offset(chosen[i].tick) for i in indexes[source]]
+        blocks = [b for b in blocks if [repeats.offset(chosen[i].tick) for i in indexes[b]] == shape]
+        if len(blocks) < 2:
             continue
-        src, dst = indexes[source], indexes[block]
-        if [repeats.offset(chosen[i].tick) for i in src] != [repeats.offset(chosen[i].tick) for i in dst]:
-            continue
-        new, old = [lanes[i] for i in src], [lanes[i] for i in dst]
-        if new != old and seam_violations(dst, new) <= seam_violations(dst, old):
-            for i, lane in zip(dst, new):
-                lanes[i] = lane
-    return lanes
+        patterns = Counter(tuple(lanes[i] for i in indexes[b]) for b in blocks)
+        pitches = [round(chosen[i].pitch) for i in indexes[source]]
+
+        def steady(p: tuple[int, ...]) -> int:   # notas simples que caem sempre na mesma lane no bloco
+            by_pitch: dict[int, set] = defaultdict(set)
+            for i, pitch, lane in zip(indexes[source], pitches, p):
+                if chosen[i].voices == 1:
+                    by_pitch[pitch].add(lane)
+            return -sum(len(v) - 1 for v in by_pitch.values())
+
+        def usual_lanes(p: tuple[int, ...]) -> int:   # notas simples na lane de costume delas
+            return sum(chosen[i].voices == 1 and favorite.get(pitch) == lane
+                       for i, pitch, lane in zip(indexes[source], pitches, p))
+
+        best = max(patterns, key=lambda p: (steady(p), usual_lanes(p), sum(fits(indexes[b], p) for b in blocks),
+                                             patterns[p]))
+        for b in blocks:
+            if fits(indexes[b], best):
+                fixed.update(zip(indexes[b], best))
+    return fixed
 
 
 def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
@@ -311,11 +384,13 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
                                    group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
         previous_count = len(chosen)
         sizes = [min(c.voices, r.max_chord) for c in chosen]
+        max_lanes = [min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes]
         lanes = assign_lanes([c.pitch for c in chosen], r.lanes, lane_window,
-                             [c.tick for c in chosen], resolution,
-                             max_lanes=[min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes])
-        lanes = _unify_chord_lanes(chosen, lanes)
-        lanes = _copy_repeated_lanes(chosen, lanes, repeats, resolution)
+                             [c.tick for c in chosen], resolution, max_lanes=max_lanes)
+        lanes = _unify_pitch_lanes(chosen, _unify_chord_lanes(chosen, lanes), sizes, resolution)
+        # Blocos repetidos com as mesmas lanes (só onde o padrão encaixa com as notas vizinhas).
+        fixed = _repeated_lanes(chosen, lanes, repeats, resolution)
+        lanes = [fixed.get(i, lane) for i, lane in enumerate(lanes)]
         # Acordes que se repetem usam a tabela de formatos; o resto segue as lanes.
         table = _chord_shape_table(chosen, sizes, r.lanes, r.max_chord)
         notes = [ChartNote(c.tick, table.get((round(c.pitch), size)) or chord_shape(lane, size, r.lanes))

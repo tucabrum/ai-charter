@@ -59,6 +59,32 @@ def test_six_note_run_is_repositioned_instead_of_repeating_a_lane():
             assert (run[i] == run[j]) == (lanes[i] == lanes[j])
 
 
+def test_same_riff_gets_the_same_lanes_every_time():
+    """Riff Ré-Mi (como o começo de Sweet Things) repetido com vizinhos diferentes: um compasso com
+    um Fá no fim, outro com notas graves. A mesma nota fica sempre na mesma lane."""
+    riff = [(0, 50), (64, 52), (128, 52), (192, 52), (320, 52)]   # tercinas: Ré Mi Mi Mi ... Mi
+    bars = [riff + [(384 + t, p) for t, p in riff],
+            riff + [(384, 50), (448, 52), (512, 52), (576, 53)],
+            riff + [(384, 45), (512, 43), (640, 41)]] * 3
+    cands = [Candidate(b * 4 * RES + t, 1.0, end_tick=b * 4 * RES + t + 48, pitch=p)
+             for b, bar in enumerate(bars) for t, p in bar]
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    pitch_at = {c.tick: round(c.pitch) for c in cands}
+    lanes_of: dict[int, set] = {}
+    for note in track.notes["expert"]:
+        lanes_of.setdefault(pitch_at[note.tick], set()).add(note.lanes)
+    assert len(lanes_of[52]) == 1
+    # o Ré logo depois das notas graves pode subir uma lane (para não repetir a lane da nota anterior)
+    assert len(lanes_of[50]) <= 2
+    expert = track.notes["expert"]
+    for a, b in zip(expert, expert[1:]):   # nota diferente nunca na mesma lane da anterior
+        assert pitch_at[a.tick] == pitch_at[b.tick] or a.lanes != b.lanes
+    # repetições iguais ficam iguais; no compasso 1 (sem a descida grave antes) só a 1ª nota pode mudar
+    by_bar = [[n.lanes for n in expert if n.tick // (4 * RES) == b] for b in range(9)]
+    assert by_bar[3] == by_bar[6] and by_bar[1] == by_bar[4] == by_bar[7] and by_bar[2] == by_bar[5] == by_bar[8]
+    assert by_bar[0][1:] == by_bar[3][1:]
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)
