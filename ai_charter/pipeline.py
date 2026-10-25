@@ -20,7 +20,7 @@ from ai_charter.analysis.drums import TOM as DRUM_TOM
 from ai_charter.analysis.drums import TOM_LOW as DRUM_TOM_LOW
 from ai_charter.analysis.drums import TOM_MID as DRUM_TOM_MID
 from ai_charter.analysis.drums import TOMS as DRUM_TOMS
-from ai_charter.analysis.drums import analyze_kit, detect_drum_hits
+from ai_charter.analysis.drums import analyze_kit, detect_drum_hits, ring_features
 from ai_charter.analysis.pitched import detect_pitched_notes
 from ai_charter.analysis.sections import find_preview_start, find_sections
 from ai_charter.analysis.tempo import TempoMap, estimate_tempo_map
@@ -239,7 +239,11 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     adtof_feats = None
     if uses_adtof:
         adtof_feats = adtof.at_times(adtof_act, kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY)
-    probs = model.predict_song(kit.features, ticks, res, adtof_feats)
+    lane_model = TomLaneModel.load() if uses_adtof else None
+    # Medidas de ressonância (altura do tom, sustentação dos pratos), só se algum modelo usa
+    ring = (ring_features(y, sr, kit.onsets)
+            if getattr(model, "uses_ring", False) or getattr(lane_model, "uses_ring", False) else None)
+    probs = model.predict_song(kit.features, ticks, res, adtof_feats, ring)
     trust = rules.drum_detection.adtof_kick_trust
     if uses_adtof and trust > 0:   # pedal duplo rápido: o modelo duvida, o ADTOF ouve
         k = MODEL_OUTPUTS.index("kick")
@@ -250,8 +254,8 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
         sure = (adtof_feats[:, adtof.CLASSES.index("bumbo")] >= trust) & near
         probs[sure, k] = np.maximum(probs[sure, k], model.thresholds[k])
     # A cor de cada tom: aprendida das charts oficiais (TomLaneModel), se houver; senão, pela altura
-    lane_model = TomLaneModel.load() if uses_adtof else None
-    lane_probs = (lane_model.predict(tom_lane_inputs(kit.features, ticks, res, adtof_feats))
+    lane_probs = (lane_model.predict(tom_lane_inputs(kit.features, ticks, res, adtof_feats,
+                                                     ring if lane_model.uses_ring else None))
                   if lane_model is not None else None)
     seen: dict[tuple[int, str], Candidate] = {}
     hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota

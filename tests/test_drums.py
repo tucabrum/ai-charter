@@ -95,7 +95,7 @@ def test_model_sees_ticks_in_the_tempo_map_grid(kit_song):
     class Spy:
         thresholds = np.ones(len(OUTPUTS))
 
-        def predict_song(self, features, ticks, resolution, adtof_feats=None):
+        def predict_song(self, features, ticks, resolution, adtof_feats=None, ring=None):
             seen.update(ticks=ticks, resolution=resolution)
             return np.zeros((len(ticks), len(OUTPUTS)))
 
@@ -158,15 +158,20 @@ def test_shipped_drum_models_load_and_match_the_features(which):
     from ai_charter.drum_model import (ADTOF_MODEL_PATH, INPUT_NAMES, INPUT_NAMES_ADTOF, MODEL_PATH, OUTPUTS,
                                        DrumModel)
 
-    path, names = (MODEL_PATH, INPUT_NAMES) if which == "basico" else (ADTOF_MODEL_PATH, INPUT_NAMES_ADTOF)
+    from ai_charter.analysis.drums import RING_NAMES
+    from ai_charter.drum_model import INPUT_NAMES_RING
+
+    path = MODEL_PATH if which == "basico" else ADTOF_MODEL_PATH
     model = DrumModel.load(path)
     assert model is not None, f"{path.name} não carregou (treine com ai-charter-bench train-drums)"
+    names = INPUT_NAMES if which == "basico" else INPUT_NAMES_RING if model.uses_ring else INPUT_NAMES_ADTOF
     assert model.w1.shape[0] == len(names) and model.w2.shape[1] == len(OUTPUTS)
     assert model.uses_adtof == (which == "adtof")
     rng = np.random.default_rng(0)
     features = rng.normal(size=(20, len(FEATURE_NAMES))).astype(np.float32)
     adtof_feats = rng.uniform(size=(20, 5)).astype(np.float32) if model.uses_adtof else None
-    p = model.predict_song(features, np.arange(20) * 48.0, 192, adtof_feats)
+    ring = rng.uniform(size=(20, len(RING_NAMES))).astype(np.float32) if model.uses_ring else None
+    p = model.predict_song(features, np.arange(20) * 48.0, 192, adtof_feats, ring)
     assert p.shape == (20, len(OUTPUTS)) and np.all((p >= 0) & (p <= 1))
 
 
@@ -251,3 +256,16 @@ def test_reduction_features_see_the_notes_around():
     assert x[0, col("peca_kick")] == 1 and x[0, col("junto_hihat")] == 1 and x[0, col("posicao_0")] == 1
     assert x[1, col("depois_1/16_hihat")] == 1 and x[1, col("depois_1/8_snare")] == 1
     assert x[3, col("antes_1/8_hihat")] == 1 and x[3, col("bpm")] == pytest.approx(0.6)
+
+
+def test_ring_features_measure_tom_pitch():
+    from ai_charter.analysis.drums import HOP, RING_NAMES, ring_features
+
+    t = np.arange(int(2 * SR)) / SR
+    y = np.zeros_like(t)
+    for f0, at in ((100, 0.2), (200, 1.0)):
+        m = t >= at
+        y[m] += np.sin(2 * np.pi * f0 * (t[m] - at)) * np.exp(-(t[m] - at) * 4)
+    r = ring_features(y, SR, np.array([int(0.2 * SR / HOP), int(1.0 * SR / HOP)]))
+    freq = 55 * 2 ** (r[:, RING_NAMES.index("tom_freq")] * 3)
+    assert freq == pytest.approx([100, 200], rel=0.05)

@@ -495,3 +495,50 @@ def detect_drum_hits(y: np.ndarray, sr: int, cfg: DrumDetection) -> list[DrumHit
     out = [DrumHit(to_time(f), piece, v) for (f, piece), v in hits.items()]
     out += [DrumHit(to_time(f), piece, v, weak=True) for (f, piece), v in weak.items() if (f, piece) not in hits]
     return sorted(out, key=lambda h: h.time)
+
+
+RING_NAMES = ["tom_freq", "tom_pico", "anel_graves", "sustenta_300ms", "sustenta_700ms", "planura_agudos"]
+
+
+def ring_features(y: np.ndarray, sr: int, onsets: np.ndarray) -> np.ndarray:
+    """Medidas de RESSONÂNCIA de cada ataque (quadros de HOP), para separar os tons entre si e os
+    pratos entre si: a altura do tom (o pico dos graves numa janela longa, ~5 Hz de resolução, logo
+    depois do golpe), quanto o pico se destaca, quanto os graves ainda soam ~250 ms depois e quanto
+    os agudos ainda soam ~300 e ~700 ms depois (ataque sustenta muito mais que condução)."""
+    out = np.zeros((len(onsets), len(RING_NAMES)), dtype=np.float32)
+    n_long, n_short = 8192, 2048
+    win_long, win_short = np.hanning(n_long), np.hanning(n_short)
+    f_long = np.fft.rfftfreq(n_long, 1 / sr)
+    f_short = np.fft.rfftfreq(n_short, 1 / sr)
+    low = (f_long >= 55) & (f_long <= 450)
+    low_s = (f_short >= 50) & (f_short <= 500)
+    high_s = f_short >= 5000
+    ms = lambda t: int(t * sr / 1000)   # noqa: E731
+
+    def spec(start: int, n: int, window) -> np.ndarray | None:
+        seg = y[start: start + n]
+        if start < 0 or len(seg) < n:
+            return None
+        return np.abs(np.fft.rfft(seg * window))
+
+    for i, frame in enumerate(np.asarray(onsets, dtype=int)):
+        s0 = frame * HOP
+        body = spec(s0 + ms(30), n_long, win_long)
+        early = spec(s0 + ms(5), n_short, win_short)
+        if body is None or early is None:
+            continue
+        band = body[low]
+        k = int(np.argmax(band))
+        out[i, 0] = np.log2(f_long[low][k] / 55.0) / 3.0
+        out[i, 1] = np.log1p(band[k] / (np.median(band) + 1e-9))
+        e_low, e_high = early[low_s].sum() + 1e-9, early[high_s].sum() + 1e-9
+        # O menor nível entre algumas janelas: golpes seguintes não "esticam" a ressonância
+        later = lambda t0, t1, mask: min(   # noqa: E731
+            (sp[mask].sum() for sp in (spec(s0 + ms(t), n_short, win_short) for t in np.linspace(t0, t1, 3))
+             if sp is not None), default=0.0)
+        out[i, 2] = np.clip(later(200, 300, low_s) / e_low, 0, 2)
+        out[i, 3] = np.clip(later(280, 380, high_s) / e_high, 0, 2)
+        out[i, 4] = np.clip(later(620, 780, high_s) / e_high, 0, 2)
+        hi = early[high_s] + 1e-9
+        out[i, 5] = float(np.exp(np.mean(np.log(hi))) / np.mean(hi))
+    return out

@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from ai_charter.analysis import adtof
-from ai_charter.analysis.drums import CRASH, FEATURE_NAMES, HIHAT, KICK, RIDE, SNARE, TOM
+from ai_charter.analysis.drums import CRASH, FEATURE_NAMES, HIHAT, KICK, RIDE, RING_NAMES, SNARE, TOM
 
 MODEL_PATH = Path(__file__).with_name("drum_model.json")
 # Com o ADTOF instalado: o mesmo modelo, mais as chances que o ADTOF dá para cada golpe
@@ -37,6 +37,8 @@ CONTEXT_NAMES = [f"posicao_{i}" for i in range(16)] + ["fora_da_grade", "vizinho
 INPUT_NAMES = FEATURE_NAMES + [f"rel_{n}" for n in FEATURE_NAMES] + CONTEXT_NAMES
 ADTOF_NAMES = [f"adtof_{c}" for c in adtof.CLASSES]
 INPUT_NAMES_ADTOF = INPUT_NAMES + ADTOF_NAMES
+# Mais as medidas de ressonância (altura do tom, quanto os pratos sustentam), na música e relativas a ela
+INPUT_NAMES_RING = INPUT_NAMES_ADTOF + RING_NAMES + [f"rel_{n}" for n in RING_NAMES]
 
 # Etapa da levada: semicolcheias em volta do ataque (meio compasso de cada lado em detalhe, mais o
 # mesmo lugar no compasso anterior e no seguinte) e, em cada uma, a chance de cada peça + "houve ataque"
@@ -55,11 +57,13 @@ def song_relative(features: np.ndarray) -> np.ndarray:
 
 
 def model_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int,
-                 adtof_feats: np.ndarray | None = None) -> np.ndarray:
+                 adtof_feats: np.ndarray | None = None, ring: np.ndarray | None = None) -> np.ndarray:
     """Entrada do modelo para os ataques de UMA música: retrato, retrato relativo, lugar na levada e,
-    se houver, as chances do ADTOF (adtof.at_times) para cada ataque."""
+    se houver, as chances do ADTOF (adtof.at_times) e as medidas de ressonância (ring_features)."""
     parts = [features, song_relative(features), context_features(ticks * 192 / resolution, 192)]
-    return np.hstack(parts + ([adtof_feats] if adtof_feats is not None else []))
+    parts += [adtof_feats] if adtof_feats is not None else []
+    parts += [ring, song_relative(ring)] if ring is not None else []
+    return np.hstack(parts)
 
 
 def context_features(ticks: np.ndarray, resolution: int) -> np.ndarray:
@@ -127,7 +131,8 @@ class DrumModel:
         self.groove = _arrays(params["groove"]) if params.get("groove") else None
         self.thresholds = np.array(params["thresholds"], dtype=np.float32)
         self.info = params.get("info", {})
-        self.uses_adtof = params.get("features") == INPUT_NAMES_ADTOF
+        self.uses_adtof = params.get("features") in (INPUT_NAMES_ADTOF, INPUT_NAMES_RING)
+        self.uses_ring = params.get("features") == INPUT_NAMES_RING
         self.w1, self.w2 = self.sound["w1"], self.sound["w2"]
 
     @classmethod
@@ -142,7 +147,7 @@ class DrumModel:
         if not path.is_file():
             return None
         params = json.loads(path.read_text(encoding="utf-8"))
-        if params.get("features") not in (INPUT_NAMES, INPUT_NAMES_ADTOF) or params.get("outputs") != list(OUTPUTS):
+        if params.get("features") not in (INPUT_NAMES, INPUT_NAMES_ADTOF, INPUT_NAMES_RING)                 or params.get("outputs") != list(OUTPUTS):
             return None   # modelo de outra versão do retrato: melhor não usar
         if params.get("groove") and params["groove"].get("features") != GROOVE_NAMES:
             return None
@@ -153,11 +158,14 @@ class DrumModel:
         return mlp(self.sound, x)
 
     def predict_song(self, features: np.ndarray, ticks: np.ndarray, resolution: int,
-                     adtof_feats: np.ndarray | None = None) -> np.ndarray:
+                     adtof_feats: np.ndarray | None = None, ring: np.ndarray | None = None) -> np.ndarray:
         """Os ataques de uma música inteira: etapa do som e, por cima, a da levada."""
         if self.uses_adtof and adtof_feats is None:
             raise ValueError("este modelo precisa das chances do ADTOF para cada ataque")
-        probs = self.predict(model_inputs(features, ticks, resolution, adtof_feats if self.uses_adtof else None))
+        if self.uses_ring and ring is None:
+            raise ValueError("este modelo precisa das medidas de ressonância (ring_features)")
+        probs = self.predict(model_inputs(features, ticks, resolution, adtof_feats if self.uses_adtof else None,
+                                          ring if self.uses_ring else None))
         if self.groove is None or not len(probs):
             return probs
         return mlp(self.groove, groove_inputs(probs, ticks, resolution))
@@ -240,10 +248,11 @@ TOM_CONTEXT_NAMES = ["tom_altura_rank", "tom_centro_rank", "tom_altura_vs_antes"
 
 
 def tom_context(features: np.ndarray, adtof_feats: np.ndarray, ticks: np.ndarray, resolution: int,
-                min_chance: float = 0.2) -> np.ndarray:
+                min_chance: float = 0.2, ring: np.ndarray | None = None) -> np.ndarray:
     """Para cada ataque de UMA música: onde a altura dele fica entre os golpes de tom da música
     (os que o ADTOF ouve como tom) e quanto ela difere do golpe de tom anterior e do seguinte."""
-    altura = features[:, FEATURE_NAMES.index("altura_graves")]
+    # A altura: o pico dos graves medido na ressonância, se houver; senão, a do retrato
+    altura = ring[:, RING_NAMES.index("tom_freq")] if ring is not None else features[:, FEATURE_NAMES.index("altura_graves")]
     levels = features[:, [FEATURE_NAMES.index(f"nivel_{i}") for i in range(12)]]
     centro = (levels * np.arange(12)).sum(axis=1) / (levels.sum(axis=1) + 1e-9)
     is_tom = adtof_feats[:, adtof.CLASSES.index("tom")] >= min_chance
@@ -267,9 +276,10 @@ def tom_context(features: np.ndarray, adtof_feats: np.ndarray, ticks: np.ndarray
     return out
 
 
-def tom_lane_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int, adtof_feats: np.ndarray) -> np.ndarray:
-    return np.hstack([model_inputs(features, ticks, resolution, adtof_feats),
-                      tom_context(features, adtof_feats, ticks, resolution)])
+def tom_lane_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int, adtof_feats: np.ndarray,
+                    ring: np.ndarray | None = None) -> np.ndarray:
+    return np.hstack([model_inputs(features, ticks, resolution, adtof_feats, ring),
+                      tom_context(features, adtof_feats, ticks, resolution, ring=ring)])
 
 
 class TomLaneModel:
@@ -277,13 +287,15 @@ class TomLaneModel:
 
     def __init__(self, params: dict):
         self.params = _arrays(params)
+        self.uses_ring = params.get("features") == INPUT_NAMES_RING + TOM_CONTEXT_NAMES
 
     @classmethod
-    def load(cls, path: Path = TOM_LANE_PATH) -> "TomLaneModel | None":
+    def load(cls, path: Path | None = None) -> "TomLaneModel | None":
+        path = path or TOM_LANE_PATH
         if not adtof.available() or not path.is_file():
             return None
         params = json.loads(path.read_text(encoding="utf-8"))
-        if params.get("features") != INPUT_NAMES_ADTOF + TOM_CONTEXT_NAMES:
+        if params.get("features") not in (INPUT_NAMES_ADTOF + TOM_CONTEXT_NAMES, INPUT_NAMES_RING + TOM_CONTEXT_NAMES):
             return None
         return cls(params)
 

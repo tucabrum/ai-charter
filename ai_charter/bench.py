@@ -219,7 +219,10 @@ def _collect_one(folder: Path, rules, bleed: tuple[float, float], adtof_cache: P
             labels[near[np.argmin(np.abs(ticks[near] - t))], PIECES.index(piece)] = 1.0
         else:
             missed += 1
-    return kit.features, ticks * 192 / res, labels, missed, len(theirs), gain
+    from ai_charter.analysis.drums import ring_features
+
+    ring = ring_features(y, DRUMS_SR, kit.onsets)
+    return kit.features, ticks * 192 / res, labels, missed, len(theirs), gain, ring
 
 
 def _collect_safe(args):
@@ -240,7 +243,7 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
     Com workers > 1, várias músicas são analisadas ao mesmo tempo (um processo cada)."""
     from concurrent.futures import ProcessPoolExecutor
 
-    feats, ticks_all, ys, songs, missed, total = [], [], [], [], 0, 0
+    feats, ticks_all, ys, songs, rings, missed, total = [], [], [], [], [], 0, 0
     jobs = [(f, rules, bleed, adtof_cache, demucs_cache) for f in folders]
     tag = " [demucs]" if demucs_cache else ""   # outra versão da mesma música: grupo próprio, mesmo lado da divisão
     results = (map(_collect_safe, jobs) if workers <= 1
@@ -250,8 +253,9 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
             if err:
                 print(f"[{i}/{len(folders)}] {folder.name}: erro ({err})", flush=True)
             continue
-        f, t, y, m, n, gain = res
+        f, t, y, m, n, gain, ring = res
         feats.append(f)
+        rings.append(ring)
         ticks_all.append(t)
         ys.append(y)
         missed += m
@@ -260,7 +264,7 @@ def collect(folders: list[Path], out: Path, rules, bleed: tuple[float, float] = 
         if i % 25 == 0 or i == len(folders):
             print(f"[{i}/{len(folders)}] {folder.name}: {len(t)} ataques (vazamento {gain:.2f})", flush=True)
     np.savez_compressed(out, features=np.vstack(feats), ticks=np.concatenate(ticks_all), y=np.vstack(ys),
-                        songs=np.array(songs))
+                        songs=np.array(songs), ring=np.vstack(rings))
     print(f"{len(set(songs))} músicas, {sum(len(x) for x in feats)} ataques; golpes oficiais sem ataque detectado: "
           f"{missed}/{total} ({missed / max(1, total):.1%})")
 
@@ -548,7 +552,8 @@ def _load_collections(paths) -> dict[str, np.ndarray]:
     """Uma coleta (.npz) ou várias juntadas, na mesma forma."""
     paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
     parts = [np.load(p) for p in paths]
-    return {k: np.concatenate([d[k] for d in parts]) for k in ("features", "ticks", "y", "songs")}
+    keys = ["features", "ticks", "y", "songs"] + (["ring"] if all("ring" in d for d in parts) else [])
+    return {k: np.concatenate([d[k] for d in parts]) for k in keys}
 
 
 def train_drums(data, folds: int = 3, adtof_cache: Path | None = None, songs_root: Path | None = None) -> None:
@@ -575,10 +580,13 @@ def train_drums(data, folds: int = 3, adtof_cache: Path | None = None, songs_roo
     if adtof_cache is not None:
         adtof_feats, have = _adtof_for_songs(names, starts, ends, ticks, adtof_cache, songs_root)
         print(f"ADTOF: {have.sum()} de {len(names)} músicas com cache", flush=True)
-    input_names = dm.INPUT_NAMES_ADTOF if adtof_feats is not None else dm.INPUT_NAMES
+    ring = d.get("ring") if adtof_feats is not None else None   # ressonância: só junto com o ADTOF
+    input_names = (dm.INPUT_NAMES_RING if ring is not None else
+                   dm.INPUT_NAMES_ADTOF if adtof_feats is not None else dm.INPUT_NAMES)
     x1 = np.empty((len(ticks), len(input_names)), dtype=np.float32)
     for s, e in zip(starts, ends):
-        x1[s:e] = dm.model_inputs(feats[s:e], ticks[s:e], 192, None if adtof_feats is None else adtof_feats[s:e])
+        x1[s:e] = dm.model_inputs(feats[s:e], ticks[s:e], 192, None if adtof_feats is None else adtof_feats[s:e],
+                                  None if ring is None else ring[s:e])
     del feats, adtof_feats
     song_of = np.repeat(np.arange(len(names)), ends - starts)
     crc = np.array([zlib.crc32(n.encode("utf-8")) for n in names])
@@ -625,7 +633,7 @@ def train_drums(data, folds: int = 3, adtof_cache: Path | None = None, songs_roo
         f_sound = _f1(pt1[:, k] >= thresholds1[k], y[test_rows, k] > 0)
         report[piece] = round(_f1(pt[:, k] >= thresholds[k], y[test_rows, k] > 0), 3)
         print(f"{piece:10s} {f_sound:7.3f} {report[piece]:8.3f}")
-    path = dm.ADTOF_MODEL_PATH if input_names == dm.INPUT_NAMES_ADTOF else dm.MODEL_PATH
+    path = dm.MODEL_PATH if input_names == dm.INPUT_NAMES else dm.ADTOF_MODEL_PATH   # com ADTOF (e ressonância) à parte
     dm.save(sound, np.array(thresholds), {"teste_f1_por_ataque": report,
                                           "musicas_treino": int(len(set(song_of[fit])))},
             path=path, groove=groove, features=input_names)
@@ -643,7 +651,7 @@ def train_tom_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
     starts, ends = np.concatenate([[0], cut]), np.concatenate([cut, [len(songs)]])
     names = [str(songs[s]) for s in starts]
     del songs
-    ticks, feats = d["ticks"], d["features"]
+    ticks, feats, ring = d["ticks"], d["features"], d.get("ring")
     lanes = d["y"][:, [PIECES.index("tom amarelo"), PIECES.index("tom azul"), PIECES.index("surdo")]]
     adtof_feats, have = _adtof_for_songs(names, starts, ends, ticks, adtof_cache, songs_root)
     xs, ys, tests = [], [], []
@@ -651,7 +659,7 @@ def train_tom_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
         rows = np.flatnonzero(lanes[s:e].sum(axis=1) == 1)   # um tom só (sem dois tons juntos)
         if not have[i] or not len(rows):
             continue
-        x = dm.tom_lane_inputs(feats[s:e], ticks[s:e], 192, adtof_feats[s:e])
+        x = dm.tom_lane_inputs(feats[s:e], ticks[s:e], 192, adtof_feats[s:e], None if ring is None else ring[s:e])
         xs.append(x[rows])
         ys.append(lanes[s:e][rows])
         tests.append(np.full(len(rows), is_test(names[i])))
@@ -663,7 +671,8 @@ def train_tom_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
     acc = float((pred == y[test].argmax(axis=1)).mean())
     print(f"cor certa no teste: {acc:.2f} (ao acaso: 0,33)")
     out = dm._jsonable(params)
-    out.update(features=dm.INPUT_NAMES_ADTOF + dm.TOM_CONTEXT_NAMES, lanes=list(dm.TOM_LANES),
+    out.update(features=(dm.INPUT_NAMES_RING if ring is not None else dm.INPUT_NAMES_ADTOF) + dm.TOM_CONTEXT_NAMES,
+               lanes=list(dm.TOM_LANES),
                info={"cor_certa_teste": round(acc, 3)})
     dm.TOM_LANE_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
     print(f"modelo salvo em {dm.TOM_LANE_PATH}")
