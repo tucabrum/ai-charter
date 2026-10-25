@@ -11,6 +11,7 @@ from pathlib import Path
 import librosa
 import numpy as np
 
+from ai_charter import stem_sources
 from ai_charter.analysis import adtof
 from ai_charter.analysis.drums import HOP as DRUM_HOP
 from ai_charter.analysis.drums import ONSET_LATENCY as DRUM_ONSET_LATENCY
@@ -78,6 +79,7 @@ class Options:
     cifra_lyrics: bool = True      # sem outra letra, os vocais usam a letra da cifra
     lead_in: float = 3.0           # segundos mínimos antes da 1ª nota (compassos de silêncio; 0 = sem)
     instruments: tuple[str, ...] = ALL_INSTRUMENTS
+    stem_sources: dict[str, str] | None = None   # instrumento -> stem de onde ele sai (stem_sources.py)
     tempo_mode: str = "auto"
     title: str | None = None
     artist: str | None = None
@@ -378,11 +380,14 @@ def run(opts: Options, log=print) -> Result:
                                         rules.general.starpower_phrase_beats)
         tracks: dict[str, TrackChart] = {}
         guitar_sources: list[str] = []
+        sources = stem_sources.validate(opts.stem_sources or {})
         for instrument in opts.instruments:
-            stem = stems.get(instrument)
+            stem = stems.get(sources.get(instrument, instrument))
             if stem is None:
                 log(f"    {instrument}: sem stem, pulando")
                 continue
+            if instrument in sources:
+                log(f"    {instrument}: usando o stem {sources[instrument]}")
             energy = _stem_energy(stem, mix_rms)
             if energy < rules.general.min_stem_energy:
                 log(f"    {instrument}: stem quase silencioso ({energy:.3f}), pulando")
@@ -436,6 +441,12 @@ def run(opts: Options, log=print) -> Result:
         if lead.bars:
             log(f"    entrada: {lead.bars} compasso(s) de silêncio ({lead.seconds:.1f} s) antes da música")
         stem_entries: dict[str, str] = {}
+        # O áudio acompanha a troca: o stem charteado vai no lugar do instrumento, e o dele no do stem.
+        swapped = {t: s for t, s in sources.items() if t in tracks}
+        if swapped and opts.separator != "none":
+            stems = stem_sources.arrange(stems, swapped)
+            log("    áudio trocado de lugar: " + ", ".join(f"{STEM_FILES[t][0]} <-> {STEM_FILES[s][0]}"
+                                                       for t, s in stem_sources.layout(swapped).items() if t in swapped))
         if opts.separator == "none":
             # Sem stems de verdade: a música inteira vai no song.ogg.
             audio.to_ogg(mix_wav, song_dir / "song.ogg", delay=lead.seconds)
@@ -461,6 +472,8 @@ def run(opts: Options, log=print) -> Result:
             write_chart(song_dir / "notes.chart", info, tempo, tracks, sections)
             lead_in.shift_file(song_dir / "notes.chart", lead.ticks)
         write_song_ini(song_dir / "song.ini", info, tracks, vocals)
+        if swapped and opts.separator != "none":   # o Acrescentar precisa saber que os áudios estão trocados
+            stem_sources.record(song_dir, swapped)
         audio.extract_cover(opts.input, song_dir / "album.png")
 
         result = Result(song_dir=song_dir, tracks=tracks, vocals=vocals,

@@ -53,6 +53,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                              "partitura=instante da música em que ele começa, ex.: 1=2.4,33=1:05.2")
     parser.add_argument("--instruments", default=",".join(ALL_INSTRUMENTS),
                         help="instrumentos a gerar, separados por vírgula (padrão: guitar,bass,drums,keys)")
+    parser.add_argument("--stem-source", default="",
+                        help="outro stem como fonte de uma pista, numa música sem aquele instrumento: "
+                             "guitar=other (o resto, onde ficam os sintetizadores), keys=vocals... O áudio troca "
+                             "de lugar junto (o stem escolhido vira o guitar.ogg). A bateria não troca")
     parser.add_argument("--tempo", choices=("auto", "constant", "variable"), default="auto",
                         help="mapa de tempo constante ou variável (padrão: auto)")
     parser.add_argument("--lyrics", type=Path,
@@ -75,6 +79,11 @@ def parse_args(argv: list[str] | None = None) -> Options:
     invalid = set(instruments) - set(ALL_INSTRUMENTS)
     if invalid:
         parser.error(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
+    from ai_charter.stem_sources import parse as parse_stem_sources
+    try:
+        stem_sources = parse_stem_sources(args.stem_source) or None
+    except ValueError as exc:
+        parser.error(str(exc))
     from ai_charter.youtube import is_url
     url = args.input if is_url(args.input) else None
     if url is None and not Path(args.input).exists():
@@ -100,7 +109,7 @@ def parse_args(argv: list[str] | None = None) -> Options:
         rules_path=args.rules, genre=args.genre, reference=args.reference, reference_tracks=reference_tracks,
         reference_fidelity=reference_fidelity, reference_sections=reference_sections,
         reference_anchors=reference_anchors, cifra=args.cifra,
-        instruments=instruments, tempo_mode=args.tempo,
+        instruments=instruments, stem_sources=stem_sources, tempo_mode=args.tempo,
         title=args.title, artist=args.artist, lyrics=args.lyrics, auto_lyrics=args.auto_lyrics,
         output_format=args.format,
         make_zip=args.zip, keep_work=args.keep_work,

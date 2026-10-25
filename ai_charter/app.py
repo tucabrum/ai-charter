@@ -128,6 +128,7 @@ class Request:
     input: Path | None            # None quando a música vem de um link (url)
     output_dir: Path
     instruments: tuple[str, ...]
+    stem_sources: dict[str, str] | None = None   # instrumento -> stem de onde ele sai (stem_sources.py)
     separator: str = "demucs"
     stems_dir: Path | None = None
     rules_path: Path | None = None
@@ -245,6 +246,19 @@ def _fidelity(data: dict) -> str | dict[str, str]:
     return out
 
 
+def _stem_sources(data: dict) -> dict[str, str] | None:
+    """Outro stem como fonte de uma pista ({"guitar": "other"}; vazio = cada uma no seu)."""
+    from ai_charter.stem_sources import validate
+
+    raw = data.get("stem_sources") or {}
+    if not isinstance(raw, dict):
+        raise BadRequest("stem_sources inválido")
+    try:
+        return validate({str(t): str(s) for t, s in raw.items() if s}) or None
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
 def parse_request(data: dict, settings: dict) -> Request:
     """Valida o formulário da página (os mesmos cuidados da CLI)."""
     instruments = tuple(data.get("instruments") or ())
@@ -266,7 +280,7 @@ def parse_request(data: dict, settings: dict) -> Request:
     downloads = _path(data, "downloads", "") or (Path(settings["downloads"]) if settings.get("downloads") else None)
     return Request(
         input=source, url=url, download_dir=downloads, output_dir=output, instruments=instruments,
-        separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
+        stem_sources=_stem_sources(data), separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
         reference_anchors=_anchors(data),
@@ -330,7 +344,7 @@ def run_request(req: Request, log) -> Path:
             rules_path=req.rules_path, genre=req.genre, reference=req.reference,
             reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
             reference_sections=req.reference_sections, reference_anchors=req.reference_anchors,
-            instruments=req.instruments, tempo_mode=req.tempo_mode,
+            instruments=req.instruments, stem_sources=req.stem_sources, tempo_mode=req.tempo_mode,
             title=title, artist=artist, lyrics=lyrics, auto_lyrics=req.auto_lyrics,
             output_format=req.output_format, make_zip=req.make_zip,
             cifra=cifra, cifra_lyrics=req.lyrics_from_cifra,
@@ -349,6 +363,7 @@ class AddRequest:
     """Instrumentos a acrescentar numa chart que já existe (ver augment.py)."""
     folder: Path
     instruments: tuple[str, ...]
+    stem_sources: dict[str, str] | None = None
     rules_path: Path | None = None
     genre: str | None = None
     reference: Path | None = None
@@ -379,7 +394,7 @@ def parse_add_request(data: dict) -> AddRequest:
         raise BadRequest("escolha ao menos um instrumento para acrescentar")
     reference, reference_tracks = _reference(data)
     return AddRequest(
-        folder=folder, instruments=instruments, rules_path=_path(data, "rules", "file"), genre=_genre(data),
+        folder=folder, instruments=instruments, stem_sources=_stem_sources(data), rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
         reference_anchors=_anchors(data),
@@ -412,7 +427,7 @@ def run_add_request(req: AddRequest, log) -> Path:
                      rules_path=req.rules_path, genre=req.genre, reference=req.reference,
                      reference_tracks=req.reference_tracks, reference_fidelity=req.reference_fidelity,
                      reference_sections=req.reference_sections, reference_anchors=req.reference_anchors,
-                     replace_existing=req.replace, log=log)
+                     replace_existing=req.replace, stem_sources=req.stem_sources, log=log)
     if not result.added:
         raise RuntimeError("nada foi acrescentado: " + "; ".join(f"{k}: {v}" for k, v in result.skipped.items()))
     return req.folder
@@ -422,6 +437,7 @@ def song_info(folder: Path) -> dict:
     """O que a pasta de uma música já tem: partes da chart, stems e letra."""
     from ai_charter.augment import LYRICS_NAMES, existing_parts
     from ai_charter.separation import stems_from_folder
+    from ai_charter.stem_sources import recorded
 
     if not (folder / "notes.mid").is_file():
         raise BadRequest(f"a pasta não tem notes.mid: {folder}"
@@ -436,6 +452,7 @@ def song_info(folder: Path) -> dict:
         "parts": existing_parts(folder), "stems": stems,
         "lyrics": next((n for n in LYRICS_NAMES if (folder / n).is_file()), None),
         "cifra": (folder / "cifra.txt").is_file(),
+        "stem_sources": recorded(folder),   # troca de stems já feita nos áudios da pasta
         "genre_tag": ini.get("genre", ""), "genre": genre_for_tag(ini.get("genre")),
     }
 

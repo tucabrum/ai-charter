@@ -154,6 +154,11 @@
         <div class="field">
           <span>Instrumentos</span>
           <div id="instruments"></div>
+        <details class="stem-sources">
+          <summary>Música sem algum instrumento? Usar outro som no lugar (ocasião incomum)</summary>
+          <div class="stem-source-list"></div>
+          <p class="help">Ex.: numa música sem guitarra, o sintetizador (que fica no "resto") vira a pista de guitarra. O áudio troca de lugar junto: o som escolhido vai para o guitar.ogg e o da guitarra para o lugar dele, para silenciar quando você erra. A bateria não troca.</p>
+        </details>
         </div>
         <div class="field">
           <span>Gênero (ajusta as regras de charting)</span>
@@ -268,6 +273,11 @@
         <span>Instrumentos a gerar</span>
         <div id="addInstruments"><p class="help">Escolha a pasta para ver o que dá para acrescentar.</p></div>
         <label class="check" style="margin-top: 6px"><input type="checkbox" name="replace"> Refazer também as partes que já existem (os compassos travados no editor ficam como estão)</label>
+      <details class="stem-sources">
+        <summary>Música sem algum instrumento? Usar outro som no lugar (ocasião incomum)</summary>
+        <div class="stem-source-list"></div>
+        <p class="help">Ex.: numa música sem guitarra, o sintetizador (que fica no "resto") vira a pista de guitarra. O áudio troca de lugar junto: o som escolhido vai para o guitar.ogg e o da guitarra para o lugar dele, para silenciar quando você erra. A bateria não troca.</p>
+      </details>
       </div>
       <div class="field">
         <span>Gênero (ajusta as regras de charting)</span>
@@ -390,6 +400,21 @@
 </main>
 <script>
 const NAMES = { guitar: "Guitarra", bass: "Baixo", drums: "Bateria", keys: "Teclado", vocals: "Vocais" };
+
+// Outro stem como fonte de uma pista (stem_sources.py). A bateria não troca.
+const STEM_TARGETS = { guitar: "guitarra", bass: "baixo", keys: "teclado" };
+const STEM_CHOICES = { guitar: "guitarra", bass: "baixo", keys: "teclado/piano", other: "resto (sintetizadores)", vocals: "voz" };
+function renderStemSources(owner, current = {}) {
+  $(".stem-source-list", owner).innerHTML = Object.entries(STEM_TARGETS).map(([t, name]) =>
+    `<label class="ref-fidelity">Usar como ${name}: <select data-stem-target="${t}">${Object.entries(STEM_CHOICES).map(([s, label]) =>
+      `<option value="${s}"${(current[t] || t) === s ? " selected" : ""}>${label}${s === t ? " (padrão)" : ""}</option>`).join("")}</select></label>`).join("");
+  $(".stem-sources", owner).open = Object.keys(current).length > 0;
+}
+function stemSourcesBody(owner) {
+  const out = {};
+  for (const sel of owner.querySelectorAll("[data-stem-target]")) if (sel.value !== sel.dataset.stemTarget) out[sel.dataset.stemTarget] = sel.value;
+  return out;
+}
 const $ = (sel, el = document) => el.querySelector(sel);
 const form = $("#form");
 let state = null, library = [];
@@ -457,7 +482,7 @@ form.onsubmit = async ev => {
     title: f.title.value, artist: f.artist.value, output: f.output.value,
     instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
     separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
-    genre: f.genre.value, ...referenceBody(form),
+    genre: f.genre.value, ...referenceBody(form), stem_sources: stemSourcesBody(form),
     cifra_text: f.cifra_text.value, lyrics_from_cifra: mode === "cifra",
     format: f.format.value, zip: f.zip.checked, open_editor: f.open_editor.checked, overwrite: f.overwrite.checked,
     lyrics_text: mode === "paste" ? f.lyrics_text.value : "",
@@ -802,6 +827,7 @@ async function loadSong() {
         : "<span>nenhuma parte</span>";
       $("#addInfo").hidden = false;
       showGenreHint(addForm, song.genre_tag, song.genre);
+      renderStemSources(addForm, song.stem_sources || {});
       const folderLyrics = $("#addFolderLyrics");
       folderLyrics.hidden = !song.lyrics;
       if (song.lyrics) {
@@ -820,7 +846,7 @@ function renderAdd(fresh = false) {
   const checked = new Set([...addForm.querySelectorAll("[name=addInstrument]:checked")].map(i => i.value));
   if (song) {
     $("#addInstruments").innerHTML = Object.keys(NAMES).map(i => {
-      const exists = song.parts.includes(i), stem = song.stems.includes(i);
+      const exists = song.parts.includes(i), stem = song.stems.includes(stemSourcesBody(addForm)[i] || i);
       const off = !stem || (exists && !replace);
       const note = !stem ? " (sem stem na pasta)" : exists ? " (já existe)" : "";
       const on = !off && (fresh ? !exists : checked.has(i));
@@ -853,6 +879,7 @@ addForm.onsubmit = async ev => {
   const vocals = instruments.includes("vocals");
   const body = {
     folder: f.folder.value, instruments, replace: f.replace.checked, rules: f.rules.value,
+    stem_sources: stemSourcesBody(addForm),
     genre: f.genre.value, ...referenceBody(addForm),
     cifra_text: f.cifra_text.value, lyrics_from_cifra: vocals && mode === "cifra",
     open_editor: f.open_editor.checked,
@@ -1134,6 +1161,8 @@ $("#libFilter").addEventListener("input", renderLibrary);
   state = await api("api/state");
   $("#instruments").innerHTML = state.instruments.map(i =>
     `<label class="check"><input type="checkbox" name="instrument" value="${i}" checked> ${NAMES[i] || i}</label>`).join("");
+  renderStemSources(form);
+  renderStemSources(addForm);
   form.elements.output.value = state.settings.output || "";
   for (const select of document.querySelectorAll(".genre-select")) {
     select.insertAdjacentHTML("beforeend", state.genres.map(g =>

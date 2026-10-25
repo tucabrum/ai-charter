@@ -161,7 +161,8 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
             reference_fidelity: str | dict[str, str] = "seguir",
             reference_sections: list[tuple[int, int, int]] | None = None,
             reference_anchors: list[tuple[int, float]] | None = None, cifra: Path | None = None,
-            replace_existing: bool = False, log=print) -> AugmentResult:
+            replace_existing: bool = False, stem_sources: dict[str, str] | None = None,
+            log=print) -> AugmentResult:
     from ai_charter.analysis.transcribe import transcribe_lyrics
     from ai_charter.charting.common import star_power_windows
     from ai_charter.config import get_genre, load_rules
@@ -170,6 +171,7 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     from ai_charter.pipeline import (
         ANALYSIS_SR, _stem_energy, chart_drums, chart_pitched, chart_vocals, estimate_tuning,
     )
+    from ai_charter import stem_sources as swap
     from ai_charter.separation import AUDIO_EXTENSIONS, stems_from_folder
 
     folder = Path(folder)
@@ -180,6 +182,7 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     invalid = set(instruments) - set(INSTRUMENTS)
     if invalid:
         raise ValueError(f"instrumento(s) inválido(s): {', '.join(sorted(invalid))}")
+    sources = swap.validate(stem_sources or {})
 
     midi = read_midi(chart)
     tempo = revision._tempo_map(midi)
@@ -202,7 +205,13 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     if not todo:
         return result
 
-    stems = stems_from_folder(folder)
+    # Troca de stems: a anotada no song.ini (os áudios da pasta já estão trocados) e a pedida agora
+    # para as pistas refeitas. A transcrição ouve os stems originais.
+    swapped = swap.recorded(folder)
+    wanted = {t: s for t, s in swapped.items() if t not in todo} | {t: s for t, s in sources.items() if t in todo}
+    swap.validate(wanted)
+    current = stems_from_folder(folder)
+    stems = swap.original(current, swapped)
     audio_files = [f for f in sorted(folder.iterdir()) if f.suffix.lower() in AUDIO_EXTENSIONS]
     log("Lendo o áudio da pasta...")
     mix = _load_mix(audio_files, ANALYSIS_SR)
@@ -235,9 +244,10 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     new_tracks: dict[str, mido.MidiTrack] = {}
     ini: dict[str, object] = {}
     for instrument in todo:
-        stem = stems.get(instrument)
+        source = sources.get(instrument, instrument)
+        stem = stems.get(source)
         if not stem:
-            result.skipped[instrument] = f"a pasta não tem o stem ({instrument}.ogg)"
+            result.skipped[instrument] = f"a pasta não tem o stem ({source})"
             log(f"    {instrument}: {result.skipped[instrument]}")
             continue
         if instrument == "vocals":
@@ -272,7 +282,7 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
             result.skipped[instrument] = f"stem quase silencioso ({energy:.3f})"
             log(f"    {instrument}: {result.skipped[instrument]}")
             continue
-        log(f"    {instrument}: transcrevendo...")
+        log(f"    {instrument}: transcrevendo..." + (f" (do stem {source})" if source != instrument else ""))
         if instrument == "drums":
             with tempfile.TemporaryDirectory(prefix="ai-charter-add-") as work:
                 track = chart_drums(_drums_stem(audio_files, Path(work)), tempo, rules, sp_windows)
@@ -310,6 +320,12 @@ def augment(folder: Path, instruments: tuple[str, ...], *, lyrics: Path | None =
     shutil.copy2(chart, folder / BEFORE_ADD_NAME)
     _write_tracks(chart, replaced, appended, midi.ticks_per_beat)
     update_song_ini(folder / "song.ini", ini)
+    # O áudio acompanha a troca (só das pistas gravadas; as puladas ficam como estavam)
+    final = {t: s for t, s in swapped.items() if t not in result.added} |             {t: s for t, s in sources.items() if t in result.added}
+    if final != swapped:
+        written = swap.rearrange_folder(folder, current, swapped, final)
+        log("Áudio trocado de lugar: " + (", ".join(written) or "nenhum arquivo")
+            + (f" (troca: {swap.to_text(final)})" if final else " (de volta aos stems originais)"))
     log(f"notes.mid atualizado com: {', '.join(result.added)} (a versão anterior está em {BEFORE_ADD_NAME})")
     if result.undone:
         log(f"{result.undone} nota(s) em compassos travados foram mantidas como estavam")
@@ -341,6 +357,10 @@ def main(argv: list[str] | None = None) -> None:
                         help="pontos de alinhamento marcados à mão, quando a partitura se perde: compasso da "
                              "partitura=instante da música em que ele começa, ex.: 1=2.4,33=1:05.2")
     parser.add_argument("--replace", action="store_true", help="refaz também as pistas que já existem")
+    parser.add_argument("--stem-source", default="",
+                        help="outro stem como fonte de uma pista, numa música sem aquele instrumento, ex.: "
+                             "guitar=other (o resto, onde ficam os sintetizadores) ou keys=vocals. O áudio troca "
+                             "de lugar junto. A bateria não troca")
     args = parser.parse_args(argv)
     instruments = tuple(i.strip() for i in args.instruments.split(",") if i.strip())
     if not args.folder.is_dir():
@@ -350,6 +370,8 @@ def main(argv: list[str] | None = None) -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # no Windows o padrão (cp1252) embaralha os acentos
     try:
+        from ai_charter.stem_sources import parse as parse_stem_sources
+        sources = parse_stem_sources(args.stem_source)
         mapping, fidelity, sections, anchors = None, "seguir", None, None
         if args.reference is not None:
             from ai_charter.reference import parse_anchors, parse_fidelity, parse_mapping, parse_sections, read_score
@@ -362,7 +384,7 @@ def main(argv: list[str] | None = None) -> None:
                          rules_path=args.rules, genre=args.genre, reference=args.reference,
                          reference_tracks=mapping, reference_fidelity=fidelity, reference_sections=sections,
                          reference_anchors=anchors,
-                         cifra=args.cifra, replace_existing=args.replace)
+                         cifra=args.cifra, replace_existing=args.replace, stem_sources=sources)
     except (RuntimeError, ValueError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         sys.exit(1)
