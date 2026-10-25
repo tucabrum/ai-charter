@@ -14,11 +14,11 @@
     --text: #e8ebf1;
     --muted: #8b93a5;
     --accent: #5aa9ff;
-    --green: #35c46a;
-    --red: #ef4a4a;
-    --yellow: #f5d142;
-    --blue: #3e8bff;
-    --orange: #ff8a2a;
+    --green: #22d64a;
+    --red: #ff2a2a;
+    --yellow: #ffdc1a;
+    --blue: #2a8cff;
+    --orange: #ff961a;
     --purple: #b06cff;
     --sp: #7fe8ff;
   }
@@ -83,7 +83,11 @@
   <span class="time" id="time">0:00.0 / 0:00</span>
   <div class="group">Seção <select id="section"><option value="">—</option></select></div>
   <div class="group">Velocidade <select id="speed"><option>0.5</option><option>0.75</option><option selected>1</option></select></div>
-  <div class="group">Pista <input type="range" id="hyper" min="0.8" max="3" step="0.1" value="1.6" title="Quantos segundos de notas aparecem na pista"></div>
+  <div class="group" title="Hyperspeed: as notas chegam mais rápido e ficam mais espaçadas na pista (teclas - e =)">Hyperspeed
+    <input type="range" id="hyper" min="0.5" max="5" step="0.1" value="1.6"><span id="hyperVal" class="help-inline">1.6×</span></div>
+  <button id="metroBtn" title="Metrônomo: um clique por batida, mais agudo no começo do compasso (M)">♩ Metrônomo</button>
+  <button id="clapBtn" title="Clap: uma palma em cada nota da primeira pista (K)">👏 Clap</button>
+  <button id="waveBtn" title="Waveform: a onda do áudio do instrumento atrás das notas, para ver onde caem os ataques (W)">〰 Onda</button>
   <button id="mixerBtn">Áudio</button>
   <button id="addLane">+ Pista</button>
   <button id="editBtn" title="Editar a chart (notes.mid)">✎ Editar</button>
@@ -99,6 +103,10 @@
   <button id="eTap" title="T">Tap</button>
   <button id="eSp" title="S">Star Power</button>
   <button id="eDel" title="Delete">Excluir</button>
+  <div class="group" title="Valem para a chart toda, a partir do cursor (a linha de toque)">No cursor:
+    <button id="eBpm" title="Muda o BPM a partir do cursor; as notas seguintes andam junto com a grade (B)">BPM</button>
+    <button id="eSig" title="Muda a fórmula de compasso a partir do compasso do cursor">Compasso</button>
+    <button id="eSec" title="Põe, renomeia ou apaga uma seção no cursor (E)">Seção</button></div>
   <button id="eUndo" title="Ctrl+Z">↶ Desfazer</button>
   <button id="eRedo" title="Ctrl+Y">↷ Refazer</button>
   <button class="primary" id="eSave" title="Ctrl+S">Salvar</button>
@@ -114,14 +122,17 @@ Ex.: faça os outros refrões como eu fiz no primeiro; menos acordes de 3 notas 
   <span class="help">Clique: põe nota · arraste: move (tempo e cor) — só a cor clicada; duplo clique pega o acorde inteiro ·
     borda direita no piano roll ou Alt+arraste: sustain · botão direito: apaga a cor ·
     Shift+arraste: seleciona área · Shift+clique: soma à seleção · 1–5: cor (Shift: põe/tira no acorde) · ← →: move na grade · Shift+← →: sustain · ↑ ↓: troca de cor ·
-    H / T / S · bateria: 1 bumbo, 2-5 vermelho a verde, C prato/tom · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll)</span>
+    H / T / S · bateria: 1 bumbo, 2-5 vermelho a verde, C prato/tom · Ctrl+C / Ctrl+V cola no cursor · roda do mouse: anda na música (Ctrl+roda: zoom no piano roll) ·
+    sem nada selecionado, ↑ ↓: anda um passo da grade · [ ]: grade mais grossa / mais fina · Page Up / Page Down: seção anterior / próxima ·
+    M: metrônomo · K: clap · W: waveform · - =: hyperspeed ·
+    B: BPM no cursor · E: seção no cursor (o cursor é a linha de toque; no mesmo ponto de uma mudança, edita ou apaga)</span>
 </div>
 <div id="mixer"></div>
 <canvas id="timeline"></canvas>
 <canvas id="vocals"></canvas>
 <div id="stage"></div>
 <div id="empty">Abra a pasta de uma música (com <b>notes.mid</b> ou <b>notes.chart</b> e os <b>.ogg</b>),<br>
-  ou arraste a pasta para cá. Atalhos: <b>espaço</b> toca/pausa, <b>← →</b> voltam/avançam 5 s.</div>
+  ou arraste a pasta para cá. Atalhos: <b>espaço</b> toca/pausa, <b>← →</b> voltam/avançam 5 s, <b>↑ ↓</b> andam uma batida, <b>Page Up / Page Down</b> pulam de seção, <b>M</b> metrônomo, <b>K</b> clap, <b>W</b> waveform, <b>- =</b> hyperspeed.</div>
 
 <script>
 "use strict";
@@ -280,7 +291,7 @@ function fromMidi(buf, ini) {
       for (const e of track.events) {
         if (e.kind !== "text") continue;
         const m = e.text.match(/^\[(?:section|prc)[ _](.+)\]$/);
-        if (m) chart.sections.push({ time: tm.time(e.tick), name: m[1].replace(/_/g, " ") });
+        if (m) chart.sections.push({ tick: e.tick, time: tm.time(e.tick), name: m[1].replace(/_/g, " "), text: e.text });
         if (e.text === "[end]") chart.endTime = Math.max(chart.endTime, tm.time(e.tick));
       }
     }
@@ -293,6 +304,10 @@ function fromMidi(buf, ini) {
       : midiFrets(track.events, hopoTicks, index);
     chart.tracks[instr] = renderTrack(chart, instr);
   }
+  // O que vale para a chart toda e o editor também mexe: tempo, fórmula de compasso e seções (em ticks)
+  chart.globalEdit = { dirty: false, tempos: tempos.map(({ tick, us }) => ({ tick, us })),
+                       sigs: sigs.map(({ tick, num, den }) => ({ tick, num, den })),
+                       sections: chart.sections.map(({ tick, name, text }) => ({ tick, name, text })) };
   return chart;
 }
 
@@ -422,7 +437,37 @@ function chartToMidi(chart) {
     events.sort((x, y) => x.e.tick - y.e.tick || x.rank - y.rank || x.i - y.i);
     tracks[m.trackIndex] = events.map(x => x.e);
   }
+  // Tempo e fórmula de compasso (trilha 0) e seções (trilha EVENTS): troca só esses eventos
+  const g = chart.globalEdit;
+  if (g?.dirty) {
+    const isMeta = (e, ...types) => e.bytes[0] === 0xff && types.includes(e.bytes[1]);
+    tracks[0] = [...tracks[0].filter(e => !isMeta(e, 0x51, 0x58)),
+                 ...g.tempos.map(t => ({ tick: t.tick, bytes: metaEvent(0x51, [(t.us >> 16) & 255, (t.us >> 8) & 255, t.us & 255]) })),
+                 ...g.sigs.map(s => ({ tick: s.tick, bytes: metaEvent(0x58, [s.num, Math.log2(s.den), 24, 8]) }))]
+                .sort((a, b) => a.tick - b.tick);
+    let ev = chart.midi.tracks.findIndex(t => t.name === "EVENTS");
+    if (ev < 0 && g.sections.length) { ev = tracks.length; tracks.push([{ tick: 0, bytes: metaEvent(0x03, "EVENTS") }]); }
+    if (ev >= 0) {
+      const isSection = (e) => e.bytes[0] === 0xff && e.bytes[1] >= 1 && e.bytes[1] <= 15 && e.bytes[1] !== 3   // textos, menos o nome da trilha
+                               && /^\[(?:section|prc)[ _].+\]$/.test(metaText(e.bytes));
+      tracks[ev] = [...tracks[ev].filter(e => !isSection(e)),
+                    ...g.sections.map(s => ({ tick: s.tick, bytes: metaEvent(0x01, s.text ?? `[section ${s.name}]`) }))]
+                   .sort((a, b) => a.tick - b.tick);
+    }
+  }
   return writeMidi(chart.midi.division, tracks);
+}
+// Evento meta do MIDI (FF tipo tamanho dados); texto vai em latin1
+function metaEvent(type, data) {
+  const bytes = typeof data === "string" ? [...data].map(c => c.charCodeAt(0) < 256 ? c.charCodeAt(0) : 63) : data;
+  const len = [bytes.length & 0x7f];
+  for (let n = bytes.length >>> 7; n; n >>>= 7) len.unshift((n & 0x7f) | 0x80);
+  return Uint8Array.of(0xff, type, ...len, ...bytes);
+}
+function metaText(bytes) {
+  let p = 2, n = 0, b;
+  do { b = bytes[p++]; n = (n << 7) | (b & 0x7f); } while (b & 0x80);
+  return latin1(bytes.subarray(p, p + n));
 }
 
 // Bateria em ticks, como as cordas: diffs[diff] = [{tick, len, lane}], lane 0 = bumbo, 1-4 =
@@ -614,6 +659,104 @@ const clock = {
 };
 const timeSource = () => (player.stems.length ? player : clock);
 
+// Metrônomo (cada batida, mais agudo no compasso) e clap (cada nota da primeira pista), como no Moonscraper.
+// Os sons são agendados no relógio do WebAudio um pouco à frente, para caírem no tempo exato.
+const ticks = {
+  metro: false, clap: false, key: "", until: 0, nodes: [], noise: null, out: null,
+  update() {
+    const chart = state.charts[0]?.chart;
+    const on = (this.metro || this.clap) && player.playing && chart;
+    const key = on ? `${player.startCtx}|${player.startPos}|${player.rate}` : "";
+    if (key !== this.key) {   // tocou, pausou ou pulou: descarta o que estava agendado
+      for (const n of this.nodes) { try { n.stop(); } catch {} }
+      this.nodes = []; this.key = key; this.until = Math.max(player.startPos, player.position);
+    }
+    if (!on) return;
+    const ctx = player.ctx, ahead = player.position + 0.2 * player.rate;
+    if (ahead <= this.until) return;
+    const from = this.until - chart.audioOffset, to = ahead - chart.audioOffset;
+    const at = (time) => player.startCtx + (time + chart.audioOffset - player.startPos) / player.rate;
+    if (this.metro) for (const line of chart.grid) {
+      if (line.time >= to) break;
+      if (line.time >= from) this.beep(at(line.time), line.measure);
+    }
+    const lane = state.lanes[0];
+    if (this.clap && lane) {
+      let last = -1;
+      for (const n of state.charts[lane.chartIndex].chart.tracks[lane.instr]?.[lane.diff] || []) {
+        if (n.time >= to) break;
+        if (n.time >= from && n.time - last > 0.01) { this.clapAt(at(n.time)); last = n.time; }
+      }
+    }
+    this.nodes = this.nodes.filter(n => n.endsAt > ctx.currentTime);
+    this.until = ahead;
+  },
+  output() {
+    if (!this.out) { this.out = player.ctx.createGain(); this.out.gain.value = 0.5; this.out.connect(player.ctx.destination); }
+    return this.out;
+  },
+  beep(when, accent) {
+    const ctx = player.ctx, osc = ctx.createOscillator(), env = ctx.createGain();
+    osc.frequency.value = accent ? 1760 : 1175;
+    env.gain.setValueAtTime(accent ? 0.9 : 0.55, when); env.gain.exponentialRampToValueAtTime(0.001, when + 0.05);
+    osc.connect(env).connect(this.output());
+    osc.start(when); osc.stop(when + 0.06); osc.endsAt = when + 0.06; this.nodes.push(osc);
+  },
+  clapAt(when) {
+    const ctx = player.ctx;
+    if (!this.noise) {
+      this.noise = ctx.createBuffer(1, ctx.sampleRate * 0.1, ctx.sampleRate);
+      const d = this.noise.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const src = ctx.createBufferSource(), band = ctx.createBiquadFilter(), env = ctx.createGain();
+    src.buffer = this.noise; band.type = "bandpass"; band.frequency.value = 1400; band.Q.value = 0.9;
+    env.gain.setValueAtTime(1.4, when); env.gain.exponentialRampToValueAtTime(0.001, when + 0.08);
+    src.connect(band).connect(env).connect(this.output());
+    src.start(when); src.stop(when + 0.1); src.endsAt = when + 0.1; this.nodes.push(src);
+  },
+};
+setInterval(() => ticks.update(), 25);
+
+// Waveform: o pico do áudio a cada 1/400 s, do stem do instrumento da pista (ou de todos, se não houver),
+// calculado uma vez e normalizado para 0..1.
+const wave = {
+  on: false, rate: 400, cache: new Map(),
+  peaksOf(stem) {
+    if (stem.peaks) return stem.peaks;
+    const a = stem.audio, step = Math.max(1, Math.round(a.sampleRate / this.rate));
+    const out = new Float32Array(Math.ceil(a.length / step));
+    for (let c = 0; c < Math.min(2, a.numberOfChannels); c++) {
+      const d = a.getChannelData(c);
+      for (let i = 0; i < out.length; i++) {
+        let m = out[i];
+        for (let j = i * step, e = Math.min(d.length, j + step); j < e; j++) { const v = d[j] < 0 ? -d[j] : d[j]; if (v > m) m = v; }
+        out[i] = m;
+      }
+    }
+    return (stem.peaks = out);
+  },
+  for(instr) {
+    if (!player.stems.length) return null;
+    if (this.cache.has(instr)) return this.cache.get(instr);
+    const own = player.stems.filter(s => s.name === instr || s.name.startsWith(instr + "_"));
+    const list = (own.length ? own : player.stems).map(s => this.peaksOf(s));
+    const out = new Float32Array(Math.max(...list.map(p => p.length)));
+    for (const p of list) for (let i = 0; i < p.length; i++) out[i] = Math.max(out[i], p[i]);
+    let top = 0;
+    for (const v of out) if (v > top) top = v;
+    if (top > 0) for (let i = 0; i < out.length; i++) out[i] = Math.sqrt(out[i] / top);   // raiz: partes baixas ainda aparecem
+    this.cache.set(instr, out);
+    return out;
+  },
+  // Maior pico entre dois instantes (em segundos do áudio)
+  at(peaks, a, b) {
+    let i = Math.max(0, Math.floor(Math.min(a, b) * this.rate)), e = Math.min(peaks.length, Math.ceil(Math.max(a, b) * this.rate) + 1), m = 0;
+    for (; i < e; i++) if (peaks[i] > m) m = peaks[i];
+    return m;
+  },
+};
+
 // ======================================================================
 // Estado da página
 // ======================================================================
@@ -659,6 +802,7 @@ async function loadSong(fileMap, served = false) {
   }
   $("title").innerHTML = state.title + "<small>carregando áudio…</small>";
   await player.load(stems);
+  wave.cache.clear();
   $("title").innerHTML = state.title;
   player.startPos = 0; clock.startPos = 0;
   buildMixer(); buildSections(); resetLanes(); $("play").disabled = false;
@@ -720,6 +864,7 @@ function addLane(chartIndex = 0, instr, diff, view = "highway") {
   lane.canvas.addEventListener("mousedown", (e) => onLaneMouseDown(lane, e));
   lane.canvas.addEventListener("contextmenu", (e) => { if (editModel(lane)) e.preventDefault(); });
   lane.canvas.addEventListener("mousemove", (e) => onLaneHover(lane, e));
+  lane.canvas.addEventListener("mouseleave", () => { lane.hover = null; });
   lane.canvas.addEventListener("wheel", (e) => onLaneWheel(lane, e), { passive: false });
   const fill = () => {
     src.innerHTML = state.charts.map((c, i) => `<option value="${i}">${c.label}</option>`).join("");
@@ -767,15 +912,16 @@ function drawLane(lane, now, lookahead) {
   g.clearRect(0, 0, W, H);
 
   // Perspectiva: profundidade z (0 = linha de toque, 1 = horizonte visível).
-  const strikeY = H * 0.88, topY = H * 0.04, K = 1.4;
-  const bottomW = Math.min(W * 0.92, H * 0.75);
+  // Câmera baixa como a do Moonscraper: pista larga embaixo, céu aparecendo em cima
+  const strikeY = H * 0.86, topY = H * 0.1, K = 2;
+  const bottomW = Math.min(W * 0.94, H * 0.95);
   const scale = (z) => 1 / (1 + K * z);
   const yOf = (z) => strikeY - (strikeY - topY) * (1 - scale(z)) / (1 - scale(1));
   const halfW = (z) => bottomW / 2 * scale(z);
   const cx = W / 2;
   const zOf = (time) => (time - t) / lookahead;
   const laneX = (laneIdx, z) => cx - halfW(z) + (laneIdx + 0.5) * (2 * halfW(z) / nLanes);
-  const gemR = Math.min(2 * halfW(0) / nLanes * 0.34, 26);
+  const gemR = Math.min(2 * halfW(0) / nLanes * 0.36, 40);
   // Para o editor: de um ponto da tela para (tempo, cor), e se o ponto cai numa nota.
   lane.geo = {
     t, t0: t - lookahead * 0.1, t1: t + lookahead, lookahead,
@@ -800,13 +946,31 @@ function drawLane(lane, now, lookahead) {
   };
   const sel = selectionFor(lane);
 
-  // Fundo da pista
-  g.fillStyle = "#0b0d12";
-  g.beginPath(); g.moveTo(cx - halfW(0), strikeY + 30); g.lineTo(cx - halfW(1), topY); g.lineTo(cx + halfW(1), topY); g.lineTo(cx + halfW(0), strikeY + 30); g.closePath(); g.fill();
-  g.strokeStyle = "#232a36"; g.lineWidth = 1;
-  for (let i = 0; i <= nLanes; i++) {
-    const x0 = cx - halfW(0) + i * 2 * halfW(0) / nLanes, x1 = cx - halfW(1) + i * 2 * halfW(1) / nLanes;
-    g.beginPath(); g.moveTo(x0, strikeY + 30); g.lineTo(x1, topY); g.stroke();
+  // Céu estrelado atrás e braço preto com trilhos claros nas bordas (estilo Moonscraper).
+  // As bordas são retas na tela, então dá para prolongar até o pé do quadro.
+  g.drawImage(starfield(lane, W, H), 0, 0, W, H);
+  const footW = halfW(0) + (halfW(0) - halfW(1)) * (H - strikeY) / (strikeY - topY);
+  g.fillStyle = "#000";
+  g.beginPath(); g.moveTo(cx - footW, H); g.lineTo(cx - halfW(1), topY); g.lineTo(cx + halfW(1), topY); g.lineTo(cx + footW, H); g.closePath(); g.fill();
+  g.strokeStyle = "#121418"; g.lineWidth = 1;
+  for (let i = 1; i < nLanes; i++) {
+    const x0 = cx - footW + i * 2 * footW / nLanes, x1 = cx - halfW(1) + i * 2 * halfW(1) / nLanes;
+    g.beginPath(); g.moveTo(x0, H); g.lineTo(x1, topY); g.stroke();
+  }
+  g.strokeStyle = "#d4d8de"; g.lineWidth = 4;
+  for (const side of [-1, 1]) { g.beginPath(); g.moveTo(cx + side * footW, H); g.lineTo(cx + side * halfW(1), topY); g.stroke(); }
+  // Waveform pelo meio da pista, espelhada, linha a linha da tela
+  const peaks = wave.on ? wave.for(lane.instr) : null;
+  if (peaks) {
+    const zAt = (y) => (1 / (1 - (strikeY - y) / (strikeY - topY) * (1 - scale(1))) - 1) / K;
+    const at = (y) => t + zAt(y) * lookahead + chart.audioOffset;
+    const pts = [];
+    for (let y = topY; y < H; y += 2) pts.push([y, wave.at(peaks, at(y), at(y + 2)) * halfW(zAt(y)) * 0.92]);
+    g.fillStyle = "rgba(110, 190, 255, 0.3)";
+    g.beginPath();
+    for (const [y, w] of pts) g.lineTo(cx - w, y);
+    for (let i = pts.length - 1; i >= 0; i--) g.lineTo(cx + pts[i][1], pts[i][0]);
+    g.closePath(); g.fill();
   }
   // Compassos travados (editados à mão), só no modo de edição
   if (state.editMode && lane.chartIndex === 0 && chart.measures) {
@@ -819,28 +983,62 @@ function drawLane(lane, now, lookahead) {
       g.lineTo(cx + halfW(z1), yOf(z1)); g.lineTo(cx + halfW(z0), yOf(z0)); g.closePath(); g.fill();
     }
   }
+  // Grade de encaixe (só editando): linhas fracas, até ficarem juntas demais na perspectiva
+  const step = snapStep(chart);
+  if (state.editMode && lane.chartIndex === 0 && step > 1) {
+    g.strokeStyle = "#181d27"; g.lineWidth = 1;
+    let prevY = Infinity;
+    for (let tick = snapTick(chart, chart.tm.tick(Math.max(0, t))); ; tick += step) {
+      const z = zOf(chart.tm.time(tick));
+      if (z > 1) break;
+      const y = yOf(z);
+      if (prevY - y < 5) break;
+      prevY = y;
+      g.beginPath(); g.moveTo(cx - halfW(z), y); g.lineTo(cx + halfW(z), y); g.stroke();
+    }
+  }
   // Batidas, compassos e seções
   for (const line of chart.grid) {
     const z = zOf(line.time);
     if (z < -0.05 || z > 1) continue;
-    g.strokeStyle = line.measure ? "#4a5468" : "#262d3a"; g.lineWidth = line.measure ? 2 : 1;
+    const s = scale(Math.max(z, 0)) / scale(0);
+    g.strokeStyle = line.measure ? "#a9aeb6" : "#34373d"; g.lineWidth = (line.measure ? 3 : 1.5) * s;
     g.beginPath(); g.moveTo(cx - halfW(z), yOf(z)); g.lineTo(cx + halfW(z), yOf(z)); g.stroke();
   }
   g.font = "600 12px system-ui"; g.textAlign = "left";
   for (const s of chart.sections) {
     const z = zOf(s.time);
     if (z < 0 || z > 1) continue;
-    g.fillStyle = "#c9d3e6"; g.fillText(s.name, cx + halfW(z) + 6, yOf(z) + 4);
+    g.fillStyle = "#e8ebf1"; g.fillText(s.name, cx + halfW(z) + 8, yOf(z) + 4);
+  }
+  // BPM (laranja) e fórmula de compasso (verde) à esquerda da pista, como no Moonscraper; pula os que encostariam
+  g.font = "600 11px system-ui"; g.textAlign = "right";
+  const marks = [[chart.tm.points, p => fmtBpm(p.us), "#ffb86b", 8], [chart.tm.sigs, s => `${s.num}/${s.den}`, "#8fe08f", 52]];
+  for (const [list, label, color, dx] of marks) {
+    let lastY = Infinity;
+    for (const p of list) {
+      const z = zOf(chart.tm.time(p.tick));
+      if (z < 0) continue;
+      if (z > 1) break;
+      const y = yOf(z);
+      if (lastY - y < 13) continue;
+      lastY = y;
+      g.fillStyle = color; g.fillText(label(p), cx - halfW(z) - dx, y + 4);
+    }
   }
 
-  // Linha de toque
+  // Linha de toque: traço cinza e um anel grosso de cada cor (cheio enquanto a nota passa)
   const colors = drums ? PAD_COLORS(nLanes) : FRET_COLORS();
   const flashUntil = (k) => (lane.flash.get(k) || 0) > now;
+  g.strokeStyle = "#7d828b"; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(cx - halfW(0), strikeY); g.lineTo(cx + halfW(0), strikeY); g.stroke();
   for (let i = 0; i < nLanes; i++) {
-    const x = laneX(i, 0);
-    g.lineWidth = 3; g.strokeStyle = colors[i];
-    g.fillStyle = flashUntil(i) ? g.strokeStyle : "#11151c";
-    g.beginPath(); g.ellipse(x, strikeY, gemR, gemR * 0.55, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    const x = laneX(i, 0), on = flashUntil(i);
+    g.lineWidth = Math.max(3, gemR * 0.2); g.strokeStyle = colors[i];
+    g.fillStyle = on ? colors[i] : "#000";
+    if (on) { g.shadowColor = colors[i]; g.shadowBlur = 18; }
+    g.beginPath(); g.ellipse(x, strikeY, gemR * 0.95, gemR * 0.42, 0, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.shadowBlur = 0;
   }
   if (drums) {
     g.fillStyle = flashUntil("kick") ? css("--orange") : "rgba(255,138,42,0.25)";
@@ -863,13 +1061,14 @@ function drawLane(lane, now, lookahead) {
       if (!end) continue;
       const z0 = Math.max(0, zOf(n.time)), z1 = Math.min(1, zOf(end));
       if (z1 <= z0) continue;
-      const w0 = gemR * 0.28 * scale(z0) / scale(0) * 1.4, w1 = gemR * 0.28 * scale(z1) / scale(0) * 1.4;
+      // Sustain: fio fino e brilhante, com halo da cor
+      const w0 = gemR * 0.09 * scale(z0) / scale(0) + 1, w1 = gemR * 0.09 * scale(z1) / scale(0) + 1;
       g.fillStyle = n.sp ? css("--sp") : colors[ln];
-      g.globalAlpha = 0.75;
+      g.shadowColor = g.fillStyle; g.shadowBlur = 10;
       g.beginPath();
       g.moveTo(laneX(ln, z0) - w0, yOf(z0)); g.lineTo(laneX(ln, z1) - w1, yOf(z1));
       g.lineTo(laneX(ln, z1) + w1, yOf(z1)); g.lineTo(laneX(ln, z0) + w0, yOf(z0)); g.closePath(); g.fill();
-      g.globalAlpha = 1;
+      g.shadowBlur = 0;
     }
   }
   for (let k = visible.length - 1; k >= 0; k--) {
@@ -886,36 +1085,109 @@ function drawLane(lane, now, lookahead) {
     }
     for (const ln of n.lanes) {
       const picked = sel?.has(n.gems?.[ln]);
-      if (drums && ln === 0) {   // bumbo: barra atravessando a pista
-        g.fillStyle = n.sp ? css("--sp") : css("--orange");
-        g.fillRect(cx - halfW(z) * 0.96, y - 3 * s, 2 * halfW(z) * 0.96, 6 * s);
+      if (drums && ln === 0) {   // bumbo: barra atravessando a pista, com brilho em cima e borda clara embaixo
+        const kc = n.sp ? css("--sp") : css("--orange");
+        const bar = g.createLinearGradient(0, y - 4 * s, 0, y + 4 * s);
+        bar.addColorStop(0, shade(kc, 0.55)); bar.addColorStop(0.5, kc); bar.addColorStop(1, shade(kc, -0.4));
+        g.fillStyle = "#eef1f5"; g.fillRect(cx - halfW(z) * 0.96, y - 3 * s, 2 * halfW(z) * 0.96, 7.5 * s);
+        g.fillStyle = bar; g.fillRect(cx - halfW(z) * 0.96, y - 4 * s, 2 * halfW(z) * 0.96, 7 * s);
         if (picked) { g.strokeStyle = "#fff"; g.lineWidth = 2; g.strokeRect(cx - halfW(z) * 0.97, y - 5 * s, 2 * halfW(z) * 0.97, 10 * s); }
         continue;
       }
       const idx = drums ? ln - 1 : ln;
       const x = laneX(idx, z), r = gemR * s;
       const color = n.sp ? css("--sp") : colors[idx];
-      if (drums && n.cym?.has(ln)) {          // prato: losango achatado
-        g.fillStyle = color; g.strokeStyle = picked ? "#fff" : "rgba(255,255,255,0.8)"; g.lineWidth = picked ? 3 : 1.5;
-        g.beginPath(); g.moveTo(x - r, y); g.lineTo(x, y - r * 0.5); g.lineTo(x + r, y); g.lineTo(x, y + r * 0.5); g.closePath(); g.fill(); g.stroke();
+      if (drums && n.cym?.has(ln)) {          // prato: losango achatado, com aro branco e brilho como as gems
+        const diamond = (dy, k) => { g.beginPath(); g.moveTo(x - r * k, y + dy); g.lineTo(x, y + dy - r * 0.45 * k); g.lineTo(x + r * k, y + dy); g.lineTo(x, y + dy + r * 0.45 * k); g.closePath(); };
+        g.fillStyle = "#eef1f5"; diamond(r * 0.12, 1); g.fill();
+        const shine = g.createLinearGradient(x, y - r * 0.45, x, y + r * 0.45);
+        shine.addColorStop(0, shade(color, 0.6)); shine.addColorStop(0.45, color); shine.addColorStop(1, shade(color, -0.4));
+        g.fillStyle = shine; diamond(-r * 0.04, 0.9); g.fill();
+        if (picked) { g.strokeStyle = "#fff"; g.lineWidth = 2.5; g.setLineDash([5, 3]); diamond(0, 1.25); g.stroke(); g.setLineDash([]); }
         continue;
       }
-      // Nota: palhetada = cheia com borda; HOPO = menor com miolo branco; tap = miolo escuro
-      const rr = n.hopo || n.tap ? r * 0.82 : r;
-      g.fillStyle = color; g.strokeStyle = "rgba(0,0,0,0.6)"; g.lineWidth = 2;
-      g.beginPath(); g.ellipse(x, y, rr, rr * 0.55, 0, 0, Math.PI * 2); g.fill(); g.stroke();
-      if (n.hopo || n.tap) {
-        g.fillStyle = n.tap ? "#111" : "#fff";
-        g.beginPath(); g.ellipse(x, y, rr * 0.45, rr * 0.25, 0, 0, Math.PI * 2); g.fill();
-      } else {
-        g.fillStyle = "rgba(255,255,255,0.35)";
-        g.beginPath(); g.ellipse(x, y - rr * 0.12, rr * 0.55, rr * 0.2, 0, 0, Math.PI * 2); g.fill();
-      }
-      if (sel?.has(n.gems?.[ln])) {
-        g.strokeStyle = "#fff"; g.lineWidth = 2.5;
-        g.beginPath(); g.ellipse(x, y, r * 1.22, r * 0.72, 0, 0, Math.PI * 2); g.stroke();
+      drawGem(g, x, y, r, color, n.tap ? "tap" : n.hopo ? "hopo" : "strum");
+      if (picked) {
+        g.strokeStyle = "#fff"; g.lineWidth = 2.5; g.setLineDash([5, 3]);
+        g.beginPath(); g.ellipse(x, y, r * 1.2, r * 0.75, 0, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
       }
     }
+  }
+
+  const ghost = ghostFor(lane);
+  if (ghost) {
+    const z = zOf(ghost.time);
+    if (z >= -0.04 && z <= 1) {
+      const s = scale(Math.max(z, 0)) / scale(0), y = yOf(z);
+      g.strokeStyle = "rgba(255,255,255,0.25)"; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(cx - halfW(z), y); g.lineTo(cx + halfW(z), y); g.stroke();
+      g.globalAlpha = 0.45; g.setLineDash([3, 3]); g.strokeStyle = "#fff"; g.lineWidth = 1.5;
+      if (drums && ghost.lane === 0) {
+        g.fillStyle = css("--orange"); g.fillRect(cx - halfW(z) * 0.96, y - 3 * s, 2 * halfW(z) * 0.96, 6 * s);
+      } else {
+        const idx = drums ? ghost.lane - 1 : ghost.lane, r = gemR * s;
+        drawGem(g, laneX(idx, z), y, r, colors[idx], "strum");
+        g.beginPath(); g.ellipse(laneX(idx, z), y, r * 1.1, r * 0.65, 0, 0, Math.PI * 2); g.stroke();
+      }
+      g.globalAlpha = 1; g.setLineDash([]);
+    }
+  }
+}
+
+// Céu estrelado de fundo da pista; desenhado uma vez por tamanho
+function starfield(lane, W, H) {
+  if (lane.sky?.w === W && lane.sky?.h === H) return lane.sky.canvas;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const bg = g.createRadialGradient(W * 0.2, H * 0.25, 0, W * 0.5, H * 0.5, Math.max(W, H));
+  bg.addColorStop(0, "#1d5470"); bg.addColorStop(0.45, "#0d2c45"); bg.addColorStop(1, "#050d18");
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  let seed = 7;
+  const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;
+  for (let i = 0; i < W * H / 1800; i++) {
+    const x = rnd() * W, y = rnd() * H, big = rnd() < 0.025, r = big ? 1.2 + rnd() * 1.5 : 0.3 + rnd() * 0.8;
+    if (big) {
+      const glow = g.createRadialGradient(x, y, 0, x, y, r * 4);
+      glow.addColorStop(0, "rgba(220,245,255,0.7)"); glow.addColorStop(1, "rgba(120,200,255,0)");
+      g.fillStyle = glow; g.beginPath(); g.arc(x, y, r * 4, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = `rgba(210,235,255,${0.3 + rnd() * 0.6})`;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  lane.sky = { w: W, h: H, canvas: c };
+  return c;
+}
+
+// Clareia (amt > 0) ou escurece (amt < 0) uma cor #rrggbb
+function shade(hex, amt) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const v = parseInt(m[1], 16), mix = (c) => Math.round(amt > 0 ? c + (255 - c) * amt : c * (1 + amt));
+  return `rgb(${mix(v >> 16)},${mix((v >> 8) & 255)},${mix(v & 255)})`;
+}
+
+// Gems como as do Moonscraper, todas com aro branco embaixo.
+// Palhetada: aro da cor, anel preto e miolo branco. HOPO: domo liso e brilhante. Tap: domo com miolo escuro.
+function drawGem(g, x, y, r, color, kind) {
+  const h = r * 0.5, ell = (dy, rx, ry) => { g.beginPath(); g.ellipse(x, y + dy, rx, ry, 0, 0, Math.PI * 2); };
+  g.fillStyle = "#eef1f5"; ell(h * 0.3, r, h); g.fill();
+  g.fillStyle = shade(color, -0.45); ell(h * 0.08, r * 0.95, h * 0.92); g.fill();
+  if (kind === "strum") {
+    const rim = g.createLinearGradient(x, y - h, x, y + h);
+    rim.addColorStop(0, shade(color, 0.35)); rim.addColorStop(0.5, color); rim.addColorStop(1, shade(color, -0.3));
+    g.fillStyle = rim; ell(-h * 0.12, r * 0.9, h * 0.82); g.fill();
+    g.fillStyle = "#16181c"; ell(-h * 0.2, r * 0.58, h * 0.52); g.fill();
+    const cap = g.createRadialGradient(x, y - h * 0.45, 0, x, y - h * 0.25, r * 0.45);
+    cap.addColorStop(0, "#fff"); cap.addColorStop(0.7, "#f2f4f7"); cap.addColorStop(1, "#c3c8cf");
+    g.fillStyle = cap; ell(-h * 0.26, r * 0.44, h * 0.37); g.fill();
+    return;
+  }
+  const dome = g.createRadialGradient(x - r * 0.1, y - h * 0.7, r * 0.04, x, y - h * 0.1, r);
+  dome.addColorStop(0, "#fff"); dome.addColorStop(0.25, shade(color, 0.6)); dome.addColorStop(0.65, color); dome.addColorStop(1, shade(color, -0.2));
+  g.fillStyle = dome; ell(-h * 0.15, r * 0.9, h * 0.85); g.fill();
+  if (kind === "tap") {
+    g.fillStyle = "#111"; ell(-h * 0.2, r * 0.4, h * 0.36); g.fill();
+    g.fillStyle = shade(color, -0.6); ell(-h * 0.22, r * 0.27, h * 0.24); g.fill();
   }
 }
 
@@ -930,7 +1202,7 @@ function drawRoll(lane, now) {
   const nRows = drums ? (notes.some(n => n.lanes.includes(5)) ? 6 : 5) : 5;
   const colors = drums ? [css("--orange"), ...PAD_COLORS(nRows - 1)] : FRET_COLORS();
   const t = now - chart.audioOffset, pps = state.pps;
-  const nowX = Math.min(160, W * 0.2), top = 22, bottom = H - 6, rowH = (bottom - top) / nRows;
+  const nowX = Math.min(160, W * 0.2), top = 34, bottom = H - 6, rowH = (bottom - top) / nRows;
   const noteH = Math.max(2, Math.min(rowH * 0.66, 22)), minW = 16;   // pista bem baixa: ainda desenha
   const xOf = (time) => nowX + (time - t) * pps;
   const yOf = (row) => bottom - (row + 0.5) * rowH;
@@ -945,6 +1217,16 @@ function drawRoll(lane, now) {
     g.fillRect(0, bottom - (r + 1) * rowH, W, rowH);
     g.fillStyle = colors[r]; g.globalAlpha = 0.6;
     g.fillRect(0, bottom - (r + 1) * rowH + 2, 4, rowH - 4); g.globalAlpha = 1;
+  }
+  // Waveform atravessando as linhas, centrada na altura
+  const peaks = wave.on ? wave.for(lane.instr) : null;
+  if (peaks) {
+    const mid = (top + bottom) / 2, half = (bottom - top) / 2 * 0.95;
+    g.fillStyle = "rgba(110, 190, 255, 0.22)";
+    for (let x = 0; x < W; x += 2) {
+      const a = t + (x - nowX) / pps + chart.audioOffset, v = wave.at(peaks, a, a + 2 / pps) * half;
+      g.fillRect(x, mid - v, 2, 2 * v);
+    }
   }
   // Compassos travados (editados à mão), só no modo de edição
   if (state.editMode && model && chart.measures) {
@@ -989,6 +1271,25 @@ function drawRoll(lane, now) {
     if (x < -300 || x > W) continue;
     g.fillStyle = "#4a5468"; g.fillRect(x, 0, 1, top);
     g.fillStyle = "#c9d3e6"; g.fillText(s.name, x + 4, 8);
+  }
+  // Na faixa de cima, abaixo das seções: BPM (laranja) e fórmula de compasso (verde)
+  g.font = "600 10px system-ui";
+  let free = -Infinity;
+  // No mesmo tick, a fórmula vem junto do BPM ("3/4 · 120")
+  const byTick = new Map(chart.tm.points.map(p => [p.tick, { tick: p.tick, text: fmtBpm(p.us), color: "#ffb86b" }]));
+  for (const s of chart.tm.sigs) {
+    const sig = `${s.num}/${s.den}`, mk = byTick.get(s.tick);
+    byTick.set(s.tick, { tick: s.tick, text: mk ? `${sig} · ${mk.text}` : sig, color: "#8fe08f" });
+  }
+  const marks = [...byTick.values()].sort((a, b) => a.tick - b.tick);
+  for (const mk of marks) {
+    const x = xOf(chart.tm.time(mk.tick));
+    if (x < -60) continue;
+    if (x > W) break;
+    g.fillStyle = mk.color; g.fillRect(Math.round(x), 14, 1, top - 14);
+    if (x < free) continue;
+    g.fillText(mk.text, x + 3, 20);
+    free = x + 3 + g.measureText(mk.text).width + 6;
   }
 
   const sel = selectionFor(lane);
@@ -1036,6 +1337,15 @@ function drawRoll(lane, now) {
       return x > x1 - 5 ? 2 : 1;   // 2 = borda direita: muda o sustain
     },
   };
+  const ghost = ghostFor(lane);
+  if (ghost) {
+    const x = xOf(ghost.time), y = yOf(ghost.lane);
+    g.fillStyle = "rgba(255,255,255,0.18)"; g.fillRect(Math.round(x), top, 1, bottom - top);
+    g.globalAlpha = 0.45; g.fillStyle = colors[ghost.lane];
+    g.beginPath(); g.roundRect(x, y - noteH / 2, minW, noteH, 4); g.fill();
+    g.setLineDash([3, 3]); g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.stroke(); g.setLineDash([]);
+    g.globalAlpha = 1;
+  }
 }
 
 // Vocais: faixa horizontal com a afinação (como no Rock Band / YARG)
@@ -1100,10 +1410,19 @@ function drawTimeline(now) {
     const peak = Math.max(1, ...bins);
     g.fillStyle = "#2c3a52";
     bins.forEach((v, i) => { const h = v / peak * (H - 14); g.fillRect(i * 3, H - h, 2, h); });
-    g.font = "11px system-ui"; g.fillStyle = "#8b93a5"; g.textBaseline = "top";
+    // Seções: marca com bandeirinha; a atual em destaque; nomes que não cabem ficam só na dica do mouse
+    g.font = "11px system-ui"; g.textBaseline = "top";
+    const cur = chart.sections.filter(s => s.time + chart.audioOffset <= now + 0.01).pop();
+    let free = 0;
     for (const s of chart.sections) {
-      const x = (s.time + chart.audioOffset) / total * W;
-      g.fillRect(x, 0, 1, H); g.fillText(s.name, x + 3, 2);
+      const x = Math.round((s.time + chart.audioOffset) / total * W), on = s === cur;
+      g.fillStyle = on ? css("--accent") : "#5b6577";
+      g.fillRect(x, 0, 1, H);
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x + 6, 3); g.lineTo(x, 6); g.fill();
+      const w = g.measureText(s.name).width;
+      if (x + 3 < free) continue;
+      g.fillStyle = on ? "#e8ebf1" : "#8b93a5"; g.fillText(s.name, x + 8, 1);
+      free = x + 8 + w + 6;
     }
   }
   g.fillStyle = css("--accent"); g.fillRect(now / total * W - 1, 0, 2, H);
@@ -1137,14 +1456,48 @@ function togglePlay() {
 // Editor: guitarra, baixo, guitarra base e teclado de um notes.mid
 // ======================================================================
 function snapStep(chart) { const d = Number($("snap").value); return d ? chart.res * 4 / d : 1; }
-function snapTick(chart, tick) {
-  const step = snapStep(chart);
+function snapTick(chart, tick, step = snapStep(chart)) {
   if (step <= 1) return Math.max(0, Math.round(tick));
   let base = 0;   // a grade recomeça em cada mudança de fórmula de compasso
   for (const s of chart.tm.sigs) if (s.tick <= tick) base = s.tick;
   return Math.max(0, Math.round(base + Math.round((tick - base) / step) * step));
 }
 const nowTick = (chart) => chart.tm.tick(Math.max(0, timeSource().position - chart.audioOffset));
+
+// ↑ ↓: anda um passo da grade (editando) ou uma batida (só vendo), como no Moonscraper
+function stepCursor(dir) {
+  const chart = state.charts[0]?.chart;
+  if (!chart) return;
+  const step = state.editMode && snapStep(chart) > 1 ? snapStep(chart) : chart.res;
+  const here = nowTick(chart);
+  let tick = snapTick(chart, here, step);
+  if (dir > 0 ? tick <= here + 0.5 : tick >= here - 0.5) tick += dir * step;
+  timeSource().seek(chart.tm.time(Math.max(0, tick)) + chart.audioOffset);
+}
+// [ ]: grade mais grossa / mais fina
+function cycleSnap(dir) {
+  const sel = $("snap");
+  sel.selectedIndex = Math.max(0, Math.min(sel.options.length - 1, sel.selectedIndex + dir));
+  $("eStatus").textContent = `grade ${sel.options[sel.selectedIndex].text}`;
+}
+// Page Up / Page Down: seção anterior / próxima
+function jumpSection(dir) {
+  const chart = state.charts[0]?.chart;
+  if (!chart?.sections.length) return;
+  const t = timeSource().position - chart.audioOffset;
+  const s = dir > 0 ? chart.sections.find(s => s.time > t + 0.05)
+                    : chart.sections.filter(s => s.time < t - 0.5).pop() || chart.sections[0];
+  if (s) timeSource().seek(s.time + chart.audioOffset);
+}
+// Nota fantasma: onde a nota cairia se clicasse aqui (só no espaço vazio, editando)
+function ghostFor(lane) {
+  const h = lane.hover;
+  if (!h || state.drag || !editModel(lane) || !lane.geo || hitNote(lane, h.x, h.y)) return null;
+  const pos = lane.geo.locate(h.x, h.y);
+  if (!pos) return null;
+  const chart = state.charts[0].chart, tick = snapTick(chart, chart.tm.tick(pos.time));
+  return { time: chart.tm.time(tick), lane: pos.lane };
+}
 
 function editModel(lane) {
   return state.editMode && lane.chartIndex === 0 ? state.charts[0]?.chart.edit?.[lane.instr] || null : null;
@@ -1175,6 +1528,13 @@ function pushUndo(lane) {
 function undoRedo(from, to) {
   const snap = from.pop();
   if (!snap) return;
+  if (snap.global) {   // tempo, compasso ou seção
+    const chart = state.charts[0].chart;
+    to.push({ global: cloneGlobal(chart.globalEdit) });
+    Object.assign(chart.globalEdit, snap.global);
+    applyGlobal(chart);
+    return;
+  }
   const m = state.charts[0].chart.edit[snap.instr];
   to.push({ instr: snap.instr, diff: snap.diff, data: cloneModel(m) });
   Object.assign(m, snap.data);
@@ -1417,6 +1777,7 @@ function measureOf(chart, tick) {
 }
 const cloneEdits = (chart) => Object.fromEntries(Object.entries(chart.edit).map(([i, m]) => [i, cloneModel(m)]));
 function startEditTracking(chart, locksJsonData) {
+  chart.endTick = chart.tm.tick(chart.endTime);
   chart.measures = measureTicks(chart);
   chart.base = cloneEdits(chart);
   chart.edits = new Map();
@@ -1427,6 +1788,93 @@ function startEditTracking(chart, locksJsonData) {
     }
   }
 }
+
+// --- tempo, fórmula de compasso e seções (valem para a chart toda) ----------
+// Como no Moonscraper, as notas ficam nos seus ticks: mudar o BPM leva a grade e as notas seguintes juntas.
+const cloneGlobal = (g) => ({ dirty: g.dirty, tempos: g.tempos.map(x => ({ ...x })), sigs: g.sigs.map(x => ({ ...x })), sections: g.sections.map(x => ({ ...x })) });
+const fmtBpm = (us) => String(Math.round(60e8 / us) / 100);
+function changeGlobal(chart, fn) {
+  state.undo.push({ global: cloneGlobal(chart.globalEdit) });
+  if (state.undo.length > 300) state.undo.shift();
+  state.redo = [];
+  fn(chart.globalEdit);
+  chart.globalEdit.dirty = true;
+  applyGlobal(chart);
+}
+// Refaz tudo que depende do tempo: mapa, grade, compassos (e as travas, que são por compasso), notas e letra
+function applyGlobal(chart) {
+  const g = chart.globalEdit, oldMeasures = chart.measures;
+  for (const list of [g.tempos, g.sigs, g.sections]) list.sort((a, b) => a.tick - b.tick);
+  chart.tm = new TempoMap(chart.res, g.tempos, g.sigs);
+  chart.sections = g.sections.map(s => ({ tick: s.tick, time: chart.tm.time(s.tick), name: s.name }));
+  for (const instr of Object.keys(chart.edit)) chart.tracks[instr] = renderTrack(chart, instr);
+  const voc = chart.midi.tracks.find(t => t.name === "PART VOCALS");
+  if (voc) chart.vocals = midiVocals(voc.events, chart.tm);
+  chart.endTime = chart.tm.time(chart.endTick);
+  chart.grid = chart.tm.grid(chart.endTime + 4);
+  chart.measures = measureTicks(chart);
+  const at = (i) => measureOf(chart, oldMeasures[i][0]);
+  for (const byKey of Object.values(chart.locks)) for (const k of Object.keys(byKey)) byKey[k] = new Set([...byKey[k]].map(at));
+  chart.edits = new Map([...chart.edits.values()].map(c => { const measure = at(c.measure); return [`${c.instr}/${c.diff}/${measure}`, { ...c, measure }]; }));
+  state.dirty = true;
+  buildSections();
+  for (const l of state.lanes) l.fill();
+  updateEditStatus();
+}
+// Onde o cursor (a linha de toque) está, já na grade
+function cursorTick(chart) { return snapTick(chart, nowTick(chart)); }
+function whereText(chart, tick) {
+  const i = measureOf(chart, tick), sig = chart.tm.sigs.filter(s => s.tick <= tick).pop();
+  const beat = (tick - chart.measures[i][0]) / (chart.res * 4 / sig.den) + 1;
+  return `compasso ${i + 1}, batida ${Math.round(beat * 100) / 100}`;
+}
+function editTempo() {
+  const chart = state.charts[0]?.chart;
+  if (!state.editMode || !chart?.globalEdit) return;
+  const tick = cursorTick(chart), here = chart.globalEdit.tempos.find(t => t.tick === tick);
+  const cur = chart.tm.points.filter(p => p.tick <= tick).pop().us;
+  const txt = prompt(`BPM a partir de ${whereText(chart, tick)}.\nAs notas daqui para frente andam junto com a grade.` +
+                     (here && tick > 0 ? "\nVazio: apaga esta mudança de BPM." : ""), fmtBpm(cur));
+  if (txt === null) return;
+  if (!txt.trim()) {
+    if (here && tick > 0) changeGlobal(chart, g => g.tempos.splice(g.tempos.indexOf(here), 1));
+    return;
+  }
+  const bpm = parseFloat(txt.replace(",", "."));
+  if (!(bpm >= 10 && bpm <= 1000)) { alert("BPM inválido (use um número entre 10 e 1000)."); return; }
+  const us = Math.round(60e6 / bpm);
+  changeGlobal(chart, g => { if (here) here.us = us; else g.tempos.push({ tick, us }); });
+}
+function editSig() {
+  const chart = state.charts[0]?.chart;
+  if (!state.editMode || !chart?.globalEdit) return;
+  const idx = measureOf(chart, cursorTick(chart)), tick = chart.measures[idx][0];
+  const here = chart.globalEdit.sigs.find(s => s.tick === tick), cur = chart.tm.sigs.filter(s => s.tick <= tick).pop();
+  const txt = prompt(`Fórmula de compasso a partir do compasso ${idx + 1} (ex.: 4/4, 3/4, 6/8).` +
+                     (here && tick > 0 ? "\nVazio: apaga esta mudança." : ""), `${cur.num}/${cur.den}`);
+  if (txt === null) return;
+  if (!txt.trim()) {
+    if (here && tick > 0) changeGlobal(chart, g => g.sigs.splice(g.sigs.indexOf(here), 1));
+    return;
+  }
+  const m = txt.match(/^\s*(\d+)\s*\/\s*(\d+)\s*$/), num = m && +m[1], den = m && +m[2];
+  if (!m || num < 1 || num > 32 || ![1, 2, 4, 8, 16, 32].includes(den)) { alert("Fórmula inválida (ex.: 4/4, 3/4, 7/8)."); return; }
+  changeGlobal(chart, g => { if (here) Object.assign(here, { num, den }); else g.sigs.push({ tick, num, den }); });
+}
+function editSection() {
+  const chart = state.charts[0]?.chart;
+  if (!state.editMode || !chart?.globalEdit) return;
+  const tick = cursorTick(chart), here = chart.globalEdit.sections.find(s => s.tick === tick);
+  const txt = prompt(`${here ? "Renomear a seção" : "Nova seção"} em ${whereText(chart, tick)}.` + (here ? "\nVazio: apaga a seção." : ""), here?.name ?? "");
+  if (txt === null) return;
+  const name = txt.trim().replace(/[\[\]]/g, "");
+  if (!name) {
+    if (here) changeGlobal(chart, g => g.sections.splice(g.sections.indexOf(here), 1));
+    return;
+  }
+  changeGlobal(chart, g => { if (here) { here.name = name; delete here.text; } else g.sections.push({ tick, name }); });
+}
+
 function lockedMeasures(chart, instr, diff) {
   return new Set([...(chart.locks?.[instr]?.[diff] || []), ...(chart.locks?.[instr]?.shared || [])]);
 }
@@ -1667,8 +2115,9 @@ window.addEventListener("mouseup", () => {
   if (d.pushed) { normalize(chart.edit[d.lane.instr], d.lane.diff); changed(d.lane.instr); }
 });
 function onLaneHover(lane, e) {
-  if (state.drag || !editModel(lane) || !lane.geo) { lane.canvas.style.cursor = ""; return; }
   const { x, y } = canvasXY(lane.canvas, e);
+  lane.hover = { x, y };
+  if (state.drag || !editModel(lane) || !lane.geo) { lane.canvas.style.cursor = ""; return; }
   const hit = hitNote(lane, x, y);
   lane.canvas.style.cursor = hit ? (hit.part === 2 && lane.view === "roll" ? "ew-resize" : "move") : "crosshair";
 }
@@ -1718,6 +2167,9 @@ $("eCym").onclick = onActive(toggleCymbal);
 $("eTap").onclick = onActive(toggleTap);
 $("eSp").onclick = onActive(toggleSp);
 $("eDel").onclick = onActive(deleteSelected);
+$("eBpm").onclick = editTempo;
+$("eSig").onclick = editSig;
+$("eSec").onclick = editSection;
 $("eUndo").onclick = () => undoRedo(state.undo, state.redo);
 $("eRedo").onclick = () => undoRedo(state.redo, state.undo);
 $("eSave").onclick = () => saveChart();
@@ -1758,21 +2210,68 @@ document.addEventListener("drop", async (e) => {
   if (files.length) loadSong(mapFromFileList(files));
 });
 $("play").onclick = togglePlay;
+// Metrônomo, clap e hyperspeed ficam lembrados neste navegador
+const prefs = (() => { try { return JSON.parse(localStorage.getItem("ai-charter-view") || "{}"); } catch { return {}; } })();
+const savePrefs = () => { try { localStorage.setItem("ai-charter-view", JSON.stringify(prefs)); } catch {} };
+function setTick(kind, on) {
+  ticks[kind] = prefs[kind] = on; savePrefs();
+  $(kind === "metro" ? "metroBtn" : "clapBtn").classList.toggle("on", on);
+}
+function setWave(on) { wave.on = prefs.wave = on; savePrefs(); $("waveBtn").classList.toggle("on", on); }
+$("waveBtn").onclick = () => setWave(!wave.on);
+setWave(!!prefs.wave);
+function setHyper(v) {
+  const r = $("hyper");
+  r.value = Math.max(+r.min, Math.min(+r.max, Math.round(v * 10) / 10));
+  $("hyperVal").textContent = `${(+r.value).toFixed(1)}×`;
+  prefs.hyper = +r.value; savePrefs();
+}
+$("metroBtn").onclick = () => setTick("metro", !ticks.metro);
+$("clapBtn").onclick = () => setTick("clap", !ticks.clap);
+$("hyper").oninput = (e) => setHyper(+e.target.value);
+setTick("metro", !!prefs.metro); setTick("clap", !!prefs.clap); setHyper(prefs.hyper ?? 1.6);
 $("addLane").onclick = () => { if (state.charts.length) { const l = state.lanes[state.lanes.length - 1]; addLane(l?.chartIndex || 0, l?.instr, l?.diff, l?.view); } };
 $("mixerBtn").onclick = () => { const m = $("mixer"); m.style.display = m.style.display === "block" ? "none" : "block"; };
 $("speed").onchange = (e) => { player.setRate(+e.target.value); clock.setRate(+e.target.value); if (!timeSource().playing) $("play").textContent = "▶ Tocar"; };
 $("section").onchange = (e) => { if (e.target.value !== "") timeSource().seek(+e.target.value + (state.charts[0]?.chart.audioOffset || 0) - 1); };
-$("timeline").onclick = (e) => {
-  const r = e.target.getBoundingClientRect();
-  const total = Math.max(player.duration, state.charts[0]?.chart.endTime || 0);
-  if (total) timeSource().seek((e.clientX - r.left) / r.width * total);
+// Linha do tempo: clicar ou arrastar leva até ali; perto da marca de uma seção, vai ao começo dela
+function timelineAt(e) {
+  const r = $("timeline").getBoundingClientRect(), chart = state.charts[0]?.chart;
+  const total = Math.max(player.duration, chart?.endTime || 0);
+  if (!total) return null;
+  const x = e.clientX - r.left;
+  const near = chart.sections.find(s => Math.abs((s.time + chart.audioOffset) / total * r.width - x) <= 5);
+  return { time: near ? near.time + chart.audioOffset : x / r.width * total, section: near };
+}
+let scrubbing = false;
+$("timeline").onmousedown = (e) => { const p = timelineAt(e); if (p) { scrubbing = true; timeSource().seek(p.time); } };
+window.addEventListener("mouseup", () => { scrubbing = false; });
+window.addEventListener("mousemove", (e) => {
+  if (scrubbing) { const p = timelineAt(e); if (p) timeSource().seek(p.time); }
+});
+$("timeline").onmousemove = (e) => {
+  const p = timelineAt(e);
+  $("timeline").title = p ? (p.section ? `${p.section.name} (${fmt(p.time)})` : fmt(p.time)) : "";
 };
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
   if (editKey(e)) { e.preventDefault(); return; }
-  if (e.code === "Space") { e.preventDefault(); togglePlay(); }
-  if (e.code === "ArrowLeft") timeSource().seek(timeSource().position - 5);
-  if (e.code === "ArrowRight") timeSource().seek(timeSource().position + 5);
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const keys = {
+    Space: togglePlay,
+    ArrowLeft: () => timeSource().seek(timeSource().position - 5),
+    ArrowRight: () => timeSource().seek(timeSource().position + 5),
+    ArrowUp: () => stepCursor(1), ArrowDown: () => stepCursor(-1),
+    PageUp: () => jumpSection(-1), PageDown: () => jumpSection(1),
+    BracketLeft: () => state.editMode && cycleSnap(-1), BracketRight: () => state.editMode && cycleSnap(1),
+    KeyB: editTempo, KeyE: editSection,
+    KeyM: () => setTick("metro", !ticks.metro), KeyK: () => setTick("clap", !ticks.clap), KeyW: () => setWave(!wave.on),
+    Minus: () => setHyper(+$("hyper").value - 0.2), Equal: () => setHyper(+$("hyper").value + 0.2),
+    NumpadSubtract: () => setHyper(+$("hyper").value - 0.2), NumpadAdd: () => setHyper(+$("hyper").value + 0.2),
+  };
+  if (!keys[e.code]) return;
+  e.preventDefault();
+  keys[e.code]();
 });
 
 // Aberto pelo `ai-charter-view`: a pasta da música é servida em song/
