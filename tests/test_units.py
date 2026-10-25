@@ -85,6 +85,26 @@ def test_same_riff_gets_the_same_lanes_every_time():
     assert by_bar[0][1:] == by_bar[3][1:]
 
 
+def test_neighbor_chords_never_share_a_shape():
+    """Música com muitos power chords (11, mais que os formatos de 2 notas sem os largos): alguns
+    dividem formato, mas nunca dois que tocam em seguida (Lá5 -> Sol5 -> Fá5, Mi5 -> Fá5 -> Sol5 e
+    Mi5 -> Lá5 -> Sol5, como em Sweet Things)."""
+    roots = [40, 41, 43, 45, 47, 48, 52, 53, 55, 57, 63]
+    phrases = [(45, 43, 41), (52, 53, 55), (52, 57, 55), (40,), (47,), (48,), (63,)]
+    cands, tick = [], 0
+    for _ in range(4):
+        for phrase in phrases:
+            for root in phrase:
+                cands.append(Candidate(tick, 1.0, end_tick=tick + RES // 2, pitch=root, voices=2))
+                tick += RES
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    root_at = {c.tick: c.pitch for c in cands}
+    expert = track.notes["expert"]
+    assert {round(root_at[n.tick]) for n in expert} == set(roots)
+    for a, b in zip(expert, expert[1:]):
+        assert root_at[a.tick] == root_at[b.tick] or a.lanes != b.lanes, (root_at[a.tick], root_at[b.tick], a.lanes)
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)

@@ -266,13 +266,16 @@ def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
 MIN_CHORD_OCCURRENCES = 3
 COST_SMALLER_SHAPE = 1.0      # usar um formato com menos notas que o acorde
 COST_SHARED_SHAPE = 3.0       # dois acordes diferentes com o mesmo formato
+COST_SHARED_NEIGHBORS = 30.0  # ...que tocam um logo depois do outro: o jogador não veria a troca
 COST_PER_LANE_FROM_SPREAD = 0.3
 
 
 def _shape_palette(n_lanes: int, max_chord: int) -> list[tuple[int, ...]]:
     """Todos os formatos de acorde possíveis, do mais grave para o mais agudo.
 
-    Ex. com 5 lanes e até 3 notas: GR, GY, GRY, RY, RB, RYB, YB, YO, YBO, BO.
+    Ex. com 5 lanes e até 3 notas: GR, GY, GRY, RY, GB, RB, RYB, YB, RO, YO, YBO, BO. Os de 2 notas
+    vão até 2 lanes de intervalo (GB, RO): uma música com muitos power chords precisa de formatos
+    para que acordes seguidos não fiquem iguais.
     """
     shapes = set()
     for size in range(2, max_chord + 1):
@@ -282,7 +285,8 @@ def _shape_palette(n_lanes: int, max_chord: int) -> list[tuple[int, ...]]:
                 shapes.add(shape)
         if size == 2:
             shapes.update((b, b + 2) for b in range(n_lanes - 2))  # pulando uma (GY, RB...)
-    return sorted(shapes, key=lambda s: (np.mean(s), -len(s)))
+            shapes.update((b, b + 3) for b in range(n_lanes - 3))  # pulando duas (GB, RO)
+    return sorted(shapes, key=lambda s: (np.mean(s), -len(s), s))
 
 
 def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
@@ -292,12 +296,30 @@ def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
     Os acordes são ordenados do mais grave para o mais agudo e distribuídos pelos
     formatos disponíveis na mesma ordem (o contorno continua certo), preferindo
     formatos com o nº de notas do acorde e evitando dois acordes no mesmo formato.
+    Com mais acordes que formatos, alguns dividem formato; dois acordes que tocam um logo
+    depois do outro na música (ex.: Sol5 -> Fá5) quase nunca: o jogador não veria a troca.
+    Acordes de 2 e de 3 notas são distribuídos cada um na sua fila (um acorde de 3 notas no
+    meio da fila dos de 2 impediria dois deles de dividir formato).
     """
     counts = Counter((round(c.pitch), size) for c, size in zip(chosen, sizes) if size >= 2)
-    chords = sorted(key for key, n in counts.items() if n >= MIN_CHORD_OCCURRENCES)
+    neighbors = set()   # pares de acordes diferentes que tocam em seguida
+    keys = [(round(c.pitch), size) if size >= 2 else None for c, size in zip(chosen, sizes)]
+    for a, b in zip(keys, keys[1:]):
+        if a and b and a != b:
+            neighbors.add(frozenset((a, b)))
     palette = _shape_palette(n_lanes, max_chord)
-    if not chords or not palette:
-        return {}
+    table: dict[tuple[int, int], tuple[int, ...]] = {}
+    for size in sorted({key[1] for key in counts}):
+        chords = sorted(key for key, n in counts.items() if key[1] == size and n >= MIN_CHORD_OCCURRENCES)
+        shapes = [s for s in palette if len(s) <= size]
+        if chords and shapes:
+            table.update(_spread_shapes(chords, shapes, neighbors))
+    return table
+
+
+def _spread_shapes(chords: list[tuple[int, int]], palette: list[tuple[int, ...]],
+                   neighbors: set) -> dict[tuple[int, int], tuple[int, ...]]:
+    """Distribui os acordes (do mais grave ao mais agudo) pelos formatos, na mesma ordem."""
     centers = np.array([np.mean(s) for s in palette])
     targets = np.linspace(centers[0], centers[-1], len(chords)) if len(chords) > 1 else [np.mean(centers)]
 
@@ -313,11 +335,12 @@ def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
     back = np.zeros((n, m), dtype=int)
     cost[0] = [fit(0, j) for j in range(m)]
     for i in range(1, n):
+        shared = COST_SHARED_NEIGHBORS if frozenset((chords[i - 1], chords[i])) in neighbors else COST_SHARED_SHAPE
         for j in range(m):
             here = fit(i, j)
             if here == np.inf:
                 continue
-            options = [cost[i - 1][p] + (COST_SHARED_SHAPE if p == j else 0.0) for p in range(j + 1)]
+            options = [cost[i - 1][p] + (shared if p == j else 0.0) for p in range(j + 1)]
             back[i][j] = int(np.argmin(options))
             cost[i][j] = min(options) + here
     j = int(np.argmin(cost[-1]))
