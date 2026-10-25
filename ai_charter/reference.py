@@ -919,6 +919,7 @@ class Guide:
         pitch = float(event.pitches[0])
         changed = round(c.pitch) != round(pitch) or c.voices != voices
         c.pitch, c.voices = pitch, voices
+        c.upper = tuple(event.pitches[1:]) if voices > 1 else ()
         root = event.pitches[0] % 12
         classes = {p % 12 for p in event.pitches}
         kind = ("note" if voices == 1 else "5" if classes <= {root, (root + 7) % 12}

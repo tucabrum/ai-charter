@@ -40,6 +40,8 @@ class Candidate:
     lowest_by_class: np.ndarray | None = None
     fifth_ratio: float = 0.0
     third_ratio: float = 0.0
+    upper: tuple[int, ...] = ()   # notas de cima do acorde, quando vêm da partitura (o mesmo baixo pode
+                                  # ter acordes diferentes: Fá3+Lá3, Fá3+Si♭3, Fá3+Sol3)
 
 
 def quantize_tick(tick: float, resolution: int, allow_triplets: bool) -> int:

@@ -124,6 +124,20 @@ def test_neighbor_chords_never_share_a_shape():
         assert root_at[a.tick] == root_at[b.tick] or a.lanes != b.lanes, (root_at[a.tick], root_at[b.tick], a.lanes)
 
 
+def test_chords_with_the_same_bass_but_other_top_notes_get_other_shapes():
+    """Compasso 18 de Quicksand: Fá3+Lá3, Fá3+Si♭3, Fá3+Lá3, Fá3+Sol3. O baixo é o mesmo, mas são
+    acordes diferentes (a partitura diz as notas de cima), e cada um ganha o seu formato."""
+    tops = [57, 58, 57, 55] * 6
+    cands = [Candidate(i * RES, 1.0, end_tick=i * RES + RES // 2, pitch=53, voices=2, upper=(top,))
+             for i, top in enumerate(tops)]
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    shape_of: dict[int, set] = {}
+    for note, top in zip(track.notes["expert"], tops):
+        shape_of.setdefault(top, set()).add(note.lanes)
+    assert all(len(shapes) == 1 for shapes in shape_of.values())   # cada acorde sempre igual
+    assert len({next(iter(s)) for s in shape_of.values()}) == 3     # ...e os três diferentes entre si
+
+
 def test_chord_shapes_fit_in_lanes():
     assert chord_shape(4, 2, 5) == (2, 4)
     assert chord_shape(0, 2, 5) == (0, 2)

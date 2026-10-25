@@ -248,8 +248,8 @@ def _unify_chord_lanes(chosen: list[Candidate], lanes: list[int]) -> list[int]:
     se ela ficaria na mesma lane de uma vizinha que é outro acorde/nota (aí o
     jogador veria "o mesmo acorde" onde a música muda).
     """
-    def identity(c: Candidate) -> tuple[int, int]:
-        return round(c.pitch), c.voices
+    def identity(c: Candidate) -> tuple:
+        return round(c.pitch), c.voices, c.upper
 
     votes: dict[tuple[int, int], Counter] = defaultdict(Counter)
     for c, lane in zip(chosen, lanes):
@@ -296,8 +296,14 @@ def _shape_palette(n_lanes: int, max_chord: int) -> list[tuple[int, ...]]:
     return sorted(shapes, key=lambda s: (np.mean(s), -len(s), s))
 
 
+def chord_key(c: Candidate, size: int) -> tuple:
+    """O que identifica um acorde na chart: a nota mais grave, o nº de notas e, quando a partitura diz,
+    as notas de cima (Fá3+Lá3 e Fá3+Si♭3 são acordes diferentes, com formatos diferentes)."""
+    return round(c.pitch), size, c.upper
+
+
 def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
-                       max_chord: int) -> dict[tuple[int, int], tuple[int, ...]]:
+                       max_chord: int) -> dict[tuple, tuple[int, ...]]:
     """Formato fixo para cada acorde da música (identificado por altura e nº de notas).
 
     Os acordes são ordenados do mais grave para o mais agudo e distribuídos pelos
@@ -308,14 +314,14 @@ def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
     Acordes de 2 e de 3 notas são distribuídos cada um na sua fila (um acorde de 3 notas no
     meio da fila dos de 2 impediria dois deles de dividir formato).
     """
-    counts = Counter((round(c.pitch), size) for c, size in zip(chosen, sizes) if size >= 2)
+    counts = Counter(chord_key(c, size) for c, size in zip(chosen, sizes) if size >= 2)
     neighbors = set()   # pares de acordes diferentes que tocam em seguida
-    keys = [(round(c.pitch), size) if size >= 2 else None for c, size in zip(chosen, sizes)]
+    keys = [chord_key(c, size) if size >= 2 else None for c, size in zip(chosen, sizes)]
     for a, b in zip(keys, keys[1:]):
         if a and b and a != b:
             neighbors.add(frozenset((a, b)))
     palette = _shape_palette(n_lanes, max_chord)
-    table: dict[tuple[int, int], tuple[int, ...]] = {}
+    table: dict[tuple, tuple[int, ...]] = {}
     for size in sorted({key[1] for key in counts}):
         chords = sorted(key for key, n in counts.items() if key[1] == size and n >= MIN_CHORD_OCCURRENCES)
         shapes = [s for s in palette if len(s) <= size]
@@ -324,8 +330,8 @@ def _chord_shape_table(chosen: list[Candidate], sizes: list[int], n_lanes: int,
     return table
 
 
-def _spread_shapes(chords: list[tuple[int, int]], palette: list[tuple[int, ...]],
-                   neighbors: set) -> dict[tuple[int, int], tuple[int, ...]]:
+def _spread_shapes(chords: list[tuple], palette: list[tuple[int, ...]],
+                   neighbors: set) -> dict[tuple, tuple[int, ...]]:
     """Distribui os acordes (do mais grave ao mais agudo) pelos formatos, na mesma ordem."""
     centers = np.array([np.mean(s) for s in palette])
     targets = np.linspace(centers[0], centers[-1], len(chords)) if len(chords) > 1 else [np.mean(centers)]
@@ -405,7 +411,7 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
     """Monta as quatro dificuldades a partir das notas candidatas (já quantizadas)."""
     track = TrackChart(notes={})
     # Trechos com o mesmo ritmo e as mesmas notas são charteados igualzinho.
-    repeats = find_repeats(cands, resolution, key=lambda c: (round(c.pitch), c.voices))
+    repeats = find_repeats(cands, resolution, key=lambda c: (round(c.pitch), c.voices, c.upper))
     previous_count = len(cands)
     for difficulty, r in rules.items():
         chosen = select_rhythm(cands, resolution, r.min_gap_beats, r.grid, r.allow_offgrid)
@@ -423,7 +429,7 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
         lanes = [fixed.get(i, lane) for i, lane in enumerate(lanes)]
         # Acordes que se repetem usam a tabela de formatos; o resto segue as lanes.
         table = _chord_shape_table(chosen, sizes, r.lanes, r.max_chord)
-        notes = [ChartNote(c.tick, table.get((round(c.pitch), size)) or chord_shape(lane, size, r.lanes))
+        notes = [ChartNote(c.tick, table.get(chord_key(c, size)) or chord_shape(lane, size, r.lanes))
                  for c, lane, size in zip(chosen, lanes, sizes)]
         _apply_sustains(notes, chosen, r, resolution)
         _apply_forcing(notes, resolution, r.allow_hopos)
