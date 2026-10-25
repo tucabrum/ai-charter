@@ -83,6 +83,8 @@ class RefNote:
     beat: float      # início, em semínimas desde o começo da partitura
     length: float    # duração em semínimas
     pitch: int       # nota MIDI (na bateria: a peça no mapa General MIDI)
+    muted: bool = False        # nota abafada (x): soa como um golpe, sem altura definida
+    palm_muted: bool = False   # palm mute: nota curta, sem sustentação
 
 
 @dataclass
@@ -260,10 +262,11 @@ def _read_guitar_pro(path: Path) -> tuple[list[RefTrack], list[tuple[int, float,
                             last = last_on_string[note.string]   # ligadura: a nota anterior continua
                             last.length = (at + length) / quarter - last.beat
                             continue
-                        if note.type in (NoteType.rest, NoteType.dead):
+                        if note.type == NoteType.rest or (drums and note.type == NoteType.dead):
                             continue
                         pitch = note.value if drums else note.realValue
-                        ref = RefNote(at / quarter, length / quarter, pitch)
+                        ref = RefNote(at / quarter, length / quarter, pitch, muted=note.type == NoteType.dead,
+                                      palm_muted=bool(note.effect.palmMute))
                         notes.append(ref)
                         last_on_string[note.string] = ref
         program = t.channel.instrument if t.channel else None
@@ -474,12 +477,12 @@ def parse_gpif(xml: bytes) -> tuple[list[RefTrack], list[tuple[int, float, float
                             last = last_on_string[key]   # ligadura: a nota anterior continua
                             last.length = at + length - last.beat
                             continue
-                        if note.find("Properties/Property[@name='Muted']") is not None:
-                            continue   # nota abafada (x): não tem altura
+                        muted = note.find("Properties/Property[@name='Muted']") is not None   # abafada (x)
                         pitch = _note_pitch(note, tuning, drums, articulations)
-                        if pitch is None:
+                        if pitch is None or (muted and drums):
                             continue
-                        ref = RefNote(at, length, pitch)
+                        ref = RefNote(at, length, pitch, muted=muted,
+                                      palm_muted=note.find("Properties/Property[@name='PalmMuted']") is not None)
                         notes.append(ref)
                         last_on_string[key] = ref
                     at += length
@@ -500,7 +503,8 @@ def bar_notes(score: Score, bar: int) -> list[dict]:
     spans = [(start, end) for number, start, end in score.bars if number == bar][:1]
     out = []
     for track in score.tracks:
-        notes = [n for n in track.notes for start, end in spans if start - 1e-6 <= n.beat < end - 1e-6]
+        notes = [n for n in track.notes for start, end in spans
+                 if start - 1e-6 <= n.beat < end - 1e-6 and not n.muted]
         groups: list[list[RefNote]] = []
         for n in notes:
             if groups and n.beat - groups[-1][0].beat <= CHORD_ONSET_BEATS:
@@ -618,6 +622,8 @@ def score_chroma(tracks: list[RefTrack], step: float, n_steps: int) -> np.ndarra
     chroma = np.zeros((12, n_steps))
     for track in tracks:
         for n in track.notes:
+            if n.muted:   # abafada (x): não tem altura
+                continue
             first, last = int(n.beat / step), int((n.beat + max(n.length, step / 4)) / step - 1e-9)
             for k in range(max(first, 0), min(last, n_steps - 1) + 1):
                 overlap = min(n.beat + n.length, (k + 1) * step) - max(n.beat, k * step)
@@ -755,7 +761,11 @@ class RefEvent:
 
 
 def events_in_ticks(tracks: list[RefTrack], alignment: Alignment, resolution: int) -> list[RefEvent]:
-    """Notas da partitura agrupadas em acordes e levadas para os ticks da gravação."""
+    """Notas da partitura agrupadas em acordes e levadas para os ticks da gravação.
+
+    Notas abafadas (x) junto de notas normais não contam (a nota do meio de uma oitava, por exemplo);
+    um golpe só de notas abafadas vira uma nota simples, na altura da mais grave. Um golpe todo em
+    palm mute (ou abafado) não sustenta: vira nota curta, mesmo que a partitura escreva mais longa."""
     notes = sorted((n for t in tracks for n in t.notes), key=lambda n: (n.beat, n.pitch))
     groups: list[list[RefNote]] = []
     for n in notes:
@@ -769,8 +779,10 @@ def events_in_ticks(tracks: list[RefTrack], alignment: Alignment, resolution: in
         end = alignment.to_audio_beat(max(n.beat + n.length for n in group))
         if start is None:
             continue
-        end = start + 0.1 if end is None or end <= start else end
-        pitches = tuple(sorted({n.pitch + alignment.transpose for n in group}))
+        short = all(n.palm_muted or n.muted for n in group)
+        end = start + 0.1 if end is None or end <= start or short else end
+        sounding = [n for n in group if not n.muted] or [min(group, key=lambda n: n.pitch)]
+        pitches = tuple(sorted({n.pitch + alignment.transpose for n in sounding}))
         events.append(RefEvent(int(round(start * resolution)), int(round(end * resolution)), pitches))
     return events
 
@@ -964,7 +976,11 @@ class Guide:
         return cands
 
     def _replace_bars(self, cands: list, matches: list, events: list[RefEvent]) -> tuple[list, int]:
-        """Troca as notas detectadas pelas da partitura nos compassos que a fidelidade pede."""
+        """Troca as notas detectadas pelas da partitura nos compassos que a fidelidade pede.
+
+        Uma nota detectada que confere com uma nota da partitura que entrou sai, mesmo que tenha
+        caído no compasso de antes (o transcritor ouviu o primeiro acorde um pouco adiantado, e
+        ele aparecia duas vezes, quase junto)."""
         bar = 4 * self.resolution
         detected, from_score = _by_bar(cands, bar), _by_bar(events, bar)
         matched_in = {}
@@ -972,18 +988,22 @@ class Guide:
             matched_in[c.tick // bar] = matched_in.get(c.tick // bar, 0) + (event is not None)
         strength = float(np.median([c.strength for c in cands])) if cands else 1.0
         first, last = events[0].tick // bar, events[-1].tick // bar
-        out, replaced = [], 0
-        for b in sorted(set(detected) | set(from_score)):
+        use_score = {}
+        for b in set(detected) | set(from_score):
             found, score = detected.get(b, []), from_score.get(b, [])
             if self.fidelity == "seguir":
-                use_score = first <= b <= last
+                use_score[b] = first <= b <= last
             else:   # completar
-                use_score = bool(found and score) and matched_in.get(b, 0) >= BAR_MATCH * len(found)
-            if use_score:
-                out.extend(self._from_score(score, strength))
-                replaced += bool(score)
+                use_score[b] = bool(found and score) and matched_in.get(b, 0) >= BAR_MATCH * len(found)
+        match_of = {id(c): event for c, event in zip(cands, matches)}
+        out, replaced = [], 0
+        for b in sorted(use_score):
+            if use_score[b]:
+                out.extend(self._from_score(from_score.get(b, []), strength))
+                replaced += bool(from_score.get(b))
             else:
-                out.extend(found)
+                out.extend(c for c in detected.get(b, [])
+                           if match_of[id(c)] is None or not use_score.get(match_of[id(c)].tick // bar))
         return sorted(out, key=lambda c: c.tick), replaced
 
 

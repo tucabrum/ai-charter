@@ -254,6 +254,20 @@ def test_guide_corrects_pitch_and_chords():
     assert "80%" in lines[0] and "3 corrigidas" in lines[0]   # o Dó já estava certo
 
 
+def test_muted_strums_and_palm_mutes_in_the_score():
+    """Quicksand, compasso 2: golpe só de cordas abafadas (x) vira uma nota de uma cor só; abafada
+    junto de notas normais não conta; palm mute não sustenta (nota curta, mesmo escrita longa)."""
+    from ai_charter.reference import RefNote, RefTrack, events_in_ticks
+
+    notes = [RefNote(0, 0.5, 55, muted=True), RefNote(0, 0.5, 50, muted=True), RefNote(0, 0.5, 45, muted=True),
+             RefNote(1, 0.5, 62), RefNote(1, 0.5, 57, muted=True), RefNote(1, 0.5, 50),
+             RefNote(2, 2.0, 53, palm_muted=True), RefNote(4, 2.0, 53)]
+    same = Alignment(np.array([0.0, 100.0]), np.array([0.0, 100.0]), 0, 1.0, 0.0)
+    events = events_in_ticks([RefTrack(1, "Base", "guitar", notes)], same, 192)
+    assert [(e.tick, e.pitches) for e in events] == [(0, (45,)), (192, (50, 62)), (384, (53,)), (768, (53,))]
+    assert [e.end_tick - e.tick for e in events[2:]] == [round(0.1 * 192), 2 * 192]
+
+
 def test_octave_in_the_score_becomes_a_chord():
     """Ré4 + Ré3 (a nota do meio abafada não conta), como na solo de Escape the Fate: no Expert vira um
     acorde de 2 notas, como um power chord; a mesma nota repetida no mesmo lugar continua nota simples."""
@@ -438,9 +452,11 @@ def check_gpif_tracks(score):
     assert (guitar.name, guitar.guess, drums.guess, drums.drums) == ("Guitarra Solo", "guitar", "drums", True)
     # compasso 1 (4/4) tocado duas vezes, depois o 2 (2/4) com uma nota ligada; a nota abafada e a de
     # enfeite ficam de fora; a semínima pontuada vale 1,5 e a tercina, 2/3
-    notes = [(n.beat, round(n.length, 3), n.pitch) for n in guitar.notes]
+    notes = [(n.beat, round(n.length, 3), n.pitch) for n in guitar.notes if not n.muted]
     assert notes == [(0, 1.5, 43), (0, 1.5, 50), (2.5, 0.667, 52),
                      (4, 1.5, 43), (4, 1.5, 50), (6.5, 0.667, 52), (8, 2.0, 59)]
+    # a nota abafada (x) é lida, marcada: sozinha no golpe ela vira uma nota simples
+    assert [(n.beat, n.pitch) for n in guitar.notes if n.muted] == [(1.5, 64), (5.5, 64)]
     assert [(n.beat, n.pitch) for n in drums.notes] == [(0, 36), (0, 42), (2, 38), (4, 36), (4, 42), (6, 38)]
     assert score.length_beats == 10
     # compasso 1 duas vezes (repetição), depois o 2 (2/4); bar_spans junta passadas seguidas
