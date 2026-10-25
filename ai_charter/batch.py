@@ -426,6 +426,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--overwrite", action="store_true",
                         help="gera de novo as músicas que já têm chart (padrão: elas são puladas)")
     parser.add_argument("--no-references", action="store_true", help="não usa as partituras")
+    parser.add_argument("--video", action="store_true",
+                        help="links do YouTube: o vídeo também vira o fundo de cada música (video.webm)")
     parser.add_argument("--dry-run", action="store_true", help="só mostra os pares, sem gerar")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
@@ -450,7 +452,7 @@ def main(argv: list[str] | None = None) -> None:
     common = {"instruments": [i.strip() for i in args.instruments.split(",") if i.strip()],
               "genre": args.genre or "", "reference_fidelity": args.reference_fidelity,
               "separator": args.separator, "tempo": args.tempo, "format": args.format,
-              "overwrite": args.overwrite, "output": str(args.output)}
+              "overwrite": args.overwrite, "output": str(args.output), "video": args.video}
     settings = {"output": str(args.output)}
     results: list[tuple[str, str, str]] = []
     items = plan_items(p)

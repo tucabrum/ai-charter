@@ -130,3 +130,72 @@ def test_batch_scan_matches_scores_to_videos(tmp_path):
     item = {**batch.plan_items(p)[0], "reference": ""}   # o .gp5 do teste não é uma partitura de verdade
     form = batch.item_form(item, {"instruments": ["guitar"]})
     assert parse_request(form, {"output": str(tmp_path)}).url == p.items[0].input
+
+
+def test_set_ini_value_replaces_or_appends(tmp_path):
+    ini = tmp_path / "song.ini"
+    ini.write_text("[song]\nname = x\nvideo_start_time = 0\n", encoding="utf-8")
+    youtube.set_ini_value(ini, "video_start_time", -4000)
+    youtube.set_ini_value(ini, "delay", 0)
+    assert ini.read_text(encoding="utf-8") == "[song]\nname = x\nvideo_start_time = -4000\ndelay = 0\n"
+
+
+def test_background_video_converts_once_and_delays_by_the_lead_in(tmp_path, monkeypatch):
+    converted = []
+
+    def fake_vp8(src, dst, log=print):
+        assert src.name == "Phoenix - Lasso [abcdefghijk].video-src.opus"   # o FakeYDL "baixa" .opus
+        converted.append(dst)
+        dst.write_bytes(b"webm")
+
+    monkeypatch.setattr(youtube, "to_vp8", fake_vp8)
+    song = tmp_path / "Phoenix - Lasso"
+    song.mkdir()
+    (song / "song.ini").write_text("[song]\nname = Lasso\n", encoding="utf-8")
+    for _ in range(2):
+        video = youtube.background_video(URL, tmp_path / "dl", song, 4.0, lambda *_: None)
+    assert video == song / "video.webm" and video.read_bytes() == b"webm"
+    assert len(converted) == 1                                   # a 2ª vez usa o já convertido
+    assert not list((tmp_path / "dl").glob("*.video-src.*"))     # o original é apagado
+    assert "video_start_time = -4000" in (song / "song.ini").read_text(encoding="utf-8")
+    # o vídeo convertido não é confundido com o áudio já baixado
+    assert youtube.cached(tmp_path / "dl", "abcdefghijk") is None
+
+
+def test_request_with_video_runs_it_after_the_chart(tmp_path, monkeypatch):
+    req = parse_request({"input": URL, "instruments": ["guitar"], "video": True}, {"output": str(tmp_path)})
+    assert req.video and not parse_request({"input": URL, "instruments": ["guitar"]}, {}).video
+    song = tmp_path / "Phoenix - Lasso"
+    song.mkdir()
+    result = type("R", (), {"song_dir": song, "lead_in": 2.5})()
+    monkeypatch.setattr(app_mod, "_generate", lambda req, log: result)
+    monkeypatch.setattr(youtube, "download", lambda url, folder, log: (tmp_path / "a.opus", None))
+    monkeypatch.setattr(youtube, "save_cover", lambda audio, song: False)
+    seen, lines = {}, []
+    monkeypatch.setattr(youtube, "background_video",
+                        lambda url, folder, song_dir, lead, log: seen.update(lead=lead, song=song_dir))
+    assert app_mod.run_request(req, lines.append) == song
+    assert seen == {"lead": 2.5, "song": song} and "começa 2.5 s depois" in lines[-1]
+
+    def broken(*args):
+        raise RuntimeError("sem rede")
+
+    monkeypatch.setattr(youtube, "background_video", broken)
+    lines.clear()
+    assert app_mod.run_request(req, lines.append) == song        # a chart fica pronta mesmo assim
+    assert "o vídeo não deu certo (sem rede)" in lines[-1]
+
+
+@pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="precisa do ffmpeg")
+def test_to_vp8_makes_a_silent_webm(tmp_path):
+    import subprocess
+
+    src = tmp_path / "src.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=1280x960:rate=10:duration=1",
+                    "-f", "lavfi", "-i", "sine=duration=1", "-shortest", str(src)], check=True)
+    lines = []
+    youtube.to_vp8(src, tmp_path / "out.webm", lines.append)
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name,height",
+                            "-of", "csv=p=0", str(tmp_path / "out.webm")], capture_output=True, text=True).stdout
+    assert probe.strip() == "vp8,video,720"                    # só vídeo, VP8, até 720p
+    assert lines[-1].endswith("100%")

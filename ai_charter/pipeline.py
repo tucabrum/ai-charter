@@ -98,6 +98,7 @@ class Result:
     guitar_sources: list[str] = field(default_factory=list)  # guitarra escolhida em cada compasso
     bpm: float = 0.0
     zip_path: Path | None = None
+    lead_in: float = 0.0   # segundos de silêncio postos antes da música (export/lead_in.py)
 
 
 def _safe_name(text: str) -> str:
@@ -477,7 +478,7 @@ def run(opts: Options, log=print) -> Result:
         audio.extract_cover(opts.input, song_dir / "album.png")
 
         result = Result(song_dir=song_dir, tracks=tracks, vocals=vocals,
-                        guitar_sources=guitar_sources, bpm=tempo.average_bpm)
+                        guitar_sources=guitar_sources, bpm=tempo.average_bpm, lead_in=lead.seconds)
         if opts.make_zip:
             result.zip_path = Path(shutil.make_archive(str(song_dir), "zip", song_dir.parent, song_dir.name))
         return result

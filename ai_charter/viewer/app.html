@@ -141,6 +141,8 @@
           <div id="source-url" hidden>
             <input type="text" name="url" placeholder="https://www.youtube.com/watch?v=..." style="width: 100%">
             <p class="help" id="videoInfo">O áudio é baixado no começo da geração, como veio do YouTube (Opus ou AAC, sem recomprimir), e fica guardado: o mesmo link não é baixado de novo.</p>
+            <label class="check"><input type="checkbox" name="video"> Baixar também o vídeo para o fundo</label>
+            <p class="help">Vira o video.webm da música (VP8 até 720p, o formato que o Clone Hero e o YARG tocam em qualquer PC), sincronizado com a música. A conversão leva alguns minutos e roda depois da chart.</p>
           </div>
         </div>
         <div class="field" id="downloads-field" hidden>
@@ -345,7 +347,8 @@
           <div class="field"><span>Pasta de saída</span>
             <div class="row"><input type="text" name="output" placeholder="output"><button type="button" data-pick="folder" data-for="output" data-form="batchForm">Procurar…</button></div></div>
           <div class="field" id="batchDownloads" hidden><span>Pasta dos downloads do YouTube</span>
-            <div class="row"><input type="text" name="downloads" placeholder="Música\ai-charter"><button type="button" data-pick="folder" data-for="downloads" data-form="batchForm">Procurar…</button></div></div>
+            <div class="row"><input type="text" name="downloads" placeholder="Música\ai-charter"><button type="button" data-pick="folder" data-for="downloads" data-form="batchForm">Procurar…</button></div>
+            <label class="check" style="margin-top: 6px"><input type="checkbox" name="video"> Baixar também o vídeo de cada link para o fundo (video.webm)</label></div>
         </div>
         <details>
           <summary>Opções avançadas (para todas)</summary>
@@ -479,6 +482,7 @@ form.onsubmit = async ev => {
   const f = form.elements, mode = f.lyricsMode.value;
   const body = {
     input: f.sourceMode.value === "url" ? f.url.value.trim() : f.input.value, downloads: f.downloads.value,
+    video: f.sourceMode.value === "url" && f.video.checked,
     title: f.title.value, artist: f.artist.value, output: f.output.value,
     instruments: [...form.querySelectorAll("[name=instrument]:checked")].map(i => i.value),
     separator: f.separator.value, stems: f.stems.value, tempo: f.tempo.value, rules: f.rules.value,
@@ -1031,7 +1035,7 @@ batchForm.onsubmit = async ev => {
   const common = {
     instruments: commonInstruments(), reference_fidelity: $("#batchFidelity").value, output: f.output.value,
     overwrite: f.overwrite.checked, tempo: f.tempo.value, separator: f.separator.value, format: f.format.value,
-    zip: f.zip.checked, downloads: f.downloads.value,
+    zip: f.zip.checked, downloads: f.downloads.value, video: f.video.checked,
   };
   const items = batchRows.map(r => ({
     input: r.input, reference: r.reference, lyrics: r.lyrics, cifra: r.cifra, instruments: r.instruments,

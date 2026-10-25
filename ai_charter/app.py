@@ -152,6 +152,7 @@ class Request:
     open_editor: bool = False
     url: str | None = None        # vídeo do YouTube: o áudio é baixado no começo da geração
     download_dir: Path | None = None   # onde guardar o áudio baixado (youtube.DEFAULT_DIR se None)
+    video: bool = False           # com link: o vídeo também vira o fundo da música (video.webm)
 
 
 def _path(data: dict, key: str, kind: str, required: bool = False) -> Path | None:
@@ -279,7 +280,8 @@ def parse_request(data: dict, settings: dict) -> Request:
     url, source = _source(data)
     downloads = _path(data, "downloads", "") or (Path(settings["downloads"]) if settings.get("downloads") else None)
     return Request(
-        input=source, url=url, download_dir=downloads, output_dir=output, instruments=instruments,
+        input=source, url=url, download_dir=downloads, video=bool(url and data.get("video")),
+        output_dir=output, instruments=instruments,
         stem_sources=_stem_sources(data), separator=separator, stems_dir=stems_dir, rules_path=_path(data, "rules", "file"), genre=_genre(data),
         reference=reference, reference_tracks=reference_tracks,
         reference_fidelity=_fidelity(data), reference_sections=_sections(data),
@@ -307,17 +309,33 @@ def run_request(req: Request, log) -> Path:
     from dataclasses import replace
 
     from ai_charter.export import audio
-    from ai_charter.pipeline import Options, _safe_name, run
 
     audio.require_ffmpeg()
-    if req.url:
-        from ai_charter import youtube
-        log("0/5 Baixando o áudio do vídeo...")
-        path, _ = youtube.download(req.url, req.download_dir, log)
-        song_dir = run_request(replace(req, input=path, url=None), log)
-        if youtube.save_cover(path, song_dir):
-            log("A miniatura do vídeo virou a capa (album.png)")
-        return song_dir
+    if not req.url:
+        return _generate(req, log).song_dir
+    from ai_charter import youtube
+    log("0/5 Baixando o áudio do vídeo...")
+    path, _ = youtube.download(req.url, req.download_dir, log)
+    result = _generate(replace(req, input=path, url=None), log)
+    song_dir = result.song_dir
+    if youtube.save_cover(path, song_dir):
+        log("A miniatura do vídeo virou a capa (album.png)")
+    if req.video:   # depois da chart: se o vídeo falhar, a chart fica pronta sem ele
+        log("Vídeo de fundo:")
+        try:
+            youtube.background_video(req.url, req.download_dir, song_dir, result.lead_in, log)
+            log(f"    {youtube.VIDEO_NAME} pronto"
+                + (f" (começa {result.lead_in:.1f} s depois, junto com a música)" if result.lead_in else ""))
+        except RuntimeError as exc:
+            log(f"    o vídeo não deu certo ({exc}); a chart está pronta sem ele")
+    return song_dir
+
+
+def _generate(req: Request, log):
+    """Gera a chart de um arquivo de música (pipeline.run) e devolve o resultado."""
+    from ai_charter.export import audio
+    from ai_charter.pipeline import Options, _safe_name, run
+
     tags = audio.read_tags(req.input)
     title = req.title or tags.get("title") or req.input.stem
     artist = req.artist or tags.get("artist") or "Unknown Artist"
@@ -355,7 +373,7 @@ def run_request(req: Request, log) -> Path:
             shutil.copyfile(lyrics, result.song_dir / LYRICS_NAME)
     if result.zip_path:
         log(f"Arquivo .zip: {result.zip_path}")
-    return result.song_dir
+    return result
 
 
 @dataclass

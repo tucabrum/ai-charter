@@ -19,6 +19,8 @@ def parse_args(argv: list[str] | None = None) -> Options:
                                       "vídeo do YouTube (o áudio é baixado e guardado em --downloads)")
     parser.add_argument("--downloads", type=Path,
                         help="pasta onde guardar o áudio baixado de um link (padrão: Música\\ai-charter)")
+    parser.add_argument("--video", action="store_true",
+                        help="com um link: o vídeo também vira o fundo da música (video.webm, VP8 até 720p)")
     parser.add_argument("-o", "--output", type=Path, default=Path("output"),
                         help="pasta onde a música será criada (padrão: ./output)")
     parser.add_argument("--separator", choices=("demucs", "folder", "none"), default="demucs",
@@ -130,12 +132,24 @@ def _source(parser, args, url: str | None) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     opts = parse_args(argv)
-    view = "--view" in (argv if argv is not None else sys.argv[1:])
+    given = argv if argv is not None else sys.argv[1:]
+    view = "--view" in given
     try:
         result = run(opts)
     except (RuntimeError, ValueError) as exc:
         print(f"Erro: {exc}", file=sys.stderr)
         sys.exit(1)
+    from ai_charter import youtube
+    url = next((a for a in given if youtube.is_url(a)), None)
+    if url is not None:   # música de um link: a capa e, se pedido, o vídeo de fundo
+        if youtube.save_cover(opts.input, result.song_dir):
+            print("A miniatura do vídeo virou a capa (album.png)")
+        if "--video" in given:
+            print("Vídeo de fundo:")
+            try:   # o vídeo fica guardado junto do áudio baixado
+                youtube.background_video(url, opts.input.parent, result.song_dir, result.lead_in)
+            except RuntimeError as exc:
+                print(f"    o vídeo não deu certo ({exc}); a chart está pronta sem ele", file=sys.stderr)
     print(f"\nPronto! Música criada em: {result.song_dir}")
     if result.zip_path:
         print(f"Arquivo .zip: {result.zip_path}")
