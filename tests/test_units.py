@@ -85,6 +85,25 @@ def test_same_riff_gets_the_same_lanes_every_time():
     assert by_bar[0][1:] == by_bar[3][1:]
 
 
+def test_riff_note_keeps_its_lane_after_chords():
+    """Riff Ré-Mi de Sweet Things com a descida Lá5 -> Sol5 -> Fá5 no fim de cada 4 compassos: o Ré
+    logo depois do Fá5 fica na mesma lane dos outros Rés (acorde seguido de nota numa das lanes dele
+    é normal), e nenhum Mi fica numa lane diferente dos outros."""
+    riff = [(0, 50), (64, 52), (128, 52), (192, 52), (320, 52), (384, 50), (448, 52), (512, 52), (576, 52), (704, 52)]
+    end = [(0, 45, 2), (192, 43, 2), (384, 41, 2), (576, 50, 1), (640, 52, 1), (704, 52, 1)]
+    cands = []
+    for b in range(16):
+        for t, p, *v in (end if b % 4 == 3 else riff):
+            cands.append(Candidate(b * 4 * RES + t, 1.0, end_tick=b * 4 * RES + t + 48, pitch=p, voices=v[0] if v else 1))
+    track = build_fret_track(cands, load_rules().frets, RES, lane_window=8, sp_windows=[])
+    lanes_of: dict[int, set] = {}
+    for note, c in zip(track.notes["expert"], cands):
+        assert note.tick == c.tick
+        if c.voices == 1:
+            lanes_of.setdefault(round(c.pitch), set()).add(note.lanes)
+    assert len(lanes_of[50]) == 1 and len(lanes_of[52]) == 1
+
+
 def test_neighbor_chords_never_share_a_shape():
     """Música com muitos power chords (11, mais que os formatos de 2 notas sem os largos): alguns
     dividem formato, mas nunca dois que tocam em seguida (Lá5 -> Sol5 -> Fá5, Mi5 -> Fá5 -> Sol5 e

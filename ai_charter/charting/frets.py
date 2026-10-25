@@ -121,53 +121,60 @@ def assign_lanes(pitches: list[float], n_lanes: int, window: int,
     return result[::-1]
 
 
-PITCH_WINDOW_BEATS = 16  # mesma nota, mesma lane: a maioria entre as vezes que ela toca nesta distância
+PITCH_WINDOW_BEATS = 64  # mesma nota, mesma lane: a maioria entre as vezes que ela toca nesta distância (16 compassos)
 
 
 def _unify_pitch_lanes(chosen: list[Candidate], lanes: list[int], sizes: list[int], resolution: int,
                        keep: set[int] = frozenset()) -> list[int]:
     """A mesma nota (simples) fica na mesma lane dentro de um trecho: a lane em que ela cai mais vezes
     a até PITCH_WINDOW_BEATS dali (no empate, a mais comum na música toda, e depois a da primeira vez
-    que ela toca). Notas iguais seguidas mudam juntas. Não muda se a nota ficaria na
-    lane de uma vizinha que é outra nota, ou se inverteria o sentido da melodia com uma vizinha.
-    `keep`: notas que não mudam."""
+    que ela toca). Notas iguais seguidas mudam juntas. Não muda se a nota ficaria na lane de uma
+    vizinha simples que é outra nota, ou se inverteria o sentido da melodia com ela (um acorde vizinho
+    não conta: acorde seguido de nota numa das lanes dele é normal). Repete até nada mudar, porque
+    mudar uma nota pode liberar a vizinha. `keep`: notas que não mudam."""
     window = PITCH_WINDOW_BEATS * resolution
     singles = [i for i, s in enumerate(sizes) if s == 1]
     ticks = np.array([chosen[i].tick for i in singles])
-    runs: list[list[int]] = []   # notas simples iguais e seguidas
-    for i in singles:
-        if runs and runs[-1][-1] == i - 1 and abs(chosen[i].pitch - chosen[i - 1].pitch) < 0.5                 and lanes[i] == lanes[i - 1]:
-            runs[-1].append(i)
-        else:
-            runs.append([i])
     overall: dict[int, Counter] = defaultdict(Counter)   # desempate: a lane da nota na música toda
     first_lane: dict[int, int] = {}                       # ...e, empatando de novo, a da 1ª vez que ela toca
     for i in singles:
         overall[round(chosen[i].pitch)][lanes[i]] += 1
         first_lane.setdefault(round(chosen[i].pitch), lanes[i])
     out = list(lanes)
-    for run in runs:
-        first, last = run[0], run[-1]
-        if keep & set(run):
-            continue
-        pitch = round(chosen[first].pitch)
-        lo = np.searchsorted(ticks, chosen[first].tick - window)
-        hi = np.searchsorted(ticks, chosen[last].tick + window, "right")
-        votes = Counter(lanes[singles[k]] for k in range(lo, hi) if round(chosen[singles[k]].pitch) == pitch)
-        want = max(votes, key=lambda lane: (votes[lane], overall[pitch][lane], lane == first_lane[pitch]))
-        if want == out[first]:
-            continue
-        ok = True
-        for j, i in ((first - 1, first), (last + 1, last)):
-            if not 0 <= j < len(chosen):
+    for _ in range(4):
+        runs: list[list[int]] = []   # notas simples iguais e seguidas, na mesma lane
+        for i in singles:
+            if (runs and runs[-1][-1] == i - 1 and abs(chosen[i].pitch - chosen[i - 1].pitch) < 0.5
+                    and out[i] == out[i - 1]):
+                runs[-1].append(i)
+            else:
+                runs.append([i])
+        changed = False
+        for run in runs:
+            first, last = run[0], run[-1]
+            if keep & set(run):
                 continue
-            if abs(chosen[j].pitch - chosen[i].pitch) < 0.5:   # a mesma nota, mas fora da sequência
-                ok = ok and out[j] == want
-            elif out[j] == want or (chosen[j].pitch > chosen[i].pitch) != (out[j] > want):
-                ok = False
-        if ok:
-            for i in run:
-                out[i] = want
+            pitch = round(chosen[first].pitch)
+            lo = np.searchsorted(ticks, chosen[first].tick - window)
+            hi = np.searchsorted(ticks, chosen[last].tick + window, "right")
+            votes = Counter(lanes[singles[k]] for k in range(lo, hi) if round(chosen[singles[k]].pitch) == pitch)
+            want = max(votes, key=lambda lane: (votes[lane], overall[pitch][lane], lane == first_lane[pitch]))
+            if want == out[first]:
+                continue
+            ok = True
+            for j, i in ((first - 1, first), (last + 1, last)):
+                if not 0 <= j < len(chosen) or sizes[j] >= 2:
+                    continue
+                if abs(chosen[j].pitch - chosen[i].pitch) < 0.5:   # a mesma nota, mas fora da sequência
+                    ok = ok and out[j] == want
+                elif out[j] == want or (chosen[j].pitch > chosen[i].pitch) != (out[j] > want):
+                    ok = False
+            if ok:
+                for i in run:
+                    out[i] = want
+                changed = True
+        if not changed:
+            break
     return out
 
 
