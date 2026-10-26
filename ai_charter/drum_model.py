@@ -301,3 +301,65 @@ class TomLaneModel:
 
     def predict(self, x: np.ndarray) -> np.ndarray:
         return mlp(self.params, x)
+
+
+# --- Cor de cada prato grande (azul ou verde), aprendida das charts oficiais ---------------------
+# Na chart, o azul nem sempre é uma condução: muitas vezes é um segundo ataque ou um china. Como nos
+# tons, o que decide é como o charter distribuiu os pratos do kit: o som do golpe comparado aos
+# outros pratos da música, quanto ele sustenta e se vem marcando o tempo em sequência ou sozinho.
+CYM_LANE_PATH = Path(__file__).with_name("drum_cym_lanes.json")
+CYM_LANES = (RIDE, CRASH)
+CYM_CONTEXT_NAMES = ["prato_centro_rank", "prato_sustenta_rank", "prato_gap_antes", "prato_gap_depois",
+                     "prato_vizinhos_no_compasso"]
+
+
+def cym_context(features: np.ndarray, adtof_feats: np.ndarray, ticks: np.ndarray, resolution: int,
+                ring: np.ndarray, min_chance: float = 0.3) -> np.ndarray:
+    """Para cada ataque de UMA música: onde o som dele fica entre os golpes de prato da música (os que
+    o ADTOF ouve como prato), e quão perto estão os golpes de prato vizinhos (marcando o tempo?)."""
+    levels = features[:, [FEATURE_NAMES.index(f"nivel_{i}") for i in range(12)]]
+    centro = (levels * np.arange(12)).sum(axis=1) / (levels.sum(axis=1) + 1e-9)
+    sustenta = ring[:, RING_NAMES.index("sustenta_700ms")]
+    is_cym = adtof_feats[:, adtof.CLASSES.index("prato")] >= min_chance
+    out = np.zeros((len(features), len(CYM_CONTEXT_NAMES)), dtype=np.float32)
+    out[:, 2:4] = 4.0
+    if not is_cym.any():
+        return out
+    rank = lambda v, ref: np.searchsorted(np.sort(ref), v) / max(1, len(ref))   # noqa: E731
+    out[:, 0], out[:, 1] = rank(centro, centro[is_cym]), rank(sustenta, sustenta[is_cym])
+    beats = ticks / resolution
+    idx, at = np.flatnonzero(is_cym), np.arange(len(features))
+    before, after = np.searchsorted(idx, at, "left") - 1, np.searchsorted(idx, at, "right")
+    for col, j in ((2, before), (3, after)):
+        ok = (j >= 0) & (j < len(idx))
+        out[ok, col] = np.minimum(np.abs(beats[idx[np.clip(j, 0, len(idx) - 1)]] - beats)[ok], 4.0)
+    bar = (beats // 4).astype(int)
+    per_bar = np.bincount(bar[is_cym] - bar.min(), minlength=bar.max() - bar.min() + 1)
+    out[:, 4] = per_bar[bar - bar.min()] / 8.0
+    return out
+
+
+def cym_lane_inputs(features: np.ndarray, ticks: np.ndarray, resolution: int, adtof_feats: np.ndarray,
+                    ring: np.ndarray) -> np.ndarray:
+    return np.hstack([model_inputs(features, ticks, resolution, adtof_feats, ring),
+                      cym_context(features, adtof_feats, ticks, resolution, ring)])
+
+
+class CymLaneModel:
+    """Rede pequena: entrada do modelo de bateria + contexto de pratos -> condução (azul) ou ataque (verde)."""
+
+    def __init__(self, params: dict):
+        self.params = _arrays(params)
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> "CymLaneModel | None":
+        path = path or CYM_LANE_PATH
+        if not adtof.available() or not path.is_file():
+            return None
+        params = json.loads(path.read_text(encoding="utf-8"))
+        if params.get("features") != INPUT_NAMES_RING + CYM_CONTEXT_NAMES:
+            return None
+        return cls(params)
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return mlp(self.params, x)

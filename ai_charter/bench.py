@@ -726,6 +726,43 @@ def train_reduce(folders: list[Path]) -> None:
     print(f"modelo salvo em {dr.MODEL_PATH}")
 
 
+def train_cym_lanes(data, adtof_cache: Path, songs_root: Path) -> None:
+    """Treina a cor de cada prato grande (azul = condução, verde = ataque) com as charts oficiais:
+    drum_cym_lanes.json. Precisa de coletas com as medidas de ressonância."""
+    from ai_charter import drum_model as dm
+
+    d = _load_collections(data)
+    if "ring" not in d:
+        raise SystemExit("as coletas não têm as medidas de ressonância (refaça com a versão atual do collect)")
+    songs = d["songs"]
+    cut = np.flatnonzero(songs[1:] != songs[:-1]) + 1
+    starts, ends = np.concatenate([[0], cut]), np.concatenate([cut, [len(songs)]])
+    names = [str(songs[s]) for s in starts]
+    del songs
+    ticks, feats, ring = d["ticks"], d["features"], d["ring"]
+    lanes = d["y"][:, [PIECES.index("condução"), PIECES.index("ataque")]]
+    adtof_feats, have = _adtof_for_songs(names, starts, ends, ticks, adtof_cache, songs_root)
+    xs, ys, tests = [], [], []
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        rows = np.flatnonzero(lanes[s:e].sum(axis=1) == 1)
+        if not have[i] or not len(rows):
+            continue
+        x = dm.cym_lane_inputs(feats[s:e], ticks[s:e], 192, adtof_feats[s:e], ring[s:e])
+        xs.append(x[rows]); ys.append(lanes[s:e][rows]); tests.append(np.full(len(rows), is_test(names[i])))
+    x, y, test = np.vstack(xs), np.vstack(ys).astype(np.float32), np.concatenate(tests)
+    fit = np.flatnonzero(~test)
+    print(f"{len(fit)} golpes de prato grande para treinar, {int(test.sum())} de teste", flush=True)
+    params = dm.train(x, y, fit, hidden=32, epochs=_epochs(len(fit)))
+    pred = dm.mlp(params, x, np.flatnonzero(test)).argmax(axis=1)
+    acc = float((pred == y[test].argmax(axis=1)).mean())
+    print(f"cor certa no teste: {acc:.2f} (sempre a mais comum: {max(y[test].mean(axis=0)):.2f})")
+    out = dm._jsonable(params)
+    out.update(features=dm.INPUT_NAMES_RING + dm.CYM_CONTEXT_NAMES, lanes=list(dm.CYM_LANES),
+               info={"cor_certa_teste": round(acc, 3)})
+    dm.CYM_LANE_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    print(f"modelo salvo em {dm.CYM_LANE_PATH}")
+
+
 def _f1(pred: np.ndarray, true: np.ndarray) -> float:
     tp = float((pred & true).sum())
     return 2 * tp / max(1.0, float(pred.sum() + true.sum()))
@@ -768,6 +805,10 @@ def main(argv: list[str] | None = None) -> None:
     rd.add_argument("--test", action="store_true")
     rd.add_argument("--limit", type=int)
     rd.add_argument("--rules", type=Path)
+    cl = sub.add_parser("train-cym-lanes", help="treina a cor de cada prato grande (ai_charter/drum_cym_lanes.json)")
+    cl.add_argument("data", type=Path, nargs="+")
+    cl.add_argument("--adtof-cache", type=Path, required=True)
+    cl.add_argument("--songs", type=Path, required=True)
     tl = sub.add_parser("train-tom-lanes", help="treina a cor de cada tom (ai_charter/drum_tom_lanes.json)")
     tl.add_argument("data", type=Path, nargs="+")
     tl.add_argument("--adtof-cache", type=Path, required=True)
@@ -792,6 +833,9 @@ def main(argv: list[str] | None = None) -> None:
 
     from ai_charter.config import load_rules
 
+    if args.command == "train-cym-lanes":
+        train_cym_lanes(args.data, args.adtof_cache, args.songs)
+        return
     if args.command == "train-tom-lanes":
         train_tom_lanes(args.data, args.adtof_cache, args.songs)
         return

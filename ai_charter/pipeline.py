@@ -41,7 +41,8 @@ from ai_charter.charting.vocals import VocalTrack, build_aligned_track, build_vo
 from ai_charter.config import Rules, get_genre, load_rules
 from ai_charter.drum_model import MODEL_PATH as BASIC_DRUM_MODEL
 from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
-from ai_charter.drum_model import TOM_LANES, DrumModel, TomLaneModel, tom_lane_inputs
+from ai_charter.drum_model import (CYM_LANES, TOM_LANES, CymLaneModel, DrumModel, TomLaneModel, cym_lane_inputs,
+                                   tom_lane_inputs)
 from ai_charter.export import audio, lead_in
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
@@ -241,9 +242,11 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     if uses_adtof:
         adtof_feats = adtof.at_times(adtof_act, kit.onsets * DRUM_HOP / sr - DRUM_ONSET_LATENCY)
     lane_model = TomLaneModel.load() if uses_adtof else None
+    cym_model = CymLaneModel.load() if uses_adtof else None
     # Medidas de ressonância (altura do tom, sustentação dos pratos), só se algum modelo usa
     ring = (ring_features(y, sr, kit.onsets)
-            if getattr(model, "uses_ring", False) or getattr(lane_model, "uses_ring", False) else None)
+            if getattr(model, "uses_ring", False) or getattr(lane_model, "uses_ring", False)
+            or cym_model is not None else None)
     probs = model.predict_song(kit.features, ticks, res, adtof_feats, ring)
     trust = rules.drum_detection.adtof_kick_trust
     if uses_adtof and trust > 0:   # pedal duplo rápido: o modelo duvida, o ADTOF ouve
@@ -258,6 +261,10 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     lane_probs = (lane_model.predict(tom_lane_inputs(kit.features, ticks, res, adtof_feats,
                                                      ring if lane_model.uses_ring else None))
                   if lane_model is not None else None)
+    # A cor de cada prato grande (azul = condução, verde = ataque): aprendida das charts (CymLaneModel)
+    cym_probs = (cym_model.predict(cym_lane_inputs(kit.features, ticks, res, adtof_feats, ring))
+                 if cym_model is not None else None)
+    big = [MODEL_OUTPUTS.index(p) for p in CYM_LANES]
     seen: dict[tuple[int, str], Candidate] = {}
     hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota
     quantized = dict(zip(hit.tolist(), quantize_runs(ticks[hit], res, triplets)))
@@ -266,6 +273,10 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
         for k, piece in enumerate(MODEL_OUTPUTS):
             if probs[j, k] < model.thresholds[k]:
                 continue
+            if cym_probs is not None and k in big:   # um prato grande só, na cor que o modelo de pratos escolhe
+                if k != next(b for b in big if probs[j, b] >= model.thresholds[b]):
+                    continue
+                piece = CYM_LANES[int(cym_probs[j].argmax())]
             if piece == DRUM_TOM:
                 piece = (TOM_LANES[int(lane_probs[j].argmax())] if lane_probs is not None
                          else which_tom(kit, j, rules.drum_detection.floor_tom_max_hz))
