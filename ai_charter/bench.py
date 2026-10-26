@@ -448,7 +448,8 @@ def grid_score(ours, official, start: float, end: float, window: float = 0.07,
     inside = lambda x: x[(x >= start) & (x <= end)]
     ratio = float(np.median(np.diff(inside(b))) / np.median(np.diff(inside(a)))) if len(inside(a)) > 2 else 0.0
     bars = b[::4] if official_bars is None else np.asarray(official_bars)
-    return {"batidas": f1(a, b), "compassos": f1(a[::4], bars), "andamento": ratio}
+    ours_bars = ours.bar_times() if hasattr(ours, "bar_times") else a[::4]
+    return {"batidas": f1(a, b), "compassos": f1(ours_bars, bars), "andamento": ratio}
 
 
 def game_metrics(hits: set[tuple[int, str]], res: int) -> dict[str, float]:

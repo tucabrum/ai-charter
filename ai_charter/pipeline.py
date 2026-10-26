@@ -31,6 +31,7 @@ from ai_charter.charting.common import (
 )
 from ai_charter.charting.chords import label_chords
 from ai_charter.charting.drum_reduce import bpm_from_tempo
+from ai_charter.charting.drum_repeats import consolidate_repeats
 from ai_charter.charting.drums import build_drum_track
 from ai_charter.charting.frets import build_fret_track
 from ai_charter.charting.guitar_select import GuitarSource, merge_guitars
@@ -271,7 +272,10 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
             key = (tick, piece)
             if key not in seen or probs[j, k] > seen[key].strength:
                 seen[key] = Candidate(tick, float(probs[j, k]), piece=piece)
-    return sorted(seen.values(), key=lambda c: c.tick)
+    cands = sorted(seen.values(), key=lambda c: c.tick)
+    if rules.drum_detection.repeat_similarity > 0:   # trechos que se repetem saem iguais
+        cands = consolidate_repeats(cands, tempo.bar_starts() * res, res, rules.drum_detection.repeat_similarity)
+    return cands
 
 
 def which_tom(kit, j: int, floor_tom_max_hz: float) -> str:

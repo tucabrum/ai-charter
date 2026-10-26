@@ -69,8 +69,9 @@ def write_chart(path: Path, info: SongInfo, tempo: TempoMap, tracks: dict[str, T
         lines.append(f"  {key} = {_quote(filename)}")
     lines.append("}")
 
-    lines += ["[SyncTrack]", "{", "  0 = TS 4"]
-    lines += [f"  {tick} = B {bpm}" for tick, bpm in tempo.bpm_events()]
+    sync = [(beat * tempo.resolution, 0, f"TS {n}") for beat, n in tempo.meters]
+    sync += [(tick, 1, f"B {bpm}") for tick, bpm in tempo.bpm_events()]
+    lines += ["[SyncTrack]", "{"] + [f"  {tick} = {event}" for tick, _, event in sorted(sync)]
     lines.append("}")
 
     lines += ["[Events]", "{"]

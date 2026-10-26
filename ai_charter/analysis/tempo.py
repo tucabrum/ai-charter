@@ -8,7 +8,7 @@ A batida número i fica sempre no tick i * resolution.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import librosa
@@ -26,6 +26,19 @@ CONSTANT_TEMPO_TOLERANCE = 0.015
 class TempoMap:
     beat_times: np.ndarray  # instante (s) de cada batida; beat_times[0] é sempre 0.0
     resolution: int = 192
+    # Fórmula de compasso: (batida onde começa, batidas por compasso); por padrão 4/4 a música toda
+    meters: list = field(default_factory=lambda: [(0, 4)])
+
+    def bar_starts(self) -> np.ndarray:
+        """Índices das batidas em que cada compasso começa, seguindo as fórmulas de compasso."""
+        starts, changes = [], sorted(self.meters)
+        for k, (beat, n) in enumerate(changes):
+            end = changes[k + 1][0] if k + 1 < len(changes) else len(self.beat_times)
+            starts += list(range(beat, end, max(1, n)))
+        return np.array(starts, dtype=int)
+
+    def bar_times(self) -> np.ndarray:
+        return np.asarray(self.beat_times)[self.bar_starts()]
 
     @property
     def beat_ticks(self) -> np.ndarray:
@@ -119,9 +132,28 @@ def _regularize_beats(beats: np.ndarray) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
+def _meter(beats: np.ndarray, downbeats: np.ndarray, min_share: float = 0.6) -> int:
+    """Quantas batidas tem o compasso da música: a distância mais comum entre inícios de compasso
+    seguidos (3 numa valsa, 4 no rock). Sem maioria clara, ou 2 (quase sempre um 4/4 visto pela
+    metade), fica 4."""
+    if len(downbeats) < 4 or len(beats) < 6:
+        return 4
+    period = float(np.median(np.diff(beats[1:])))
+    idx = np.clip(np.searchsorted(beats, downbeats), 1, len(beats) - 1)
+    nearest = np.where(downbeats - beats[idx - 1] < beats[idx] - downbeats, idx - 1, idx)
+    close = nearest[np.abs(beats[nearest] - downbeats) < period / 4]
+    gaps = np.diff(np.unique(close))
+    gaps = gaps[(gaps >= 2) & (gaps <= 7)]
+    if not len(gaps):
+        return 4
+    counts = np.bincount(gaps, minlength=8)
+    best = int(counts.argmax())
+    return best if best in (3, 5, 6, 7) and counts[best] >= min_share * len(gaps) else 4
+
+
 def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray,
-                       first_onset: float | None = None) -> np.ndarray:
-    """Faz os compassos (batidas 0, 4, 8...) começarem nos inícios de compasso detectados.
+                       first_onset: float | None = None, meter: int = 4) -> np.ndarray:
+    """Faz os compassos (batidas 0, meter, 2*meter...) começarem nos inícios de compasso detectados.
 
     `beats` já começa em 0 s (_anchor_at_zero). A fase que vale é a mais comum entre todos os inícios
     de compasso detectados. Para chegar nela, o trecho antes do primeiro ataque (`first_onset`) é
@@ -137,18 +169,18 @@ def _bars_on_downbeats(beats: np.ndarray, downbeats: np.ndarray,
     close = np.abs(beats[nearest] - downbeats) < period / 4
     if not close.any():
         return beats
-    phase = int(np.bincount(nearest[close] % 4, minlength=4).argmax())
+    phase = int(np.bincount(nearest[close] % meter, minlength=meter).argmax())
     if phase == 0:
         return beats
     # Última batida antes do primeiro ataque (ou junto dele): dali para trás, só silêncio.
     last = int(np.searchsorted(beats, first_onset + period / 4)) - 1 if first_onset is not None else 0
     if 0 < last < len(beats) - 1:
-        counts = [n for n in (last - phase, last + 4 - phase) if n >= 1]
+        counts = [n for n in (last - phase, last + meter - phase) if n >= 1]
         n = min(counts, key=lambda n: abs(np.log(beats[last] / n / period)))
         return np.concatenate([np.linspace(0.0, beats[last], n + 1), beats[last + 1:]])
     if len(beats) > phase + 1 and beats[phase + 1] - beats[0] > 0:
         return np.delete(beats, np.arange(1, phase + 1))
-    extra = 4 - phase
+    extra = meter - phase
     fillers = np.linspace(beats[0], beats[1], extra + 2)[1:-1]
     return np.insert(beats, 1, fillers)
 
@@ -225,4 +257,5 @@ def estimate_tempo_map(y: np.ndarray, sr: int, resolution: int = 192,
     smoothed = _align_phase(smoothed, onsets, float(period))
     anchored = _anchor_at_zero(smoothed, float(period), duration)
     first_onset = float(onsets[0]) if len(onsets) else None
-    return TempoMap(_bars_on_downbeats(anchored, downbeats, first_onset), resolution)
+    meter = _meter(anchored, downbeats)
+    return TempoMap(_bars_on_downbeats(anchored, downbeats, first_onset, meter), resolution, [(0, meter)])

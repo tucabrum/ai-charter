@@ -269,3 +269,21 @@ def test_ring_features_measure_tom_pitch():
     r = ring_features(y, SR, np.array([int(0.2 * SR / HOP), int(1.0 * SR / HOP)]))
     freq = 55 * 2 ** (r[:, RING_NAMES.index("tom_freq")] * 3)
     assert freq == pytest.approx([100, 200], rel=0.05)
+
+
+def test_repeated_bars_come_out_the_same():
+    from ai_charter.charting.common import Candidate
+    from ai_charter.charting.drum_repeats import consolidate_repeats
+
+    res = 192
+    bar = [(0, KICK), (2 * 48, SNARE), (0, HIHAT), (48, HIHAT), (2 * 48, HIHAT), (3 * 48, HIHAT)]
+    cands = []
+    for b in range(4):
+        for tick, piece in bar:
+            if not (b == 2 and tick == 48 and piece == HIHAT):        # um chimbal faltando na 3ª vez
+                cands.append(Candidate(b * 4 * res + tick, 0.9, piece=piece))
+    cands.append(Candidate(1 * 4 * res + 3 * 48, 0.5, piece=SNARE))  # uma caixa a mais na 2ª
+    out = consolidate_repeats(cands, np.arange(5) * 4 * res, res, similarity=0.85)
+    bars = [sorted((c.tick - b * 4 * res, c.piece) for c in out if b * 4 * res <= c.tick < (b + 1) * 4 * res)
+            for b in range(4)]
+    assert all(x == sorted(bar) for x in bars)

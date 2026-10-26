@@ -321,3 +321,34 @@ def test_fast_runs_get_a_finer_grid():
     assert quantize_runs([0, 33, 63, 97], res, True) == [0, 32, 64, 96]
     # golpes espaçados ficam na grade comum
     assert quantize_runs([1, 47, 97], res, True) == [0, 48, 96]
+
+
+def test_waltz_downbeats_give_three_beat_bars():
+    import numpy as np
+
+    from ai_charter.analysis.tempo import TempoMap, _anchor_at_zero, _bars_on_downbeats, _meter
+
+    period = 0.5
+    beats = _anchor_at_zero(np.arange(0.3, 30, period), period, 30)
+    downbeats = np.arange(0.3 + period, 30, 3 * period)          # valsa, compasso começa na 2ª batida
+    meter = _meter(beats, downbeats)
+    assert meter == 3
+    fixed = _bars_on_downbeats(beats, downbeats, None, meter)
+    tempo = TempoMap(fixed, 192, [(0, meter)])
+    bars = tempo.bar_times()[1:]
+    assert all(np.min(np.abs(downbeats - b)) < 1e-9 for b in bars[(bars > 2) & (bars < 28)])
+    assert _meter(beats, np.arange(0.3, 30, 4 * period)) == 4
+
+
+def test_writers_emit_the_time_signature(tmp_path):
+    import mido
+    import numpy as np
+
+    from ai_charter.analysis.tempo import TempoMap
+    from ai_charter.export.midi_writer import write_midi
+
+    tempo = TempoMap(np.arange(0, 40) * 0.5, 192, [(0, 3)])
+    path = tmp_path / "notes.mid"
+    write_midi(path, "Valsa", tempo, {}, [], None, 30 * 192)
+    ts = [m for m in mido.MidiFile(path).tracks[0] if m.type == "time_signature"]
+    assert [(m.numerator, m.denominator) for m in ts] == [(3, 4)]

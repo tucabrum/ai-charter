@@ -76,6 +76,7 @@ class DrumDetection:
     ride_sustain_ratio: float
     crash_sustain_ratio: float
     adtof_kick_trust: float = 0.0
+    repeat_similarity: float = 0.0
 
 
 @dataclass

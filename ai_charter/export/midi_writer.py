@@ -110,7 +110,8 @@ def write_midi(path: Path, song_name: str, tempo: TempoMap, tracks: dict[str, Tr
     midi = mido.MidiFile(type=1, ticks_per_beat=res)
 
     sync = _Track(song_name)
-    sync.meta(0, "time_signature", numerator=4, denominator=4)
+    for beat, beats_per_bar in sorted(tempo.meters):   # fórmula de compasso (4/4, 3/4...)
+        sync.meta(beat * tempo.resolution, "time_signature", numerator=beats_per_bar, denominator=4)
     last = None
     for i, period in enumerate(tempo.beat_times[1:] - tempo.beat_times[:-1]):
         microseconds = int(round(period * 1_000_000))  # duração de uma batida
