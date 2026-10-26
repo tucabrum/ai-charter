@@ -310,6 +310,21 @@ def test_skipped_and_doubled_beats_are_regularized():
     assert np.allclose(_regularize_beats(beats), [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
 
 
+def test_double_time_stretch_does_not_add_beats():
+    """Quicksand, 20-30 s: o detector dobra o andamento por um trecho (uma batida a cada colcheia, a
+    meio período, com a imprecisão de 20 ms do Beat This!). As batidas a mais saem: senão a grade
+    ganhava batidas inventadas e a partitura escorregava."""
+    import numpy as np
+
+    from ai_charter.analysis.tempo import _regularize_beats
+
+    period = 0.32
+    true_beats = np.arange(0, 48) * period
+    extra = true_beats[20:28] + 0.17   # no trecho dobrado, uma batida a mais logo depois da metade
+    out = _regularize_beats(np.sort(np.concatenate([true_beats, extra])))
+    assert np.allclose(out, true_beats)
+
+
 def test_fast_runs_get_a_finer_grid():
     from ai_charter.charting.common import quantize_runs
 

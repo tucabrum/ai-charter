@@ -20,6 +20,8 @@ from ai_charter.analysis.pitched import ONSET_LATENCY
 # Se as batidas detectadas se desviam menos que isso (segundos) de uma reta,
 # consideramos que a música tem tempo constante (gravada com metrônomo).
 CONSTANT_TEMPO_TOLERANCE = 0.015
+# Intervalo mínimo entre duas batidas, em períodos: abaixo disso a segunda é duplicada (_regularize_beats).
+MIN_BEAT_GAP = 0.7
 
 
 @dataclass
@@ -116,14 +118,20 @@ def _align_phase(beats: np.ndarray, onsets: np.ndarray, period: float) -> np.nda
 def _regularize_beats(beats: np.ndarray) -> np.ndarray:
     """Preenche batidas que o detector pulou (numa pausa, num corte) e tira as duplicadas, para que a
     batida i seja mesmo a i-ésima: o ajuste do andamento conta as batidas pela posição na lista, e uma
-    batida faltando faria a grade escorregar uma batida dali em diante."""
+    batida faltando faria a grade escorregar uma batida dali em diante.
+
+    Duplicada é a batida a menos de MIN_BEAT_GAP do período da anterior. Num trecho em que o detector
+    dobra o andamento (uma batida a cada colcheia), as de mais ficam a meio período, bem no limite de
+    0,5: muitas passavam, e a grade ganhava batidas inventadas (Quicksand: 8 a mais entre 20 e 30 s,
+    e a partitura escorregava 8 batidas). O período do Beat This! vem em quadros de 20 ms (um
+    intervalo normal varia uns 6%), então 0,7 não corta batida certa."""
     if len(beats) < 4:
         return beats
     period = float(np.median(np.diff(beats)))
     out = [beats[0]]
     for b in beats[1:]:
         gap = b - out[-1]
-        if gap < 0.5 * period:      # batida duplicada
+        if gap < MIN_BEAT_GAP * period:      # batida duplicada (ou de um trecho com o andamento dobrado)
             continue
         missing = int(round(gap / period)) - 1
         if missing > 0:
