@@ -367,3 +367,18 @@ def test_writers_emit_the_time_signature(tmp_path):
     write_midi(path, "Valsa", tempo, {}, [], None, 30 * 192)
     ts = [m for m in mido.MidiFile(path).tracks[0] if m.type == "time_signature"]
     assert [(m.numerator, m.denominator) for m in ts] == [(3, 4)]
+
+
+def test_new_default_rule_does_not_break_an_older_program(monkeypatch):
+    """Um programa aberto (o app) relê o default_rules.toml a cada geração: uma regra nova lá não
+    pode virar erro antes de o programa ser reiniciado. Nas regras do usuário, continua sendo erro."""
+    import pytest
+
+    from ai_charter import config
+    from ai_charter.config import DrumDetection, _build
+
+    monkeypatch.setitem(config._DEFAULTS, "drum_detection", {"regra_nova": 1})
+    base = {name: 0 for name in DrumDetection.__dataclass_fields__}
+    _build(DrumDetection, {**base, "regra_nova": 1}, "drum_detection")
+    with pytest.raises(ValueError, match="erro_do_usuario"):
+        _build(DrumDetection, {**base, "erro_do_usuario": 1}, "drum_detection")

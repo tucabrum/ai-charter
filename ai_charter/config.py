@@ -160,9 +160,20 @@ def _merge(base: dict, override: dict) -> dict:
     return result
 
 
+_DEFAULTS: dict[str, Any] = {}   # as regras padrão lidas por último (para _build tolerar as chaves delas)
+
+
 def _build(cls, data: dict[str, Any], where: str):
-    """Cria um dataclass a partir de um dicionário, avisando sobre chaves erradas."""
+    """Cria um dataclass a partir de um dicionário, avisando sobre chaves erradas.
+
+    Chave desconhecida que vem do arquivo de regras PADRÃO é ignorada: um programa já aberto (o
+    app) relê o default_rules.toml a cada geração, e uma regra nova não pode derrubá-lo antes de ele
+    ser reiniciado. Nas regras do usuário e dos gêneros, chave desconhecida continua sendo erro."""
     names = {f.name for f in fields(cls)}
+    defaults: Any = _DEFAULTS
+    for part in where.split("."):
+        defaults = defaults.get(part, {}) if isinstance(defaults, dict) else {}
+    data = {k: v for k, v in data.items() if k in names or k not in defaults}
     unknown = set(data) - names
     if unknown:
         raise ValueError(f"Chave(s) desconhecida(s) em [{where}]: {', '.join(sorted(unknown))}")
@@ -219,6 +230,8 @@ def load_rules(path: str | Path | None = None, genre: str | None = None) -> Rule
     """Lê as regras padrão, aplica as do gênero (se houver) e, por fim, as do arquivo `path`."""
     default_text = resources.files("ai_charter").joinpath("default_rules.toml").read_text("utf-8")
     data = tomllib.loads(default_text)
+    _DEFAULTS.clear()
+    _DEFAULTS.update(tomllib.loads(default_text))
     if genre:
         data = _merge(data, get_genre(genre).rules)
     if path is not None:
