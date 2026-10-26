@@ -41,7 +41,8 @@ BEFORE_AI_NAME = "notes.before-ai.mid"
 FRET_TRACKS = {"PART GUITAR": "guitar", "T1 GEMS": "guitar", "PART BASS": "bass", "PART RHYTHM": "rhythm", "PART KEYS": "keys"}
 LOCKABLE_TRACKS = {**FRET_TRACKS, "PART DRUMS": "drums"}   # trilhas que o editor pode travar
 BASE = {"expert": 96, "hard": 84, "medium": 72, "easy": 60}
-# Notas de cada dificuldade: 5 cores (base..base+4), HOPO forçado (+5) e strum forçado (+6)
+# Notas de cada dificuldade: aberta (base-1, com [ENHANCED_OPENS]), 5 cores (base..base+4),
+# HOPO forçado (+5) e strum forçado (+6)
 DIFF_SPAN = 7
 TAP, STAR_POWER = 104, 116
 DRUM_LANES = ["bumbo", "vermelho", "amarelo", "azul", "verde"]
@@ -73,7 +74,7 @@ def _lock_key(pitch: int) -> str | None:
     if pitch in SHARED:
         return "shared"
     for diff, base in BASE.items():
-        if base <= pitch < base + DIFF_SPAN:
+        if base - 1 <= pitch < base + DIFF_SPAN:
             return diff
     return None
 
@@ -182,7 +183,7 @@ def measures(midi: mido.MidiFile) -> list[tuple[int, int]]:
 def show(folder: Path, instrument: str = "guitar", difficulty: str = "expert") -> str:
     """A chart em texto, um compasso por linha, com os compassos travados marcados.
 
-    Posição em semicolcheias desde o começo do compasso; cores G R Y B O; ~N = sustain de N
+    Posição em semicolcheias desde o começo do compasso; cores G R Y B O (P = aberta); ~N = sustain de N
     semicolcheias; h/s = HOPO/strum forçado; t = tap; * = Star Power; [trava] = compasso travado."""
     midi = mido.MidiFile(folder / CHART_NAME)
     track = next((t for t in midi.tracks if FRET_TRACKS.get(t.name) == instrument), None)
@@ -194,7 +195,7 @@ def show(folder: Path, instrument: str = "guitar", difficulty: str = "expert") -
     in_ = lambda pitch, tick: any(n.start <= tick < n.end for n in notes if n.pitch == pitch)   # noqa: E731
     chords: dict[int, list[Note]] = {}
     for n in notes:
-        if base <= n.pitch < base + 5:
+        if base - 1 <= n.pitch < base + 5:
             chords.setdefault(n.start, []).append(n)
     lines = [f"{instrument} {difficulty} · {midi.ticks_per_beat} ticks por batida · posições em semicolcheias"]
     for number, (a, b) in enumerate(measures(midi), start=1):
@@ -202,7 +203,7 @@ def show(folder: Path, instrument: str = "guitar", difficulty: str = "expert") -
         items = []
         for tick in sorted(t for t in chords if a <= t < b):
             gems = sorted(chords[tick], key=lambda n: n.pitch)
-            text = f"{(tick - a) / step:g}:" + "".join(LANES[n.pitch - base] for n in gems)
+            text = f"{(tick - a) / step:g}:" + "".join(LANES[n.pitch - base] if n.pitch >= base else "P" for n in gems)
             longest = max(n.end - n.start for n in gems)
             if longest > midi.ticks_per_beat / 3:
                 text += f"~{longest / step:g}"

@@ -115,3 +115,12 @@ def test_drum_locks_protect_notes_and_tom_markers():
             got.add((open_.pop(msg.note), msg.note))
     assert got == {(BAR, 98), (BAR, 110), (2 * BAR, 96)}     # travado volta; fora da trava fica a revisão
     assert undone == 3
+
+
+def test_lock_protects_open_notes():
+    open_expert = GREEN - 1                              # nota aberta do Expert (com [ENHANCED_OPENS])
+    original = [(BAR, 48, open_expert)]
+    revised = [(BAR, 48, GREEN)]                         # a "IA" trocou a aberta por verde
+    merged, undone = protect(make_midi(original), make_midi(revised), {"guitar": {"expert": [(BAR, 2 * BAR)]}})
+    assert notes_of(merged) == {(BAR, 48, open_expert)}
+    assert undone == 2
