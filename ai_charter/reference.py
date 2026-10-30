@@ -813,6 +813,16 @@ def _nearest(events: list, ticks: np.ndarray, tick: int, tolerance: float):
     return events[best] if abs(ticks[best] - tick) <= tolerance else None
 
 
+def _score_bars(span: tuple | None, events: list, bar: int) -> tuple[int, int]:
+    """O primeiro e o último compasso (da gravação) que a partitura cobre. Vale a partitura INTEIRA
+    (todas as pistas), não só as notas deste instrumento: no "seguir", a guitarra que só entra no
+    compasso 15 fica sem notas antes dele, em vez de herdar o que o transcritor ouviu no stem (o
+    vazamento do baixo e da bateria)."""
+    if span is not None:
+        return int(span[0]) // bar, int(max(span[0], span[1] - 1)) // bar
+    return events[0].tick // bar, events[-1].tick // bar
+
+
 def _by_bar(items: list, bar: int) -> dict[int, list]:
     out: dict[int, list] = {}
     for item in items:
@@ -842,6 +852,7 @@ class Guide:
     cfg: object                       # PitchedDetection do instrumento
     fidelity: str = "corrigir"
     sections: list = field(default_factory=list)   # [(tick inicial, tick final, pista)] escolhidos à mão
+    span: tuple | None = None   # (tick inicial, tick final) da partitura inteira na gravação (todas as pistas)
     stats: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -987,7 +998,7 @@ class Guide:
         for c, event in zip(cands, matches):
             matched_in[c.tick // bar] = matched_in.get(c.tick // bar, 0) + (event is not None)
         strength = float(np.median([c.strength for c in cands])) if cands else 1.0
-        first, last = events[0].tick // bar, events[-1].tick // bar
+        first, last = _score_bars(self.span, events, bar)
         use_score = {}
         for b in set(detected) | set(from_score):
             found, score = detected.get(b, []), from_score.get(b, [])
@@ -1053,6 +1064,7 @@ class DrumGuide:
     resolution: int
     fidelity: str = "corrigir"
     rules: object = None              # Rules (para remontar a pista)
+    span: tuple | None = None   # (tick inicial, tick final) da partitura inteira na gravação (todas as pistas)
     stats: dict = field(default_factory=dict)
 
     def _nearest(self, tick: int, ticks: np.ndarray) -> DrumEvent | None:
@@ -1137,7 +1149,7 @@ class DrumGuide:
         for note in expert:
             b = note.tick // bar
             matched_in[b] = matched_in.get(b, 0) + (self._nearest(note.tick, ticks) is not None)
-        first, last = self.events[0].tick // bar, self.events[-1].tick // bar
+        first, last = _score_bars(self.span, self.events, bar)
         cands, replaced = [], 0
         for b in sorted(set(detected) | set(from_score)):
             found, score = detected.get(b, []), from_score.get(b, [])
@@ -1204,6 +1216,10 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
         + (f", transposta {alignment.transpose:+d} semitons" if alignment.transpose else "")
         + (f", {alignment.factor:g} batida(s) da gravação por batida da partitura" if alignment.factor != 1 else "")
         + ")")
+    # O trecho da gravação que a partitura cobre (todas as pistas): é o mesmo para todos os instrumentos.
+    start = alignment.to_audio_beat(max(0.0, float(alignment.ref_beats[0])))
+    end = alignment.to_audio_beat(min(score.length_beats, float(alignment.ref_beats[-1]) + 1))
+    span = (int(round(start * tempo.resolution)), int(round(end * tempo.resolution))) if start is not None and end is not None else None
     guides = {}
     for instrument in PITCHED:
         tracks = [by_index[i] for i, inst in mapping.items() if inst == instrument]
@@ -1219,11 +1235,11 @@ def load_guides(path: Path, mapping: dict[int, str] | None, y: np.ndarray, sr: i
                         b = b if b is not None else a + (end - start) * alignment.factor
                         chosen.append((a * tempo.resolution, b * tempo.resolution, short_name(by_index[index])))
             guides[instrument] = Guide(instrument, events, tempo.resolution, rules.detection[instrument],
-                                       levels[instrument], chosen)
+                                       levels[instrument], chosen, span)
     drum_tracks = [by_index[i] for i, inst in mapping.items() if inst == "drums"]
     if drum_tracks:
         guides["drums"] = DrumGuide(drum_events_in_ticks(drum_tracks, alignment, tempo.resolution),
-                                    tempo.resolution, levels["drums"], rules)
+                                    tempo.resolution, levels["drums"], rules, span)
     others = sorted({inst for inst in mapping.values() if inst not in GUIDED})
     if others:
         log(f"    {', '.join(others)}: a referência ainda não guia esse(s) instrumento(s)")

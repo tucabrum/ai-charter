@@ -578,6 +578,19 @@ def test_drum_guide_fixes_pieces_but_keeps_rhythm_kick_and_hands():
     assert "80% das batidas; 3 corrigidas no Expert" in lines[0]
 
 
+def test_following_the_score_keeps_an_instrument_silent_until_it_enters():
+    """Keep You Around: baixo e bateria entram no compasso 2, a guitarra só no 15. Seguindo a
+    partitura, os compassos antes da guitarra entrar ficam sem notas de guitarra, mesmo que o
+    transcritor tenha ouvido algo no stem (vazamento): a partitura vale no trecho todo que cobre."""
+    res, bar = 192, 4 * 192
+    events = eighths(4, 2, 45, res)   # a guitarra da partitura só toca nos compassos 5 e 6
+    detected = [Candidate(t, 1, pitch=40) for t in range(0, 6 * bar, 96)]   # o stem "toca" desde o 1
+    guide = make_guide(events, res, "seguir")
+    guide.span = (0, 6 * bar)   # a partitura (todas as pistas) cobre os compassos 1 a 6
+    out = guide(detected, log=lambda *_: None)
+    assert out and min(c.tick for c in out) == 4 * bar and all(round(c.pitch) == 45 for c in out)
+
+
 def test_drum_guide_following_the_score_brings_back_missed_hits():
     """A transcrição só ouviu bumbo e caixa; a partitura tem condução em colcheias por cima. Seguindo a
     partitura, a condução volta (e o bumbo junto dela); fora do trecho da partitura, fica a transcrição."""
