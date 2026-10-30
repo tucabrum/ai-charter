@@ -428,6 +428,14 @@ dificuldades mexidas, tap e Star Power); bateria, vocais, seções e mapa de tem
 No MIDI, tap, Star Power e prato x tom da bateria (marcadores 110-112) valem para todas as
 dificuldades do instrumento ao mesmo tempo.
 
+### Onde revisar a bateria primeiro
+
+Ao gerar (ou refazer) a bateria, o ai-charter grava `notes.confidence.json` com os 20% de compassos
+em que o modelo ficou mais em dúvida (alguma peça com chance perto do limiar). No editor, com a
+bateria aberta, eles aparecem em vermelho (⚠ no piano roll), e **⚠ Dúvida** (tecla **D**) pula
+para o próximo; um compasso que você editou deixa de contar. Em 61 músicas do Rock Band, esses 20%
+de compassos concentram ~38% dos erros da bateria.
+
 ### Pedir à IA para revisar o resto da chart
 
 **🤖 Pedir à IA** abre uma caixa de texto para dizer o que fazer no resto da chart (ex.: "faça os

@@ -44,6 +44,8 @@ from ai_charter.drum_model import OUTPUTS as MODEL_OUTPUTS
 from ai_charter.drum_model import (CYM_LANES, TOM_LANES, CymLaneModel, DrumModel, TomLaneModel, cym_lane_inputs,
                                    tom_lane_inputs)
 from ai_charter.export import audio, lead_in
+from ai_charter.export.confidence import NAME as CONFIDENCE_NAME
+from ai_charter.export.confidence import write_confidence
 from ai_charter.export.chart_writer import SongInfo, write_chart
 from ai_charter.export.midi_writer import write_midi
 from ai_charter.export.song_ini import write_song_ini
@@ -226,7 +228,7 @@ def continues_pattern(tick: int, ticks: set[int], resolution: int) -> bool:
 
 
 def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules, model,
-                          adtof_act: np.ndarray | None = None) -> list[Candidate]:
+                          adtof_act: np.ndarray | None = None, doubt: dict | None = None) -> list[Candidate]:
     """Bateria pelo modelo treinado com charts oficiais: retrato acústico de cada ataque + lugar na
     levada -> probabilidade de cada peça; entra o que passa do limiar daquela peça. Para "tom", qual
     tom é vem dos sons do kit da música (o de maior presença no ataque), pela altura de cada um."""
@@ -268,6 +270,11 @@ def model_drum_candidates(y: np.ndarray, sr: int, tempo: TempoMap, rules: Rules,
     seen: dict[tuple[int, str], Candidate] = {}
     hit = np.flatnonzero((probs >= model.thresholds).any(axis=1))   # ataques que viram nota
     quantized = dict(zip(hit.tolist(), quantize_runs(ticks[hit], res, triplets)))
+    if doubt is not None:   # dúvida de cada golpe: alguma peça com chance perto do limiar de decisão
+        near = np.exp(-(((probs - model.thresholds) / 0.1) ** 2)).max(axis=1)
+        for j in np.flatnonzero(near >= 0.05):
+            tick = quantized.get(int(j), quantize_tick(ticks[j], res, triplets))
+            doubt[tick] = max(doubt.get(tick, 0.0), float(near[j]))
     for j in hit:
         tick = quantized[int(j)]
         for k, piece in enumerate(MODEL_OUTPUTS):
@@ -315,9 +322,12 @@ def chart_drums(stem: Path, tempo: TempoMap, rules: Rules, sp_windows, mix: Path
         if adtof_act is None:
             model = DrumModel.load(BASIC_DRUM_MODEL)
     if model is not None:
-        return build_drum_track(model_drum_candidates(y, sr, tempo, rules, model, adtof_act), rules.drums,
-                                tempo.resolution, sp_windows, rules.general.drum_fill_every_measures,
-                                bpm_at=bpm_from_tempo(tempo))
+        doubt: dict[int, float] = {}
+        track = build_drum_track(model_drum_candidates(y, sr, tempo, rules, model, adtof_act, doubt), rules.drums,
+                                 tempo.resolution, sp_windows, rules.general.drum_fill_every_measures,
+                                 bpm_at=bpm_from_tempo(tempo))
+        track.doubt = doubt
+        return track
     hits = detect_drum_hits(y, sr, rules.drum_detection)
     res, triplets = tempo.resolution, rules.general.allow_triplets
     strong: dict[tuple[int, str], Candidate] = {}
@@ -492,6 +502,9 @@ def run(opts: Options, log=print) -> Result:
             write_chart(song_dir / "notes.chart", info, tempo, tracks, sections)
             lead_in.shift_file(song_dir / "notes.chart", lead.ticks)
         write_song_ini(song_dir / "song.ini", info, tracks, vocals)
+        if "drums" in tracks:   # compassos de bateria em que o modelo ficou em dúvida, para o editor
+            write_confidence(song_dir / CONFIDENCE_NAME, tracks["drums"].doubt,
+                             tempo.bar_starts() * tempo.resolution, lead.ticks)
         if swapped and opts.separator != "none":   # o Acrescentar precisa saber que os áudios estão trocados
             stem_sources.record(song_dir, swapped)
         audio.extract_cover(opts.input, song_dir / "album.png")

@@ -268,6 +268,9 @@ def redo_drums(folder: Path, rules_path: Path | None = None) -> tuple[dict[str, 
     mix = song_mix(folder) if adtof.available() else None
     adtof_act = adtof.activations(mix, MIX_SR) if mix is not None else None
     track = chart_drums(stem, tempo, rules, sp_windows, adtof_act=adtof_act)
+    from ai_charter.export.confidence import NAME as CONFIDENCE_NAME, write_confidence
+
+    write_confidence(folder / CONFIDENCE_NAME, track.doubt, tempo.bar_starts() * tempo.resolution)
     new = _fret_track("PART DRUMS", track, midi.ticks_per_beat, drums=True).build()
     if old is not None:
         midi.tracks[midi.tracks.index(old)] = new

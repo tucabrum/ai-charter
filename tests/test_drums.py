@@ -287,3 +287,21 @@ def test_repeated_bars_come_out_the_same():
     bars = [sorted((c.tick - b * 4 * res, c.piece) for c in out if b * 4 * res <= c.tick < (b + 1) * 4 * res)
             for b in range(4)]
     assert all(x == sorted(bar) for x in bars)
+
+
+def test_doubtful_bars_are_the_ones_with_most_doubt(tmp_path):
+    import json
+
+    from ai_charter.export.confidence import doubtful_bars, write_confidence
+
+    bars = np.arange(11) * 768
+    doubt = {b * 768 + 96: 0.2 for b in range(10)}
+    doubt[3 * 768 + 48] = 0.9
+    doubt[7 * 768 + 48] = 0.6
+    top = doubtful_bars(doubt, bars, share=0.2)
+    assert [b["inicio"] for b in top] == [3 * 768, 7 * 768] and top[0]["duvida"] == 1.0
+    path = tmp_path / "notes.confidence.json"
+    write_confidence(path, doubt, bars, shift=1536)
+    assert json.loads(path.read_text(encoding="utf-8"))["drums"][0]["inicio"] == 3 * 768 + 1536
+    write_confidence(path, {}, bars)
+    assert not path.exists()

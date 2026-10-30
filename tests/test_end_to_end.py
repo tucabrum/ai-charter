@@ -23,9 +23,20 @@ def song(tmp_path_factory):
     for name in ("guitar", "bass", "drums"):
         shutil.move(paths[name], stems / f"{name}.wav")
     out = folder / "out"
-    result = run(Options(input=paths["mix"], output_dir=out, separator="folder", stems_dir=stems,
-                         title="Synth", artist="Test", make_zip=True, output_format="chart", lead_in=0),
-                 log=lambda *_: None)
+    # A bateria sintética não soa como um kit de verdade: confere as regras do transcritor, não o
+    # modelo (como o conftest faz nos outros testes; esta fixture é por módulo e roda fora dele).
+    import ai_charter.pipeline as pipeline
+
+    class _NoModel:
+        @staticmethod
+        def load(*_args, **_kwargs):
+            return None
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pipeline, "DrumModel", _NoModel)
+        result = run(Options(input=paths["mix"], output_dir=out, separator="folder", stems_dir=stems,
+                             title="Synth", artist="Test", make_zip=True, output_format="chart", lead_in=0),
+                     log=lambda *_: None)
     return result
 
 

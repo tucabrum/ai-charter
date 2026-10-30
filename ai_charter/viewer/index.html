@@ -108,6 +108,7 @@
     <button id="eBpm" title="Muda o BPM a partir do cursor; as notas seguintes andam junto com a grade (B)">BPM</button>
     <button id="eSig" title="Muda a fórmula de compasso a partir do compasso do cursor">Compasso</button>
     <button id="eSec" title="Põe, renomeia ou apaga uma seção no cursor (E)">Seção</button></div>
+  <button id="eDoubt" title="Próximo compasso de bateria em que o modelo ficou em dúvida (D)">⚠ Dúvida</button>
   <button id="eUndo" title="Ctrl+Z">↶ Desfazer</button>
   <button id="eRedo" title="Ctrl+Y">↷ Refazer</button>
   <button class="primary" id="eSave" title="Ctrl+S">Salvar</button>
@@ -799,6 +800,10 @@ async function loadSong(fileMap, served = false) {
     catch { alert("O notes.locks.json está corrompido; os compassos travados dele foram ignorados."); }
     startEditTracking(chart, locks);
   }
+  // Compassos de bateria em que o modelo ficou em dúvida (notes.confidence.json, do ai-charter)
+  const confFile = fileMap.get("notes.confidence.json");
+  try { chart.doubt = confFile ? JSON.parse(new TextDecoder("utf-8").decode(await confFile.read())).drums || [] : []; }
+  catch { chart.doubt = []; }
   state.charts = [{ label: "Esta chart", chart }];
   state.ini = ini;
   Object.assign(state, { served, dirty: false, undo: [], redo: [], drag: null, sel: { key: "", set: new Set(), lane: null } });
@@ -982,6 +987,16 @@ function drawLane(lane, now, lookahead) {
     for (const [y, w] of pts) g.lineTo(cx - w, y);
     for (let i = pts.length - 1; i >= 0; i--) g.lineTo(cx + pts[i][1], pts[i][0]);
     g.closePath(); g.fill();
+  }
+  // Compassos em que o modelo ficou em dúvida (bateria, editando): vermelho, mais forte = mais dúvida
+  if (state.editMode && lane.chartIndex === 0 && lane.instr === "drums") {
+    for (const d of openDoubts(chart)) {
+      const z0 = Math.max(0, zOf(chart.tm.time(d.inicio))), z1 = Math.min(1, zOf(chart.tm.time(d.fim)));
+      if (z1 <= z0) continue;
+      g.fillStyle = `rgba(255, 90, 90, ${0.12 + 0.18 * d.duvida})`;
+      g.beginPath(); g.moveTo(cx - halfW(z0), yOf(z0)); g.lineTo(cx - halfW(z1), yOf(z1));
+      g.lineTo(cx + halfW(z1), yOf(z1)); g.lineTo(cx + halfW(z0), yOf(z0)); g.closePath(); g.fill();
+    }
   }
   // Compassos travados (editados à mão), só no modo de edição
   if (state.editMode && lane.chartIndex === 0 && chart.measures) {
@@ -1254,6 +1269,16 @@ function drawRoll(lane, now) {
       g.fillRect(x, mid - v, 2, 2 * v);
     }
   }
+  // Compassos em que o modelo ficou em dúvida (bateria, editando)
+  if (state.editMode && model && lane.instr === "drums") {
+    g.font = "10px system-ui"; g.textBaseline = "middle"; g.textAlign = "left";
+    for (const d of openDoubts(chart)) {
+      const x0 = xOf(chart.tm.time(d.inicio)), x1 = xOf(chart.tm.time(d.fim));
+      if (x1 < 0 || x0 > W) continue;
+      g.fillStyle = `rgba(255, 90, 90, ${0.05 + 0.1 * d.duvida})`; g.fillRect(x0, top, x1 - x0, bottom - top);
+      g.fillStyle = "#ff8080"; g.fillText("⚠", x1 - 14, top + 8);
+    }
+  }
   // Compassos travados (editados à mão), só no modo de edição
   if (state.editMode && model && chart.measures) {
     g.font = "10px system-ui"; g.textBaseline = "middle"; g.textAlign = "left";
@@ -1522,6 +1547,20 @@ function cycleSnap(dir) {
   $("eStatus").textContent = `grade ${sel.options[sel.selectedIndex].text}`;
 }
 // Page Up / Page Down: seção anterior / próxima
+// D: o próximo compasso de bateria em que o modelo ficou em dúvida (e que ninguém editou ainda)
+function openDoubts(chart) {
+  const locked = [...lockedMeasures(chart, "drums", "expert")].map(i => chart.measures?.[i]).filter(Boolean);
+  return (chart.doubt || []).filter(d => !locked.some(([a, b]) => a <= d.inicio && d.fim <= b));
+}
+function jumpDoubt() {
+  const chart = state.charts[0]?.chart;
+  const list = chart ? openDoubts(chart) : [];
+  if (!list.length) { alert("Nenhum compasso de bateria em dúvida (ou todos já foram editados)."); return; }
+  const t = timeSource().position - chart.audioOffset;
+  const next = list.find(d => chart.tm.time(d.inicio) - 1 > t + 0.05) || list[0];
+  timeSource().seek(chart.tm.time(next.inicio) - 1 + chart.audioOffset);
+  $("eDoubt").title = `Próximo compasso de bateria em dúvida (D) · ${list.indexOf(next) + 1} de ${list.length}`;
+}
 function jumpSection(dir) {
   const chart = state.charts[0]?.chart;
   if (!chart?.sections.length) return;
@@ -2332,6 +2371,7 @@ setTick("metro", !!prefs.metro); setTick("clap", !!prefs.clap); setHyper(prefs.h
 $("addLane").onclick = () => { if (state.charts.length) { const l = state.lanes[state.lanes.length - 1]; addLane(l?.chartIndex || 0, l?.instr, l?.diff, l?.view); } };
 $("mixerBtn").onclick = () => { const m = $("mixer"); m.style.display = m.style.display === "block" ? "none" : "block"; };
 $("speed").onchange = (e) => { player.setRate(+e.target.value); clock.setRate(+e.target.value); if (!timeSource().playing) $("play").textContent = "▶ Tocar"; };
+$("eDoubt").onclick = jumpDoubt;
 $("section").onchange = (e) => { if (e.target.value !== "") timeSource().seek(+e.target.value + (state.charts[0]?.chart.audioOffset || 0) - 1); };
 // Linha do tempo: clicar ou arrastar leva até ali; perto da marca de uma seção, vai ao começo dela
 function timelineAt(e) {
@@ -2363,7 +2403,7 @@ document.addEventListener("keydown", (e) => {
     ArrowUp: () => stepCursor(1), ArrowDown: () => stepCursor(-1),
     PageUp: () => jumpSection(-1), PageDown: () => jumpSection(1),
     BracketLeft: () => state.editMode && cycleSnap(-1), BracketRight: () => state.editMode && cycleSnap(1),
-    KeyB: editTempo, KeyE: editSection,
+    KeyB: editTempo, KeyE: editSection, KeyD: () => state.editMode && jumpDoubt(),
     KeyM: () => setTick("metro", !ticks.metro), KeyK: () => setTick("clap", !ticks.clap), KeyW: () => setWave(!wave.on),
     Minus: () => setHyper(+$("hyper").value - 0.2), Equal: () => setHyper(+$("hyper").value + 0.2),
     NumpadSubtract: () => setHyper(+$("hyper").value - 0.2), NumpadAdd: () => setHyper(+$("hyper").value + 0.2),

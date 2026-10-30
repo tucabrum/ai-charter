@@ -24,6 +24,8 @@ class TrackChart:
     notes: dict[str, list[ChartNote]]                     # "expert" -> notas
     star_power: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # (tick, duração)
     drum_fills: dict[str, list[tuple[int, int]]] = field(default_factory=dict)  # só bateria
+    # Só bateria com modelo: quão em dúvida o modelo ficou em cada golpe (tick -> 0 a 1)
+    doubt: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass
