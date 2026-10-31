@@ -1208,7 +1208,7 @@ function shade(hex, amt) {
 }
 
 // Gems como as do Moonscraper, todas com aro branco embaixo.
-// Palhetada: aro da cor, anel preto e miolo branco. HOPO: domo liso e brilhante. Tap: domo com miolo escuro.
+// Palhetada: aro da cor, anel preto e miolo branco. HOPO: domo aceso, com brilho e miolo branco. Tap: domo com miolo escuro.
 function drawGem(g, x, y, r, color, kind) {
   const h = r * 0.5, ell = (dy, rx, ry) => { g.beginPath(); g.ellipse(x, y + dy, rx, ry, 0, 0, Math.PI * 2); };
   g.fillStyle = "#eef1f5"; ell(h * 0.3, r, h); g.fill();
@@ -1221,6 +1221,22 @@ function drawGem(g, x, y, r, color, kind) {
     const cap = g.createRadialGradient(x, y - h * 0.45, 0, x, y - h * 0.25, r * 0.45);
     cap.addColorStop(0, "#fff"); cap.addColorStop(0.7, "#f2f4f7"); cap.addColorStop(1, "#c3c8cf");
     g.fillStyle = cap; ell(-h * 0.26, r * 0.44, h * 0.37); g.fill();
+    return;
+  }
+  if (kind === "hopo") {
+    // Domo aceso: brilha em volta na cor e tem o miolo quase branco, como uma luz
+    g.save(); g.shadowColor = color; g.shadowBlur = r * 0.7;
+    const glow = g.createRadialGradient(x, y - h * 0.45, r * 0.05, x, y - h * 0.15, r);
+    glow.addColorStop(0, "#fff"); glow.addColorStop(0.35, shade(color, 0.55));
+    glow.addColorStop(0.75, color); glow.addColorStop(1, shade(color, -0.35));
+    g.fillStyle = glow; ell(-h * 0.15, r * 0.9, h * 0.85); g.fill();
+    g.restore();
+    g.save(); g.translate(x, y - h * 0.32); g.scale(1, 0.62);
+    const core = g.createRadialGradient(0, 0, 0, 0, 0, r * 0.62);
+    core.addColorStop(0, "rgba(255,255,255,1)"); core.addColorStop(0.45, "rgba(255,255,255,0.8)");
+    core.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = core; g.beginPath(); g.arc(0, 0, r * 0.62, 0, Math.PI * 2); g.fill();
+    g.restore();
     return;
   }
   const dome = g.createRadialGradient(x - r * 0.1, y - h * 0.7, r * 0.04, x, y - h * 0.1, r);
