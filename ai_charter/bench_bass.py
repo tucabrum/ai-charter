@@ -3,6 +3,9 @@
 Uso:
   ai-charter-bench-bass demucs-cache "pasta com músicas" D:\\ai-charter-cache [--test --limit 61]
   ai-charter-bench-bass run "pasta com músicas" D:\\ai-charter-cache --test [--audio demucs] [--report r.json]
+  ai-charter-bench-bass altura "pasta com músicas" --test          # só a altura, contra o Pro Bass
+  ai-charter-bench-bass collect "pasta com músicas" altura.npz     # exemplos do modelo de altura (treino)
+  ai-charter-bench-bass train-pitch altura.npz                     # treina ai_charter/pitch_model_bass.json
 
 O run avalia as músicas de teste que já estão no cache da bateria (mix.ogg), sempre as mesmas.
 
@@ -128,22 +131,33 @@ def _fold(semitones: float) -> int:
     return int((round(semitones) + 7) % 12 - 7)
 
 
-def pitch_score(detected: list[tuple[float, float]], truth: list[tuple[float, int, int, float]]) -> dict:
-    """A altura das notas detectadas contra o Pro Bass. `detected`: (tempo, nota MIDI), em ordem;
-    `truth`: (tempo, corda, casa, tolerância). A afinação de cada corda (Drop D, meio tom abaixo...) não
-    vem na chart: é a mediana da diferença nas notas casadas, dobrada para -7..+4 (ver `_fold`)."""
+def true_pitches(detected: list[tuple[float, float]], truth: list[tuple[float, int, int, float]]
+                 ) -> tuple[list[tuple[int, int]], dict[int, int]]:
+    """Casa as notas detectadas (tempo, nota MIDI), em ordem, com o Pro Bass (tempo, corda, casa,
+    tolerância): [(índice detectado, nota MIDI de verdade)] e a afinação de cada corda. A afinação (Drop D,
+    meio tom abaixo...) não vem na chart: é a mediana da diferença nas notas casadas, dobrada para
+    -7..+4 (ver `_fold`); corda com menos de 10 notas fica com a da música."""
     pairs = pair_notes([t for t, _ in detected], [(t, tol) for t, _, _, tol in truth])
-    standard = [(detected[i][1], OPEN_STRINGS[truth[k][1]] + truth[k][2], truth[k][1]) for i, k in pairs]
+    standard = [(i, detected[i][1], OPEN_STRINGS[truth[k][1]] + truth[k][2], truth[k][1]) for i, k in pairs]
     if not standard:
-        return {"notas": 0}
-    song = _fold(np.median([d - s for d, s, _ in standard]))
+        return [], {}
+    song = _fold(np.median([d - s for _, d, s, _ in standard]))
     shift = {}
-    for string in {s for _, _, s in standard}:
-        diffs = [d - s for d, s, st in standard if st == string]
+    for string in {st for *_, st in standard}:
+        diffs = [d - s for _, d, s, st in standard if st == string]
         shift[string] = _fold(np.median(diffs)) if len(diffs) >= 10 else song
-    err = np.array([round(d) - s - shift[st] for d, s, st in standard])
+    return [(i, s + shift[st]) for i, _, s, st in standard], shift
+
+
+def pitch_score(detected: list[tuple[float, float]], truth: list[tuple[float, int, int, float]]) -> dict:
+    """A altura das notas detectadas contra o Pro Bass (ver `true_pitches`)."""
+    pairs, shift = true_pitches(detected, truth)
+    if not pairs:
+        return {"notas": 0}
+    err = np.array([round(detected[i][1]) - real for i, real in pairs])
     return {"notas": len(err), "casadas_de": len(truth), "afinação": {str(k): v for k, v in sorted(shift.items())},
-            "exata": int(np.sum(err == 0)), "oitava": int(np.sum((err != 0) & (err % 12 == 0))), "oitava_acima": int(np.sum((err > 0) & (err % 12 == 0))),
+            "exata": int(np.sum(err == 0)), "oitava": int(np.sum((err != 0) & (err % 12 == 0))),
+            "oitava_acima": int(np.sum((err > 0) & (err % 12 == 0))),
             "vizinha": int(np.sum(np.isin(err, (-2, -1, 1, 2)))),
             "outra": int(np.sum((err % 12 != 0) & ~np.isin(err, (-2, -1, 1, 2))))}
 
@@ -183,9 +197,9 @@ def evaluate(folder: Path, cache: Path, rules, audio: str, tempo_source: str) ->
     return row
 
 
-def evaluate_pitch(folder: Path, rules, stem: Path | None = None, tuning: float | None = None) -> dict | None:
-    """Só a altura (o transcritor, antes das lanes; é o que a Fase 2 melhora), contra o Pro Bass.
-    Sem `stem`, o stem oficial; sem `tuning`, a afinação medida no próprio stem."""
+def _pitch_inputs(folder: Path, rules, stem: Path | None = None, tuning: float | None = None):
+    """As notas que o transcritor ouviu no stem e o Pro Bass da música (tempo, corda, casa, tolerância),
+    a nota mais grave de cada acorde; None se a música não tem Pro Bass ou stem do baixo."""
     import librosa
 
     from ai_charter.analysis.pitched import detect_pitched_notes
@@ -206,7 +220,86 @@ def evaluate_pitch(folder: Path, rules, stem: Path | None = None, tuning: float 
             lowest[tick] = (string, fret)
     truth = [(float(tempo.tick_to_time(t)), s, f, float(tempo.tick_to_time(t + res / 8) - tempo.tick_to_time(t)))
              for t, (s, f) in sorted(lowest.items())]
+    return notes, truth
+
+
+def evaluate_pitch(folder: Path, rules, stem: Path | None = None, tuning: float | None = None) -> dict | None:
+    """Só a altura (o transcritor, antes das lanes), contra o Pro Bass. Sem `stem`, o stem oficial; sem
+    `tuning`, a afinação medida no próprio stem."""
+    got = _pitch_inputs(folder, rules, stem, tuning)
+    if got is None:
+        return None
+    notes, truth = got
     return pitch_score([(n.time, n.pitch) for n in notes], truth)
+
+
+def _collect_one(args):
+    """Exemplos do modelo de altura de uma música: as medidas de cada candidato e se ele é a nota do
+    Pro Bass. O detector roda sem o modelo (é a entrada dele)."""
+    folder, rules_path = args
+    from ai_charter.config import load_rules
+    from ai_charter.pitch_model import note_features
+
+    rules = load_rules(rules_path)
+    rules.detection["bass"].pitch_model = False
+    try:
+        got = _pitch_inputs(folder, rules)
+    except Exception as exc:
+        return folder.name, None, repr(exc)
+    if got is None:
+        return folder.name, None, "sem Pro Bass"
+    notes, truth = got
+    pairs, _ = true_pitches([(n.time, n.pitch) for n in notes], truth)
+    if len(pairs) < 50:
+        return folder.name, None, f"só {len(pairs)} notas casadas"
+    chosen = [notes[i] for i, _ in pairs]
+    x, bins = note_features(chosen)
+    target = np.array([real - n.fmin_midi for (_, real), n in zip(pairs, chosen)])
+    y = (bins == target[:, None]).reshape(-1).astype(np.uint8)
+    return folder.name, (x.astype(np.float16), y, len(chosen)), ""
+
+
+def collect_pitch(folders: list[Path], out: Path, rules_path: str | None, workers: int = 1) -> None:
+    xs, ys, song, names = [], [], [], []
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for i, (name, data, why) in enumerate(pool.map(_collect_one, [(f, rules_path) for f in folders]), 1):
+            if data is None:
+                print(f"[{i}/{len(folders)}] {name}: {why}", flush=True)
+                continue
+            x, y, n = data
+            xs.append(x); ys.append(y); song.append(np.full(len(y), len(names), np.int32)); names.append(name)
+            print(f"[{i}/{len(folders)}] {name}: {n} notas", flush=True)
+    np.savez_compressed(out, x=np.concatenate(xs), y=np.concatenate(ys), song=np.concatenate(song),
+                        names=np.array(names))
+
+
+def train_pitch(data: Path, epochs: int = 20, hidden: int = 48) -> None:
+    """Treina o modelo de altura (ai_charter/pitch_model_bass.json). Mede antes, com 1/5 das músicas
+    fora do treino: das notas, quantas o modelo põe na altura certa, contra o detector sozinho."""
+    from ai_charter import drum_model, pitch_model
+
+    d = np.load(data)
+    x, y, song = d["x"], d["y"].astype(np.float32)[:, None], d["song"]
+    k = len(pitch_model.CANDIDATES)
+    note_song = song[::k]
+    heard = pitch_model.CANDIDATES.index(0)
+
+    def accuracy(params, notes_rows):
+        rows = (notes_rows[:, None] * k + np.arange(k)).reshape(-1)
+        p = drum_model.mlp(drum_model._arrays(params), x, rows)[:, 0].reshape(-1, k)
+        yy = y[rows, 0].reshape(-1, k)
+        return float(np.mean(yy[np.arange(len(p)), np.argmax(p, axis=1)] == 1)), float(np.mean(yy[:, heard] == 1))
+
+    held = np.flatnonzero(note_song % 5 == 0)
+    train_notes = np.flatnonzero(note_song % 5 != 0)
+    rows = (train_notes[:, None] * k + np.arange(k)).reshape(-1)
+    params = drum_model.train(x, y, rows, hidden=hidden, epochs=epochs)
+    model_acc, heard_acc = accuracy(params, held)
+    print(f"fora do treino: nota certa {model_acc:.3f} com o modelo, {heard_acc:.3f} só o detector", flush=True)
+    params = drum_model.train(x, y, None, hidden=hidden, epochs=epochs)   # o modelo final usa todas
+    pitch_model.save(params, {"músicas": int(len(d["names"])), "notas": int(len(note_song)),
+                              "fora_do_treino": {"modelo": round(model_acc, 4), "detector": round(heard_acc, 4)}})
+    print(f"salvo em {pitch_model.MODEL_PATH}")
 
 
 def _one(args):
@@ -329,7 +422,9 @@ def _songs(args) -> list[Path]:
     folders = song_folders(Path(args.songs), args.charter)
     if args.test:
         folders = [f for f in folders if is_test(f.name)]
-    if args.command == "altura":
+    if args.command == "collect":   # o treino nunca vê as músicas de teste
+        folders = [f for f in folders if not is_test(f.name) and bass_stem(f) is not None and has_pro_bass(f)]
+    elif args.command == "altura":
         folders = [f for f in folders if bass_stem(f) is not None and has_pro_bass(f)]
     else:
         folders = [f for f in folders if (cache_dir_for(Path(args.cache), f) / "mix.ogg").is_file()]
@@ -355,8 +450,25 @@ def main(argv: list[str] | None = None) -> None:
             p.add_argument("--rules", default=None)
             p.add_argument("--workers", type=int, default=4)
             p.add_argument("--report", default=None)
+    c = sub.add_parser("collect", help="exemplos do modelo de altura, das músicas de treino com Pro Bass")
+    c.add_argument("songs")
+    c.add_argument("out")
+    c.add_argument("--charter", default="Harmonix")
+    c.add_argument("--test", action="store_true", help=argparse.SUPPRESS)
+    c.add_argument("--limit", type=int, default=0)
+    c.add_argument("--rules", default=None)
+    c.add_argument("--workers", type=int, default=3)
+    t = sub.add_parser("train-pitch", help="treina o modelo de altura (ai_charter/pitch_model_bass.json)")
+    t.add_argument("data")
+    t.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args(argv)
+    if args.command == "train-pitch":
+        train_pitch(Path(args.data), args.epochs)
+        return
     folders = _songs(args)
+    if args.command == "collect":
+        collect_pitch(folders, Path(args.out), args.rules, args.workers)
+        return
     if args.command == "demucs-cache":
         demucs_cache(folders, Path(args.cache))
         return

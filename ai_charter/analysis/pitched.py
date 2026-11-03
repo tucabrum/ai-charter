@@ -42,6 +42,11 @@ class DetectedNote:
     # relativa a ela. Uma nota simples (mesmo distorcida) quase não tem; acordes têm.
     fifth_ratio: float = 0.0
     third_ratio: float = 0.0
+    # O espectro (um valor por semitom, a partir de fmin) logo depois do ataque e na sustentação: o que
+    # o modelo de altura (pitch_model.py) olha para escolher entre a nota ouvida e as vizinhas/oitavas.
+    spectrum: np.ndarray | None = None
+    late_spectrum: np.ndarray | None = None
+    fmin_midi: int = 0
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -225,6 +230,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
         if len(below):
             end_frame = peak_frame + int(below[0])
 
+        late = cqt[:, b:max(b + 1, min(b + 16, next_frame))].mean(axis=1)
         notes.append(DetectedNote(
             time=float(librosa.frames_to_time(frame, sr=sr, hop_length=HOP)) - ONSET_LATENCY,
             end=float(librosa.frames_to_time(end_frame, sr=sr, hop_length=HOP)) - ONSET_LATENCY,
@@ -235,7 +241,16 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
             lowest_by_class=lowest,
             fifth_ratio=fifth,
             third_ratio=third,
+            spectrum=spectrum.astype(np.float32),
+            late_spectrum=late.astype(np.float32),
+            fmin_midi=int(fmin_midi),
         ))
+    if cfg.pitch_model:
+        from ai_charter.pitch_model import PitchModel
+
+        model = PitchModel.load()
+        if model is not None:
+            model.rescore(notes)
     _fix_octave_spikes(notes)
     return notes
 

@@ -44,6 +44,7 @@ accent_chord_notes = 3       # acorde de ACENTO (segurado por muito tempo) ganha
 accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar acento
 allowed_chords = []          # só estes acordes (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um. A --cifra preenche
 octave_down_ratio = 0.0      # a oitava de baixo vence com esta fração da energia da nota (0 = não; ver o baixo)
+pitch_model = false          # o modelo de altura revisa a nota de cada ataque (treinado no baixo)
 
 [detection.bass]
 fmin = "E1"
@@ -69,6 +70,9 @@ allowed_chords = []
 # detector "ouvia" a nota uma oitava acima (19% das notas, contra o Pro Bass de 54 músicas). Se a nota
 # uma oitava abaixo tem pelo menos 10% da energia da escolhida, fica a de baixo (nota exata 65% -> 74%).
 octave_down_ratio = 0.1
+# Modelo de altura treinado no Pro Bass de 252 músicas (ai_charter/pitch_model_bass.json): escolhe a nota de
+# cada ataque entre a ouvida, as oitavas e as vizinhas. Nota exata 74% -> 86%; contorno no uso real 76% -> 81%.
+pitch_model = true
 
 [detection.keys]
 fmin = "A1"
@@ -91,6 +95,7 @@ accent_chord_notes = 3
 accent_min_beats = 2.0
 allowed_chords = []
 octave_down_ratio = 0.0
+pitch_model = false
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
