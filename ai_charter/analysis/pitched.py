@@ -81,6 +81,18 @@ def estimate_pitches(spectrum: np.ndarray, chord_ratio: float, max_voices: int =
     return found
 
 
+def prefer_lower_octave(bins: list[int], spectrum: np.ndarray, ratio: float) -> list[int]:
+    """Troca a nota mais grave pela oitava de baixo quando esta tem pelo menos `ratio` da energia dela.
+
+    No baixo, a fundamental (40-100 Hz) soa fraca no espectro e o harmônico uma oitava acima ganha a
+    soma dos harmônicos; uma fração pequena de energia uma oitava abaixo já indica a nota de verdade.
+    """
+    root = min(bins)
+    if ratio <= 0 or root < 12 or spectrum[root - 12] < ratio * spectrum[root]:
+        return bins
+    return [root - 12] + [b for b in bins if b != root]
+
+
 def _energy_envelope(y: np.ndarray, sr: int) -> np.ndarray:
     """Ataques pela subida de ENERGIA (bom para palhetadas, notas com "estalo").
 
@@ -191,6 +203,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
         bins = estimate_pitches(spectrum, cfg.chord_ratio)
         if not bins:
             continue
+        bins = prefer_lower_octave(bins, spectrum, cfg.octave_down_ratio)
 
         scores = lowest = None
         fifth = third = 0.0

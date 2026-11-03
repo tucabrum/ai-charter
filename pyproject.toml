@@ -43,6 +43,7 @@ ai-charter-view = "ai_charter.view:main"
 ai-charter-revise = "ai_charter.revision:main"
 ai-charter-bench = "ai_charter.bench:main"
 ai-charter-bench-vocals = "ai_charter.bench_vocals:main"
+ai-charter-bench-bass = "ai_charter.bench_bass:main"
 
 [tool.setuptools.packages.find]
 include = ["ai_charter*"]

@@ -51,6 +51,7 @@ class PitchedDetection:
     accent_chord_notes: int
     accent_min_beats: float
     allowed_chords: list[str]   # acordes possíveis (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um
+    octave_down_ratio: float = 0.0   # a oitava de baixo vence se tem esta fração da energia da nota (0 = não)
 
 
 @dataclass

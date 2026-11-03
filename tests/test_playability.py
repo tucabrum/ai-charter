@@ -4,7 +4,7 @@ import librosa
 import numpy as np
 
 from ai_charter.analysis.chords import CHORDS
-from ai_charter.analysis.pitched import DetectedNote, _fix_octave_spikes, detect_pitched_notes
+from ai_charter.analysis.pitched import DetectedNote, _fix_octave_spikes, detect_pitched_notes, prefer_lower_octave
 from ai_charter.charting.chords import label_chords
 from ai_charter.charting.common import Candidate
 from ai_charter.compare import Event
@@ -60,6 +60,16 @@ def test_isolated_octave_spikes_are_fixed_but_octave_riffs_stay():
     riff = notes([40, 52, 40, 52, 40, 52, 40, 52])
     _fix_octave_spikes(riff)
     assert [n.pitch for n in riff] == [40, 52, 40, 52, 40, 52, 40, 52]
+
+
+def test_bass_with_a_weak_fundamental_keeps_the_low_octave():
+    spectrum = np.zeros(48)
+    spectrum[[12, 24, 31, 36]] = [0.15, 1.0, 0.5, 0.4]   # Mi1 fraco, Mi2 forte (o harmônico) e acima
+    assert prefer_lower_octave([24], spectrum, 0.1) == [12]
+    spectrum[12] = 0.05                                    # só um resto de vazamento: fica onde estava
+    assert prefer_lower_octave([24], spectrum, 0.1) == [24]
+    spectrum[12] = 0.9
+    assert prefer_lower_octave([24, 31], spectrum, 0.0) == [24, 31]          # desligado (guitarra)
 
 
 def test_detuned_recording_keeps_the_same_note():

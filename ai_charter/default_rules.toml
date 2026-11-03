@@ -43,6 +43,7 @@ chord_notes = 2              # notas dos outros acordes (maior/menor) na chart: 
 accent_chord_notes = 3       # acorde de ACENTO (segurado por muito tempo) ganha mais notas
 accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar acento
 allowed_chords = []          # só estes acordes (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um. A --cifra preenche
+octave_down_ratio = 0.0      # a oitava de baixo vence com esta fração da energia da nota (0 = não; ver o baixo)
 
 [detection.bass]
 fmin = "E1"
@@ -64,6 +65,10 @@ chord_notes = 2
 accent_chord_notes = 3
 accent_min_beats = 2.0
 allowed_chords = []
+# O baixo gravado tem a fundamental fraca: o harmônico uma oitava acima costuma soar mais forte e o
+# detector "ouvia" a nota uma oitava acima (19% das notas, contra o Pro Bass de 54 músicas). Se a nota
+# uma oitava abaixo tem pelo menos 10% da energia da escolhida, fica a de baixo (nota exata 65% -> 74%).
+octave_down_ratio = 0.1
 
 [detection.keys]
 fmin = "A1"
@@ -85,6 +90,7 @@ chord_notes = 2
 accent_chord_notes = 3
 accent_min_beats = 2.0
 allowed_chords = []
+octave_down_ratio = 0.0
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)
