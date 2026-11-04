@@ -156,17 +156,29 @@ def _lowest_by_class(spectrum: np.ndarray, lowest_midi: int, threshold: float = 
 
 
 def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
-                         tuning: float = 0.0) -> list[DetectedNote]:
+                         tuning: float = 0.0, tempo=None) -> list[DetectedNote]:
     """Detecta as notas de um stem mono `y` com taxa de amostragem `sr`.
 
     `tuning`: afinação da gravação em frações de semitom (ver pipeline.estimate_tuning).
     Os bins do espectro são centrados nas notas DESSA afinação; sem isso, uma
     gravação meio semitom fora do padrão faz a mesma nota "oscilar" entre duas.
+    `tempo`: o mapa de tempo, para o modelo de ataques (cfg.onset_model); sem ele, vale o limiar.
     """
     if not np.any(y):
         return []
 
-    # --- 1. Ataques ---------------------------------------------------------
+    # --- 1. Espectro CQT (um bin por semitom) ------------------------------
+    fmin_midi = librosa.note_to_midi(cfg.fmin)
+    cqt = np.abs(librosa.cqt(
+        y, sr=sr, hop_length=HOP, fmin=librosa.midi_to_hz(fmin_midi),
+        n_bins=12 * cfg.octaves, bins_per_octave=12, tuning=tuning,
+    ))
+
+    # --- 2. Volume ao longo do tempo (para gate e duração) -----------------
+    rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
+    rms_db = librosa.amplitude_to_db(rms, ref=np.max)
+
+    # --- 3. Ataques ---------------------------------------------------------
     onset_env = onset_envelope(y, sr, cfg.onset_method)
     # wait: ataques a menos de 60 ms um do outro contam como um só (ex.: acorde
     # palhetado, em que as cordas soam uma logo após a outra).
@@ -174,20 +186,19 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
         onset_envelope=onset_env, sr=sr, hop_length=HOP, delta=cfg.onset_delta,
         wait=int(0.06 * sr / HOP), units="frames",
     )
+    if cfg.onset_model and tempo is not None:
+        # O modelo de ataques escolhe entre todos os picos do envelope (precisa do tempo, pela grade).
+        from ai_charter.onset_model import OnsetModel, candidates, features
+
+        model = OnsetModel.load()
+        if model is not None:
+            frames, kept = candidates(onset_env, sr, HOP, cfg.onset_delta)
+            frames = frames[frames < min(cqt.shape[1], len(rms)) - 2]
+            times = librosa.frames_to_time(frames, sr=sr, hop_length=HOP) - ONSET_LATENCY
+            onset_frames = model.select(frames, features(frames, kept, onset_env, rms, cqt, sr, HOP, times, tempo))
     if len(onset_frames) == 0:
         return []
     env_scale = np.percentile(onset_env[onset_frames], 95) + 1e-9
-
-    # --- 2. Espectro CQT (um bin por semitom) ------------------------------
-    fmin_midi = librosa.note_to_midi(cfg.fmin)
-    cqt = np.abs(librosa.cqt(
-        y, sr=sr, hop_length=HOP, fmin=librosa.midi_to_hz(fmin_midi),
-        n_bins=12 * cfg.octaves, bins_per_octave=12, tuning=tuning,
-    ))
-
-    # --- 3. Volume ao longo do tempo (para gate e duração) -----------------
-    rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
-    rms_db = librosa.amplitude_to_db(rms, ref=np.max)
 
     n_frames = min(cqt.shape[1], len(rms))
     notes: list[DetectedNote] = []

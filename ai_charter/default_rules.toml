@@ -47,6 +47,7 @@ octave_down_ratio = 0.0      # a oitava de baixo vence com esta fração da ener
 pitch_model = false          # o modelo de altura revisa a nota de cada ataque (treinado no baixo)
 max_voices = 3               # máximo de notas que soam juntas num ataque (1 = nunca acorde)
 sustain_model = false        # o modelo de sustain decide quais notas são longas (treinado no baixo)
+onset_model = false          # o modelo de ataques escolhe os picos que são notas, em vez do onset_delta
 
 [detection.bass]
 fmin = "E1"
@@ -81,6 +82,9 @@ max_voices = 1
 # Modelo de sustain treinado nas charts oficiais (ai_charter/sustain_model_bass.json): pela curva de volume
 # em batidas. Sem ele, quase toda nota com espaço até a próxima virava sustain.
 sustain_model = true
+# Modelo de ataques treinado nos stems oficiais (ai_charter/onset_model_bass.json): no baixo do Demucs o ataque
+# sai amaciado e o onset_delta deixava de fora 20% das notas oficiais.
+onset_model = true
 
 [detection.keys]
 fmin = "A1"
@@ -106,6 +110,7 @@ octave_down_ratio = 0.0
 pitch_model = false
 max_voices = 3
 sustain_model = false
+onset_model = false
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

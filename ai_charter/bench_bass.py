@@ -8,6 +8,8 @@ Uso:
   ai-charter-bench-bass train-pitch altura.npz                     # treina ai_charter/pitch_model_bass.json
   ai-charter-bench-bass collect-sustain "pasta com músicas" sus.npz # exemplos do modelo de sustain (treino)
   ai-charter-bench-bass train-sustain sus.npz                      # treina ai_charter/sustain_model_bass.json
+  ai-charter-bench-bass collect-onsets "pasta com músicas" at.npz  # exemplos do modelo de ataques (treino)
+  ai-charter-bench-bass train-onsets at.npz                        # treina ai_charter/onset_model_bass.json
 
 O run avalia as músicas de teste que já estão no cache da bateria (mix.ogg), sempre as mesmas.
 
@@ -335,50 +337,110 @@ def _collect_sustain_one(args):
     x = song_features(notes, tempo)
     idx = np.array([i for i, _ in pairs])
     y_ = np.array([official[k][2] >= SUSTAIN_BEATS * res for _, k in pairs], dtype=np.uint8)
-    return folder.name, (x[idx], y_), ""
+    return folder.name, (x[idx], y_, int(y_.sum())), ""
 
 
-def collect_sustain(folders: list[Path], out: Path, rules_path: str | None, workers: int = 1) -> None:
-    xs, ys, song, names = [], [], [], []
+def _collect_onsets_one(args):
+    """Exemplos do modelo de ataques de uma música (stem oficial): as medidas de cada pico candidato e se
+    ele casa com uma nota oficial. A grade usa o tempo da chart."""
+    folder, rules_path = args
+    import librosa
+
+    from ai_charter.analysis.pitched import HOP, ONSET_LATENCY, onset_envelope
+    from ai_charter.config import load_rules
+    from ai_charter.onset_model import candidates, features
+    from ai_charter.pipeline import ANALYSIS_SR, estimate_tuning
+
+    try:
+        midi = mido.MidiFile(folder / "notes.mid")
+        official = official_notes(midi)
+        stem = bass_stem(folder)
+        if not official or stem is None:
+            return folder.name, None, "sem baixo"
+        tempo, res = _tempo_map(midi), midi.ticks_per_beat
+        cfg = load_rules(rules_path).detection["bass"]
+        sr = ANALYSIS_SR
+        y = librosa.load(stem, sr=sr, mono=True)[0]
+        fmin = librosa.note_to_midi(cfg.fmin)   # o mesmo espectro e volume de detect_pitched_notes
+        cqt = np.abs(librosa.cqt(y, sr=sr, hop_length=HOP, fmin=librosa.midi_to_hz(fmin),
+                                 n_bins=12 * cfg.octaves, bins_per_octave=12, tuning=estimate_tuning(y, sr)))
+        rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
+        onset_env = onset_envelope(y, sr, cfg.onset_method)
+        frames, kept = candidates(onset_env, sr, HOP, cfg.onset_delta)
+        frames = frames[frames < min(cqt.shape[1], len(rms)) - 2]
+        times = librosa.frames_to_time(frames, sr=sr, hop_length=HOP) - ONSET_LATENCY
+        x = features(frames, kept, onset_env, rms, cqt, sr, HOP, times, tempo)
+    except Exception as exc:
+        return folder.name, None, repr(exc)
+    theirs = [(float(tempo.tick_to_time(t)), float(tempo.tick_to_time(t + res / 8) - tempo.tick_to_time(t)))
+              for t, _, _ in official]
+    y_ = np.zeros(len(frames), dtype=np.uint8)
+    for i, _ in pair_notes(list(times), theirs):
+        y_[i] = 1
+    return folder.name, (x, y_, len(official)), ""
+
+
+def _collect(one, folders: list[Path], out: Path, rules_path: str | None, workers: int = 1) -> None:
+    """Junta os exemplos de cada música: x, y, a música de cada linha e, por música, quantos positivos a
+    revocação conta (as notas oficiais que deviam ser achadas)."""
+    xs, ys, song, names, positives = [], [], [], [], []
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        for i, (name, data, why) in enumerate(pool.map(_collect_sustain_one, [(f, rules_path) for f in folders]), 1):
+        for i, (name, data, why) in enumerate(pool.map(one, [(f, rules_path) for f in folders]), 1):
             if data is None:
                 print(f"[{i}/{len(folders)}] {name}: {why}", flush=True)
                 continue
-            x, y = data
-            xs.append(x); ys.append(y); song.append(np.full(len(y), len(names), np.int32)); names.append(name)
-            print(f"[{i}/{len(folders)}] {name}: {len(y)} notas", flush=True)
+            x, y, n = data
+            xs.append(x); ys.append(y); song.append(np.full(len(y), len(names), np.int32))
+            names.append(name); positives.append(n)
+            print(f"[{i}/{len(folders)}] {name}: {len(y)} exemplos", flush=True)
     np.savez_compressed(out, x=np.concatenate(xs), y=np.concatenate(ys), song=np.concatenate(song),
-                        names=np.array(names))
+                        names=np.array(names), positives=np.array(positives))
 
 
-def train_sustain(data: Path, epochs: int = 20, hidden: int = 16) -> None:
-    """Treina o modelo de sustain (ai_charter/sustain_model_bass.json). Com 1/5 das músicas fora do treino,
-    escolhe o limiar de maior F1 (sustains certos x sustains oficiais achados) e compara com a duração
-    pelo volume (o detector sozinho, com o mínimo de 1/2 batida do Expert)."""
-    from ai_charter import drum_model, sustain_model
+def _train_with_threshold(data: Path, module, baseline, epochs: int, hidden: int) -> None:
+    """Treina um modelo de sim/não (sustain, ataque). Com 1/5 das músicas fora do treino, escolhe o limiar de
+    maior F1 e compara com a regra de hoje (`baseline(x)` -> sim/não); depois treina com todas e salva."""
+    from ai_charter import drum_model
 
     d = np.load(data)
     x, y, song = d["x"], d["y"].astype(np.float32)[:, None], d["song"]
     held, train_rows = np.flatnonzero(song % 5 == 0), np.flatnonzero(song % 5 != 0)
+    truth = y[held, 0] > 0.5
+    n_true = float(d["positives"][np.unique(song[held])].sum()) if "positives" in d else float(truth.sum())
 
-    def f1(pred, truth):
-        return 2 * float(np.sum(pred & truth)) / max(1.0, float(pred.sum() + truth.sum()))
+    def f1(pred):
+        return 2 * float(np.sum(pred & truth)) / max(1.0, float(pred.sum()) + n_true)
 
     params = drum_model.train(x, y, train_rows, hidden=hidden, epochs=epochs)
     p = drum_model.mlp(drum_model._arrays(params), x, held)[:, 0]
-    truth = y[held, 0] > 0.5
-    scores = {float(t): f1(p >= t, truth) for t in np.arange(0.2, 0.65, 0.05).round(2)}
+    scores = {float(t): f1(p >= t) for t in np.arange(0.2, 0.75, 0.05).round(2)}
     threshold = max(scores, key=scores.get)
-    names = sustain_model.FEATURE_NAMES
-    volume = np.minimum(x[held, names.index("cai_0.35")], x[held, names.index("espaco")] - 0.25) >= 0.5
-    print(f"fora do treino: F1 {scores[threshold]:.3f} com o modelo (limiar {threshold}), "
-          f"{f1(volume, truth):.3f} só o volume", flush=True)
+    rule = f1(baseline(x[held]))
+    print(f"fora do treino: F1 {scores[threshold]:.3f} com o modelo (limiar {threshold}), {rule:.3f} com a regra",
+          flush=True)
     params = drum_model.train(x, y, None, hidden=hidden, epochs=epochs)   # o modelo final usa todas
-    sustain_model.save(params, threshold, {
-        "músicas": int(len(d["names"])), "notas": int(len(y)),
-        "fora_do_treino": {"modelo": round(scores[threshold], 4), "volume": round(f1(volume, truth), 4)}})
-    print(f"salvo em {sustain_model.MODEL_PATH}")
+    module.save(params, threshold, {"músicas": int(len(d["names"])), "exemplos": int(len(y)),
+                                    "fora_do_treino": {"modelo": round(scores[threshold], 4), "regra": round(rule, 4)}})
+    print(f"salvo em {module.MODEL_PATH}")
+
+
+def train_sustain(data: Path, epochs: int = 20) -> None:
+    """Modelo de sustain (ai_charter/sustain_model_bass.json), contra a duração pelo volume (o detector
+    sozinho, com o mínimo de 1/2 batida do Expert)."""
+    from ai_charter import sustain_model
+
+    names = sustain_model.FEATURE_NAMES
+    _train_with_threshold(data, sustain_model, lambda x: np.minimum(x[:, names.index("cai_0.35")],
+                                                                    x[:, names.index("espaco")] - 0.25) >= 0.5,
+                          epochs, hidden=16)
+
+
+def train_onsets(data: Path, epochs: int = 20) -> None:
+    """Modelo de ataques (ai_charter/onset_model_bass.json), contra o limiar de hoje (onset_delta)."""
+    from ai_charter import onset_model
+
+    _train_with_threshold(data, onset_model, lambda x: x[:, onset_model.FEATURE_NAMES.index("limiar_atual")] > 0.5,
+                          epochs, hidden=32)
 
 
 def _one(args):
@@ -503,7 +565,7 @@ def _songs(args) -> list[Path]:
         folders = [f for f in folders if is_test(f.name)]
     if args.command == "collect":   # o treino nunca vê as músicas de teste
         folders = [f for f in folders if not is_test(f.name) and bass_stem(f) is not None and has_pro_bass(f)]
-    elif args.command == "collect-sustain":
+    elif args.command in ("collect-sustain", "collect-onsets"):
         folders = [f for f in folders if not is_test(f.name) and bass_stem(f) is not None]
     elif args.command == "altura":
         folders = [f for f in folders if bass_stem(f) is not None and has_pro_bass(f)]
@@ -532,7 +594,8 @@ def main(argv: list[str] | None = None) -> None:
             p.add_argument("--workers", type=int, default=4)
             p.add_argument("--report", default=None)
     for name, what in (("collect", "altura, das músicas de treino com Pro Bass"),
-                       ("collect-sustain", "sustain, das músicas de treino com o stem do baixo")):
+                       ("collect-sustain", "sustain, das músicas de treino com o stem do baixo"),
+                       ("collect-onsets", "ataques, das músicas de treino com o stem do baixo")):
         c = sub.add_parser(name, help=f"exemplos do modelo de {what}")
         c.add_argument("songs")
         c.add_argument("out")
@@ -542,18 +605,23 @@ def main(argv: list[str] | None = None) -> None:
         c.add_argument("--rules", default=None)
         c.add_argument("--workers", type=int, default=3)
     for name, what in (("train-pitch", "altura (ai_charter/pitch_model_bass.json)"),
-                       ("train-sustain", "sustain (ai_charter/sustain_model_bass.json)")):
+                       ("train-sustain", "sustain (ai_charter/sustain_model_bass.json)"),
+                       ("train-onsets", "ataques (ai_charter/onset_model_bass.json)")):
         t = sub.add_parser(name, help=f"treina o modelo de {what}")
         t.add_argument("data")
         t.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args(argv)
-    if args.command in ("train-pitch", "train-sustain"):
-        (train_pitch if args.command == "train-pitch" else train_sustain)(Path(args.data), args.epochs)
+    trainers = {"train-pitch": train_pitch, "train-sustain": train_sustain, "train-onsets": train_onsets}
+    if args.command in trainers:
+        trainers[args.command](Path(args.data), args.epochs)
         return
     folders = _songs(args)
-    if args.command in ("collect", "collect-sustain"):
-        collect = collect_pitch if args.command == "collect" else collect_sustain
-        collect(folders, Path(args.out), args.rules, args.workers)
+    if args.command == "collect":
+        collect_pitch(folders, Path(args.out), args.rules, args.workers)
+        return
+    if args.command in ("collect-sustain", "collect-onsets"):
+        one = _collect_sustain_one if args.command == "collect-sustain" else _collect_onsets_one
+        _collect(one, folders, Path(args.out), args.rules, args.workers)
         return
     if args.command == "demucs-cache":
         demucs_cache(folders, Path(args.cache))

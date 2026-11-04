@@ -167,7 +167,7 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
     sources = []
     for stem in stems:
         y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
-        detected = detect_pitched_notes(y, sr, cfg, tuning)
+        detected = detect_pitched_notes(y, sr, cfg, tuning, tempo)
         if cfg.sustain_model:
             from ai_charter.sustain_model import SustainModel
 
