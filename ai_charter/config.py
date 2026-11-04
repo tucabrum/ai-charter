@@ -56,6 +56,7 @@ class PitchedDetection:
     max_voices: int = 3              # máximo de notas que soam juntas num ataque (1 = nunca acorde)
     sustain_model: bool = False      # o modelo de sustain (sustain_model.py) decide quais notas são longas
     onset_model: bool = False        # o modelo de ataques (onset_model.py) escolhe os picos que são notas
+    reduce_model: bool = False       # Hard/Medium/Easy pelo modelo de redução (charting/fret_reduce.py)
 
 
 @dataclass

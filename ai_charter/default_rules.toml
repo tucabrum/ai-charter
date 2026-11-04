@@ -48,6 +48,7 @@ pitch_model = false          # o modelo de altura revisa a nota de cada ataque (
 max_voices = 3               # máximo de notas que soam juntas num ataque (1 = nunca acorde)
 sustain_model = false        # o modelo de sustain decide quais notas são longas (treinado no baixo)
 onset_model = false          # o modelo de ataques escolhe os picos que são notas, em vez do onset_delta
+reduce_model = false         # Hard/Medium/Easy pelo modelo aprendido da Harmonix, em vez de [frets.*]
 
 [detection.bass]
 fmin = "E1"
@@ -85,6 +86,9 @@ sustain_model = true
 # Modelo de ataques treinado nos stems oficiais (ai_charter/onset_model_bass.json): no baixo do Demucs o ataque
 # sai amaciado e o onset_delta deixava de fora 20% das notas oficiais.
 onset_model = true
+# Hard/Medium/Easy aprendidos das reduções da Harmonix (ai_charter/fret_reduce_bass.json): com as regras de
+# [frets.*], o Medium e o Easy saíam com 25-35% de notas a mais que os oficiais.
+reduce_model = true
 
 [detection.keys]
 fmin = "A1"
@@ -111,6 +115,7 @@ pitch_model = false
 max_voices = 3
 sustain_model = false
 onset_model = false
+reduce_model = false
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

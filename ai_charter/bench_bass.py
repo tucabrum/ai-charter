@@ -10,6 +10,7 @@ Uso:
   ai-charter-bench-bass train-sustain sus.npz                      # treina ai_charter/sustain_model_bass.json
   ai-charter-bench-bass collect-onsets "pasta com músicas" at.npz  # exemplos do modelo de ataques (treino)
   ai-charter-bench-bass train-onsets at.npz                        # treina ai_charter/onset_model_bass.json
+  ai-charter-bench-bass train-reduce "pasta com músicas"           # Hard/Medium/Easy: fret_reduce_bass.json
 
 O run avalia as músicas de teste que já estão no cache da bateria (mix.ogg), sempre as mesmas.
 
@@ -196,6 +197,11 @@ def evaluate(folder: Path, cache: Path, rules, audio: str, tempo_source: str) ->
               for t, lanes, d in official]
     ours = [(float(tempo.tick_to_time(n.tick)), n.lanes, n.length > 0) for n in track.notes.get("expert", [])]
     row = compare(ours, theirs)
+    for d, base in DIFFICULTY_BASES.items():   # as outras dificuldades: só as notas (acertos, nossas, oficiais)
+        off_d = [(float(off_tempo.tick_to_time(t)), float(off_tempo.tick_to_time(t + res / 8) - off_tempo.tick_to_time(t)))
+                 for t, _, _ in official_difficulty(midi, base)]
+        ours_d = [float(tempo.tick_to_time(n.tick)) for n in track.notes.get(d, [])]
+        row[d] = [len(pair_notes(ours_d, off_d)), len(ours_d), len(off_d)]
     if pro_bass(midi):
         row["altura"] = evaluate_pitch(folder, rules, stem, estimate_tuning(mix, ANALYSIS_SR))
     return row
@@ -443,6 +449,76 @@ def train_onsets(data: Path, epochs: int = 20) -> None:
                           epochs, hidden=32)
 
 
+DIFFICULTY_BASES = {"hard": 84, "medium": 72, "easy": 60}   # nota MIDI do verde em cada dificuldade
+
+
+def official_difficulty(midi: mido.MidiFile, base: int) -> list[tuple[int, tuple[int, ...], int]]:
+    """(tick, lanes, duração) de uma dificuldade do baixo oficial (base = nota do verde)."""
+    track = next((t for t in midi.tracks if t.name == "PART BASS"), None)
+    if track is None:
+        return []
+    notes, _ = _split(track)
+    by_tick: dict[int, list] = {}
+    for n in notes:
+        if base <= n.pitch <= base + 4:
+            by_tick.setdefault(n.start, []).append((n.pitch - base, n.end - n.start))
+    return [(t, tuple(sorted(l for l, _ in v)), max(d for _, d in v)) for t, v in sorted(by_tick.items())]
+
+
+def _reduce_rows(folder: Path):
+    """Medidas de cada nota do Expert oficial e em quais dificuldades ela fica."""
+    from ai_charter.charting.drum_reduce import bpm_from_tempo
+    from ai_charter.charting.fret_reduce import DIFFICULTIES, features
+
+    midi = mido.MidiFile(folder / "notes.mid")
+    expert = official_notes(midi)
+    lower = {d: {t for t, _, _ in official_difficulty(midi, DIFFICULTY_BASES[d])} for d in DIFFICULTIES}
+    if not expert or len(expert) < 50 or not all(lower.values()):
+        return None
+    x = features(expert, midi.ticks_per_beat, bpm_from_tempo(_tempo_map(midi)))
+    y = np.array([[t in lower[d] for d in DIFFICULTIES] for t, _, _ in expert], dtype=np.float32)
+    return x, y
+
+
+def train_reduce(folders: list[Path], epochs: int = 20) -> None:
+    """Aprende das charts oficiais (só os MIDIs) quais notas do Expert do baixo ficam no Hard, no Medium e
+    no Easy: ai_charter/fret_reduce_bass.json. O limiar de cada dificuldade é o de maior F1 em 1/10 das
+    músicas de treino; as de teste não entram."""
+    import zlib
+
+    from ai_charter import drum_model
+    from ai_charter.bench import song_key
+    from ai_charter.charting import fret_reduce
+
+    xs, ys, kinds = [], [], []
+    for folder in folders:
+        try:
+            r = _reduce_rows(folder)
+        except Exception:
+            continue
+        if r is None:
+            continue
+        kind = "val" if zlib.crc32(song_key(folder.name).encode()) % 10 == 3 else "fit"
+        xs.append(r[0]); ys.append(r[1]); kinds += [kind] * len(r[0])
+    x, y, kinds = np.vstack(xs), np.vstack(ys), np.array(kinds)
+    fit, val = np.flatnonzero(kinds == "fit"), np.flatnonzero(kinds == "val")
+    print(f"{len(xs)} músicas, {len(fit)} notas de treino", flush=True)
+    params = drum_model.train(x, y, fit, hidden=48, epochs=epochs)
+    pv = drum_model.mlp(drum_model._arrays(params), x, val)
+
+    def f1(pred, truth):
+        return 2 * float(np.sum(pred & truth)) / max(1.0, float(pred.sum() + truth.sum()))
+
+    grid = np.arange(0.1, 0.9, 0.05).round(2)
+    thresholds = [float(max(grid, key=lambda t: f1(pv[:, k] >= t, y[val, k] > 0))) for k in range(y.shape[1])]
+    for k, d in enumerate(fret_reduce.DIFFICULTIES):
+        print(f"{d:7s} limiar {thresholds[k]:.2f}  F1 por nota fora do treino {f1(pv[:, k] >= thresholds[k], y[val, k] > 0):.3f}")
+    out = drum_model._jsonable(params)
+    out.update(thresholds=thresholds, features=fret_reduce.FEATURE_NAMES, difficulties=list(fret_reduce.DIFFICULTIES))
+    fret_reduce.MODEL_PATH.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    print(f"salvo em {fret_reduce.MODEL_PATH}")
+
+
 def _one(args):
     folder, cache, rules_path, audio, tempo_source = args
     from ai_charter.config import load_rules
@@ -474,7 +550,19 @@ def summary(rows: dict[str, dict]) -> dict[str, float]:
             "acordes_oficiais": tot("acordes", 1) / max(1, tot("oficiais")),
             "sustains_nossos": tot("sustains", 0) / max(1, tot("nossas")),
             "sustains_oficiais": tot("sustains", 1) / max(1, tot("oficiais")),
+            **_difficulty_summary([r for r in ok if all(d in r for d in DIFFICULTY_BASES)]),
             **_pitch_summary([r["altura"] for r in ok if r.get("altura", {}).get("notas")])}
+
+
+def _difficulty_summary(rows: list[dict]) -> dict[str, float]:
+    """F1 e densidade das notas do Hard, do Medium e do Easy (os de antes do benchmark não têm)."""
+    out = {}
+    for d in DIFFICULTY_BASES:
+        hit, ours, theirs = (sum(r[d][i] for r in rows) for i in range(3))
+        if theirs:
+            out[f"f1_{d}"] = 2 * hit / max(1, ours + theirs)
+            out[f"densidade_{d}"] = ours / theirs
+    return out
 
 
 def _pitch_summary(rows: list[dict]) -> dict[str, float]:
@@ -610,7 +698,14 @@ def main(argv: list[str] | None = None) -> None:
         t = sub.add_parser(name, help=f"treina o modelo de {what}")
         t.add_argument("data")
         t.add_argument("--epochs", type=int, default=20)
+    r = sub.add_parser("train-reduce", help="treina o Hard/Medium/Easy (ai_charter/fret_reduce_bass.json), só com MIDIs")
+    r.add_argument("songs")
+    r.add_argument("--charter", default="Harmonix")
+    r.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args(argv)
+    if args.command == "train-reduce":   # o treino nunca vê as músicas de teste
+        train_reduce([f for f in song_folders(Path(args.songs), args.charter) if not is_test(f.name)], args.epochs)
+        return
     trainers = {"train-pitch": train_pitch, "train-sustain": train_sustain, "train-onsets": train_onsets}
     if args.command in trainers:
         trainers[args.command](Path(args.data), args.epochs)

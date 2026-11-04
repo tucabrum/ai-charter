@@ -437,17 +437,23 @@ def _apply_forcing(notes: list[ChartNote], resolution: int, allow_hopos: bool) -
 
 def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRules],
                      resolution: int, lane_window: int,
-                     sp_windows: list[tuple[int, int]]) -> TrackChart:
-    """Monta as quatro dificuldades a partir das notas candidatas (já quantizadas)."""
+                     sp_windows: list[tuple[int, int]], reducer=None, bpm_at=None) -> TrackChart:
+    """Monta as quatro dificuldades a partir das notas candidatas (já quantizadas). Com o modelo de
+    redução (`reducer`, ver fret_reduce.py), Hard, Medium e Easy são as notas do Expert que ele mantém,
+    como a Harmonix faria; sem ele, as regras de cada uma. `bpm_at(tick)`: o andamento, para o modelo."""
     track = TrackChart(notes={})
     # Trechos com o mesmo ritmo e as mesmas notas são charteados igualzinho.
     repeats = find_repeats(cands, resolution, key=lambda c: (round(c.pitch), c.voices, c.upper))
     previous_count = len(cands)
+    expert_chosen, keep = None, {}
     for difficulty, r in rules.items():
-        chosen = select_rhythm(cands, resolution, r.min_gap_beats, r.grid, r.allow_offgrid)
-        chosen = copy_repeats(chosen, cands, repeats, resolution, min_gap_beats=r.min_gap_beats)
-        chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution,
-                                   group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
+        if expert_chosen is not None and difficulty in keep:
+            chosen = [c for c, k in zip(expert_chosen, keep[difficulty]) if k]
+        else:
+            chosen = select_rhythm(cands, resolution, r.min_gap_beats, r.grid, r.allow_offgrid)
+            chosen = copy_repeats(chosen, cands, repeats, resolution, min_gap_beats=r.min_gap_beats)
+            chosen = enforce_reduction(chosen, previous_count, r.min_reduction, resolution,
+                                       group=lambda c: (repeats.source_of(c.tick), repeats.offset(c.tick)))
         previous_count = len(chosen)
         sizes = [min(c.voices, r.max_chord) for c in chosen]
         max_lanes = [min(chord_shape(r.lanes - 1, s, r.lanes)) for s in sizes]
@@ -466,4 +472,10 @@ def build_fret_track(cands: list[Candidate], rules: dict[str, FretDifficultyRule
         _apply_forcing(notes, resolution, r.allow_hopos)
         track.notes[difficulty] = notes
         track.star_power[difficulty] = star_power_for(notes, sp_windows)
+        if difficulty == "expert" and reducer is not None and chosen:
+            from ai_charter.charting.fret_reduce import features
+
+            expert_chosen = chosen
+            keep = reducer.keep(features([(n.tick, n.lanes, n.length) for n in notes], resolution,
+                                         bpm_at or (lambda _t: 120.0)))
     return track

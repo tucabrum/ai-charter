@@ -185,7 +185,13 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
             cands = guide(cands, stem.stem if len(stems) > 1 else "", log)
         sources.append(GuitarSource(stem.stem, cands, y, sr))
     cands, chosen = merge_guitars(sources, tempo, rules.general.resolution, rules.guitar_selection)
-    track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows)
+    reducer = None
+    if cfg.reduce_model:
+        from ai_charter.charting.fret_reduce import ReduceModel
+
+        reducer = ReduceModel.load()
+    track = build_fret_track(cands, rules.frets, rules.general.resolution, cfg.lane_window, sp_windows,
+                             reducer=reducer, bpm_at=bpm_from_tempo(tempo))
     return track, chosen
 
 
