@@ -45,6 +45,8 @@ accent_min_beats = 2.0       # quantas batidas o acorde precisa durar para virar
 allowed_chords = []          # só estes acordes (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um. A --cifra preenche
 octave_down_ratio = 0.0      # a oitava de baixo vence com esta fração da energia da nota (0 = não; ver o baixo)
 pitch_model = false          # o modelo de altura revisa a nota de cada ataque (treinado no baixo)
+max_voices = 3               # máximo de notas que soam juntas num ataque (1 = nunca acorde)
+sustain_model = false        # o modelo de sustain decide quais notas são longas (treinado no baixo)
 
 [detection.bass]
 fmin = "E1"
@@ -73,6 +75,12 @@ octave_down_ratio = 0.1
 # Modelo de altura treinado no Pro Bass de 252 músicas (ai_charter/pitch_model_bass.json): escolhe a nota de
 # cada ataque entre a ouvida, as oitavas e as vizinhas. Nota exata 74% -> 86%; contorno no uso real 76% -> 81%.
 pitch_model = true
+# Acorde no baixo é raro (0,5% das notas na Harmonix), e os que o detector achava eram quase todos falsos
+# (2,9% das notas; a oficial tinha acorde em só 0,7% deles): uma nota por ataque.
+max_voices = 1
+# Modelo de sustain treinado nas charts oficiais (ai_charter/sustain_model_bass.json): pela curva de volume
+# em batidas. Sem ele, quase toda nota com espaço até a próxima virava sustain.
+sustain_model = true
 
 [detection.keys]
 fmin = "A1"
@@ -96,6 +104,8 @@ accent_min_beats = 2.0
 allowed_chords = []
 octave_down_ratio = 0.0
 pitch_model = false
+max_voices = 3
+sustain_model = false
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

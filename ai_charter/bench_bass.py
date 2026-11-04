@@ -6,6 +6,8 @@ Uso:
   ai-charter-bench-bass altura "pasta com músicas" --test          # só a altura, contra o Pro Bass
   ai-charter-bench-bass collect "pasta com músicas" altura.npz     # exemplos do modelo de altura (treino)
   ai-charter-bench-bass train-pitch altura.npz                     # treina ai_charter/pitch_model_bass.json
+  ai-charter-bench-bass collect-sustain "pasta com músicas" sus.npz # exemplos do modelo de sustain (treino)
+  ai-charter-bench-bass train-sustain sus.npz                      # treina ai_charter/sustain_model_bass.json
 
 O run avalia as músicas de teste que já estão no cache da bateria (mix.ogg), sempre as mesmas.
 
@@ -302,6 +304,83 @@ def train_pitch(data: Path, epochs: int = 20, hidden: int = 48) -> None:
     print(f"salvo em {pitch_model.MODEL_PATH}")
 
 
+def _collect_sustain_one(args):
+    """Exemplos do modelo de sustain de uma música (stem oficial): as medidas de cada nota detectada que
+    casa com uma oficial e se a oficial é longa."""
+    folder, rules_path = args
+    import librosa
+
+    from ai_charter.analysis.pitched import detect_pitched_notes
+    from ai_charter.config import load_rules
+    from ai_charter.pipeline import ANALYSIS_SR, estimate_tuning
+    from ai_charter.sustain_model import song_features
+
+    try:
+        midi = mido.MidiFile(folder / "notes.mid")
+        official = official_notes(midi)
+        stem = bass_stem(folder)
+        if not official or stem is None:
+            return folder.name, None, "sem baixo"
+        tempo, res = _tempo_map(midi), midi.ticks_per_beat
+        y = librosa.load(stem, sr=ANALYSIS_SR, mono=True)[0]
+        notes = detect_pitched_notes(y, ANALYSIS_SR, load_rules(rules_path).detection["bass"],
+                                     estimate_tuning(y, ANALYSIS_SR))
+    except Exception as exc:
+        return folder.name, None, repr(exc)
+    theirs = [(float(tempo.tick_to_time(t)), float(tempo.tick_to_time(t + res / 8) - tempo.tick_to_time(t)))
+              for t, _, _ in official]
+    pairs = pair_notes([n.time for n in notes], theirs)
+    if len(pairs) < 50:
+        return folder.name, None, f"só {len(pairs)} notas casadas"
+    x = song_features(notes, tempo)
+    idx = np.array([i for i, _ in pairs])
+    y_ = np.array([official[k][2] >= SUSTAIN_BEATS * res for _, k in pairs], dtype=np.uint8)
+    return folder.name, (x[idx], y_), ""
+
+
+def collect_sustain(folders: list[Path], out: Path, rules_path: str | None, workers: int = 1) -> None:
+    xs, ys, song, names = [], [], [], []
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for i, (name, data, why) in enumerate(pool.map(_collect_sustain_one, [(f, rules_path) for f in folders]), 1):
+            if data is None:
+                print(f"[{i}/{len(folders)}] {name}: {why}", flush=True)
+                continue
+            x, y = data
+            xs.append(x); ys.append(y); song.append(np.full(len(y), len(names), np.int32)); names.append(name)
+            print(f"[{i}/{len(folders)}] {name}: {len(y)} notas", flush=True)
+    np.savez_compressed(out, x=np.concatenate(xs), y=np.concatenate(ys), song=np.concatenate(song),
+                        names=np.array(names))
+
+
+def train_sustain(data: Path, epochs: int = 20, hidden: int = 16) -> None:
+    """Treina o modelo de sustain (ai_charter/sustain_model_bass.json). Com 1/5 das músicas fora do treino,
+    escolhe o limiar de maior F1 (sustains certos x sustains oficiais achados) e compara com a duração
+    pelo volume (o detector sozinho, com o mínimo de 1/2 batida do Expert)."""
+    from ai_charter import drum_model, sustain_model
+
+    d = np.load(data)
+    x, y, song = d["x"], d["y"].astype(np.float32)[:, None], d["song"]
+    held, train_rows = np.flatnonzero(song % 5 == 0), np.flatnonzero(song % 5 != 0)
+
+    def f1(pred, truth):
+        return 2 * float(np.sum(pred & truth)) / max(1.0, float(pred.sum() + truth.sum()))
+
+    params = drum_model.train(x, y, train_rows, hidden=hidden, epochs=epochs)
+    p = drum_model.mlp(drum_model._arrays(params), x, held)[:, 0]
+    truth = y[held, 0] > 0.5
+    scores = {float(t): f1(p >= t, truth) for t in np.arange(0.2, 0.65, 0.05).round(2)}
+    threshold = max(scores, key=scores.get)
+    names = sustain_model.FEATURE_NAMES
+    volume = np.minimum(x[held, names.index("cai_0.35")], x[held, names.index("espaco")] - 0.25) >= 0.5
+    print(f"fora do treino: F1 {scores[threshold]:.3f} com o modelo (limiar {threshold}), "
+          f"{f1(volume, truth):.3f} só o volume", flush=True)
+    params = drum_model.train(x, y, None, hidden=hidden, epochs=epochs)   # o modelo final usa todas
+    sustain_model.save(params, threshold, {
+        "músicas": int(len(d["names"])), "notas": int(len(y)),
+        "fora_do_treino": {"modelo": round(scores[threshold], 4), "volume": round(f1(volume, truth), 4)}})
+    print(f"salvo em {sustain_model.MODEL_PATH}")
+
+
 def _one(args):
     folder, cache, rules_path, audio, tempo_source = args
     from ai_charter.config import load_rules
@@ -424,6 +503,8 @@ def _songs(args) -> list[Path]:
         folders = [f for f in folders if is_test(f.name)]
     if args.command == "collect":   # o treino nunca vê as músicas de teste
         folders = [f for f in folders if not is_test(f.name) and bass_stem(f) is not None and has_pro_bass(f)]
+    elif args.command == "collect-sustain":
+        folders = [f for f in folders if not is_test(f.name) and bass_stem(f) is not None]
     elif args.command == "altura":
         folders = [f for f in folders if bass_stem(f) is not None and has_pro_bass(f)]
     else:
@@ -450,24 +531,29 @@ def main(argv: list[str] | None = None) -> None:
             p.add_argument("--rules", default=None)
             p.add_argument("--workers", type=int, default=4)
             p.add_argument("--report", default=None)
-    c = sub.add_parser("collect", help="exemplos do modelo de altura, das músicas de treino com Pro Bass")
-    c.add_argument("songs")
-    c.add_argument("out")
-    c.add_argument("--charter", default="Harmonix")
-    c.add_argument("--test", action="store_true", help=argparse.SUPPRESS)
-    c.add_argument("--limit", type=int, default=0)
-    c.add_argument("--rules", default=None)
-    c.add_argument("--workers", type=int, default=3)
-    t = sub.add_parser("train-pitch", help="treina o modelo de altura (ai_charter/pitch_model_bass.json)")
-    t.add_argument("data")
-    t.add_argument("--epochs", type=int, default=20)
+    for name, what in (("collect", "altura, das músicas de treino com Pro Bass"),
+                       ("collect-sustain", "sustain, das músicas de treino com o stem do baixo")):
+        c = sub.add_parser(name, help=f"exemplos do modelo de {what}")
+        c.add_argument("songs")
+        c.add_argument("out")
+        c.add_argument("--charter", default="Harmonix")
+        c.add_argument("--test", action="store_true", help=argparse.SUPPRESS)
+        c.add_argument("--limit", type=int, default=0)
+        c.add_argument("--rules", default=None)
+        c.add_argument("--workers", type=int, default=3)
+    for name, what in (("train-pitch", "altura (ai_charter/pitch_model_bass.json)"),
+                       ("train-sustain", "sustain (ai_charter/sustain_model_bass.json)")):
+        t = sub.add_parser(name, help=f"treina o modelo de {what}")
+        t.add_argument("data")
+        t.add_argument("--epochs", type=int, default=20)
     args = parser.parse_args(argv)
-    if args.command == "train-pitch":
-        train_pitch(Path(args.data), args.epochs)
+    if args.command in ("train-pitch", "train-sustain"):
+        (train_pitch if args.command == "train-pitch" else train_sustain)(Path(args.data), args.epochs)
         return
     folders = _songs(args)
-    if args.command == "collect":
-        collect_pitch(folders, Path(args.out), args.rules, args.workers)
+    if args.command in ("collect", "collect-sustain"):
+        collect = collect_pitch if args.command == "collect" else collect_sustain
+        collect(folders, Path(args.out), args.rules, args.workers)
         return
     if args.command == "demucs-cache":
         demucs_cache(folders, Path(args.cache))

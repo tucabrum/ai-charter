@@ -53,6 +53,8 @@ class PitchedDetection:
     allowed_chords: list[str]   # acordes possíveis (ex.: ["G", "D", "Em", "C"]); vazio = qualquer um
     octave_down_ratio: float = 0.0   # a oitava de baixo vence se tem esta fração da energia da nota (0 = não)
     pitch_model: bool = False        # o modelo de altura (pitch_model.py) revisa a nota de cada ataque
+    max_voices: int = 3              # máximo de notas que soam juntas num ataque (1 = nunca acorde)
+    sustain_model: bool = False      # o modelo de sustain (sustain_model.py) decide quais notas são longas
 
 
 @dataclass

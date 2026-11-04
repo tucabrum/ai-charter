@@ -167,7 +167,14 @@ def chart_pitched(stems: list[Path], instrument: str, tempo: TempoMap, rules: Ru
     sources = []
     for stem in stems:
         y, sr = librosa.load(stem, sr=ANALYSIS_SR, mono=True)
-        cands = _to_candidates(detect_pitched_notes(y, sr, cfg, tuning), tempo, rules)
+        detected = detect_pitched_notes(y, sr, cfg, tuning)
+        if cfg.sustain_model:
+            from ai_charter.sustain_model import SustainModel
+
+            model = SustainModel.load()
+            if model is not None:
+                model.apply(detected, tempo)
+        cands = _to_candidates(detected, tempo, rules)
         if cfg.recognize_chords:
             label_chords(cands, rules.general.resolution, cfg)
         cands, simplified = sanitize(cands, y, sr, tempo, rules.general.resolution, rules.sanitize)

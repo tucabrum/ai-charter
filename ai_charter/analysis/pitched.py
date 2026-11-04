@@ -22,6 +22,7 @@ HOP = 256
 # O librosa marca os ataques ~12 ms depois do início real da nota
 # (medido com áudio sintético nos testes); descontamos esse atraso.
 ONSET_LATENCY = 0.012
+ENVELOPE_FRAMES = 400   # ~2,3 s de volume guardados por nota (DetectedNote.envelope)
 # Harmônicos de uma nota, em semitons acima da fundamental, e seus pesos.
 # (2× freq = +12 semitons, 3× = +19, 4× = +24, 5× = +28)
 HARMONICS = ((0, 1.0), (12, 0.5), (19, 0.33), (24, 0.25), (28, 0.2))
@@ -47,6 +48,10 @@ class DetectedNote:
     spectrum: np.ndarray | None = None
     late_spectrum: np.ndarray | None = None
     fmin_midi: int = 0
+    # O volume do pico até a próxima nota, relativo ao pico, e quantos quadros por segundo: o que o
+    # modelo de sustain (sustain_model.py) olha para decidir se a nota é longa.
+    envelope: np.ndarray | None = None
+    envelope_rate: float = 0.0
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -205,7 +210,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
         a = min(frame + 2, next_frame - 1)
         b = max(a + 1, min(frame + 12, next_frame))
         spectrum = cqt[:, a:b].mean(axis=1)
-        bins = estimate_pitches(spectrum, cfg.chord_ratio)
+        bins = estimate_pitches(spectrum, cfg.chord_ratio, cfg.max_voices)
         if not bins:
             continue
         bins = prefer_lower_octave(bins, spectrum, cfg.octave_down_ratio)
@@ -244,6 +249,8 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
             spectrum=spectrum.astype(np.float32),
             late_spectrum=late.astype(np.float32),
             fmin_midi=int(fmin_midi),
+            envelope=(rms[peak_frame: min(next_frame, peak_frame + ENVELOPE_FRAMES)] / (peak + 1e-12)).astype(np.float16),
+            envelope_rate=sr / HOP,
         ))
     if cfg.pitch_model:
         from ai_charter.pitch_model import PitchModel
