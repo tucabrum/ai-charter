@@ -57,6 +57,7 @@ class PitchedDetection:
     sustain_model: bool = False      # o modelo de sustain (sustain_model.py) decide quais notas são longas
     onset_model: bool = False        # o modelo de ataques (onset_model.py) escolhe os picos que são notas
     reduce_model: bool = False       # Hard/Medium/Easy pelo modelo de redução (charting/fret_reduce.py)
+    pyin: bool = False               # mede a nota de cada ataque também pelo pYIN (para o modelo de altura)
 
 
 @dataclass

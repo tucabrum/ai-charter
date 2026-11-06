@@ -23,6 +23,7 @@ HOP = 256
 # (medido com áudio sintético nos testes); descontamos esse atraso.
 ONSET_LATENCY = 0.012
 ENVELOPE_FRAMES = 400   # ~2,3 s de volume guardados por nota (DetectedNote.envelope)
+PYIN_FMIN, PYIN_FMAX = 30.0, 400.0   # faixa do pYIN (Hz) para o modelo de altura: do Si0 ao Sol4
 # Harmônicos de uma nota, em semitons acima da fundamental, e seus pesos.
 # (2× freq = +12 semitons, 3× = +19, 4× = +24, 5× = +28)
 HARMONICS = ((0, 1.0), (12, 0.5), (19, 0.33), (24, 0.25), (28, 0.2))
@@ -52,6 +53,9 @@ class DetectedNote:
     # modelo de sustain (sustain_model.py) olha para decidir se a nota é longa.
     envelope: np.ndarray | None = None
     envelope_rate: float = 0.0
+    # A nota (MIDI, na afinação da gravação) que o pYIN mede logo depois do ataque; NaN = sem medida. Uma
+    # segunda opinião para o modelo de altura: o pYIN erra outras notas que a soma dos harmônicos.
+    f0: float = float("nan")
 
 
 def _harmonic_salience(spectrum: np.ndarray) -> np.ndarray:
@@ -201,6 +205,11 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
     env_scale = np.percentile(onset_env[onset_frames], 95) + 1e-9
 
     n_frames = min(cqt.shape[1], len(rms))
+    f0_midi = None
+    if cfg.pyin:   # o pYIN, por quadro (o mesmo HOP do espectro), para o modelo de altura
+        f0, _, _ = librosa.pyin(y, fmin=PYIN_FMIN, fmax=PYIN_FMAX, sr=sr, frame_length=2048, hop_length=HOP)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            f0_midi = 69 + 12 * np.log2(f0 / 440.0) - tuning
     notes: list[DetectedNote] = []
     for i, frame in enumerate(onset_frames):
         if frame >= n_frames:
@@ -247,6 +256,12 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
             end_frame = peak_frame + int(below[0])
 
         late = cqt[:, b:max(b + 1, min(b + 16, next_frame))].mean(axis=1)
+        note_f0 = float("nan")
+        if f0_midi is not None:   # ~30 a 250 ms depois do ataque, sem passar da próxima nota
+            seg = f0_midi[frame + 3: max(frame + 4, min(frame + 22, next_frame))]
+            seg = seg[np.isfinite(seg)]
+            if len(seg) >= 2:
+                note_f0 = float(np.median(seg))
         notes.append(DetectedNote(
             time=float(librosa.frames_to_time(frame, sr=sr, hop_length=HOP)) - ONSET_LATENCY,
             end=float(librosa.frames_to_time(end_frame, sr=sr, hop_length=HOP)) - ONSET_LATENCY,
@@ -262,6 +277,7 @@ def detect_pitched_notes(y: np.ndarray, sr: int, cfg: PitchedDetection,
             fmin_midi=int(fmin_midi),
             envelope=(rms[peak_frame: min(next_frame, peak_frame + ENVELOPE_FRAMES)] / (peak + 1e-12)).astype(np.float16),
             envelope_rate=sr / HOP,
+            f0=note_f0,
         ))
     if cfg.pitch_model:
         from ai_charter.pitch_model import PitchModel

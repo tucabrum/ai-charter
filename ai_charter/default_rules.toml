@@ -49,6 +49,7 @@ max_voices = 3               # máximo de notas que soam juntas num ataque (1 = 
 sustain_model = false        # o modelo de sustain decide quais notas são longas (treinado no baixo)
 onset_model = false          # o modelo de ataques escolhe os picos que são notas, em vez do onset_delta
 reduce_model = false         # Hard/Medium/Easy pelo modelo aprendido da Harmonix, em vez de [frets.*]
+pyin = false                 # mede cada nota também pelo pYIN, uma segunda opinião para o modelo de altura
 
 [detection.bass]
 fmin = "E1"
@@ -89,6 +90,8 @@ onset_model = true
 # Hard/Medium/Easy aprendidos das reduções da Harmonix (ai_charter/fret_reduce_bass.json): com as regras de
 # [frets.*], o Medium e o Easy saíam com 25-35% de notas a mais que os oficiais.
 reduce_model = true
+# O pYIN acerta 34% das notas em que o modelo de altura erra: entra como medida dele (~7 s por música).
+pyin = true
 
 [detection.keys]
 fmin = "A1"
@@ -116,6 +119,7 @@ max_voices = 3
 sustain_model = false
 onset_model = false
 reduce_model = false
+pyin = false
 
 # ---------------------------------------------------------------------------
 # Detecção de bateria: cada peça é encontrada numa faixa de frequência (Hz)

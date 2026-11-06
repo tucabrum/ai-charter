@@ -26,7 +26,7 @@ FLOOR = -14.0   # log de energia onde não há bin (fora do espectro)
 FEATURE_NAMES = ([f"ataque_{o:+d}" for o in OFFSETS] + [f"sustenta_{o:+d}" for o in OFFSETS]
                  + ["saliencia", "saliencia_rank", "altura", "vs_mediana", "desvio", "e_a_ouvida", "e_oitava",
                     "vs_anterior", "igual_anterior", "oitava_anterior", "vs_seguinte", "igual_seguinte",
-                    "oitava_seguinte", "sem_vizinhas"])
+                    "oitava_seguinte", "sem_vizinhas", "pyin_tem", "pyin_igual", "pyin_oitava", "pyin_dist"])
 
 
 def _log_spectrum(s: np.ndarray) -> np.ndarray:
@@ -42,6 +42,14 @@ def _salience(s: np.ndarray) -> np.ndarray:
     return out
 
 
+def pyin_opinion(candidate_midi: int, f0: float) -> list[float]:
+    """O que o pYIN acha do candidato: tem medida, é a mesma nota, a mesma em outra oitava, a distância."""
+    if not np.isfinite(f0):
+        return [0.0, 0.0, 0.0, 0.0]
+    diff = candidate_midi - round(f0)
+    return [1.0, float(diff == 0), float(diff != 0 and diff % 12 == 0), min(abs(candidate_midi - f0), 24) / 12.0]
+
+
 def note_features(notes) -> tuple[np.ndarray, np.ndarray]:
     """Medidas de cada candidato de cada nota: (x [notas * candidatos, atributos], bin de cada candidato
     [notas, candidatos], -1 = fora do espectro). As notas precisam do espectro (DetectedNote.spectrum)."""
@@ -55,6 +63,7 @@ def note_features(notes) -> tuple[np.ndarray, np.ndarray]:
         sal = sal / (sal.max() + 1e-12)
         order = np.argsort(-sal)
         rank = np.empty(size); rank[order] = np.arange(size)
+        f0 = getattr(n, "f0", float("nan"))
         prev = heard[i - 1] if i > 0 else None
         nxt = heard[i + 1] if i + 1 < len(notes) else None
         for k, d in enumerate(CANDIDATES):
@@ -74,7 +83,8 @@ def note_features(notes) -> tuple[np.ndarray, np.ndarray]:
             rows.append(np.array(look(early) + look(late)
                                  + [np.log(sal[c] + 1e-6), min(rank[c], 12) / 12.0, c / 48.0, (c - median) / 12.0,
                                     d / 12.0, float(d == 0), float(abs(d) in (12, 24))]
-                                 + near(prev) + near(nxt) + [float(prev is None or nxt is None)],
+                                 + near(prev) + near(nxt) + [float(prev is None or nxt is None)]
+                                 + pyin_opinion(n.fmin_midi + c, f0),
                                  dtype=np.float32))
     return np.array(rows, dtype=np.float32).reshape(len(notes) * len(CANDIDATES), len(FEATURE_NAMES)), bins
 
